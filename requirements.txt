@@ -3,3 +3,4 @@ pandas==2.3.3
 requests==2.34.2
 anthropic==0.106.0
 pydantic==2.13.4
+curl_cffi==0.15.0
