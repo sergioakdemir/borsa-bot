@@ -12,7 +12,7 @@ def main():
     src = get_data_source("yfinance")
     bist = BIST()
 
-    for ticker in ["THYAO", "GARAN"]:
+    for ticker in ["THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS"]:
         symbol = bist.to_symbol(ticker)
         df = src.get_history(symbol, start="2024-01-01", end="2024-01-15")
         print(f"\n=== {symbol} ({len(df)} satir) ===")
