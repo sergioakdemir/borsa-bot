@@ -5,5 +5,6 @@
     "ARCLK", "SAHOL", "HALKB", "VAKBN", "ISCTR", "TAVHL", "PGSUS", "MGROS",
     "ULKER", "CCOLA", "DOHOL", "ENKAI", "KORDS", "TTKOM"
   ],
-  "kisisel": []
+  "kisisel": [],
+  "hareketli_esik": 3.0
 }

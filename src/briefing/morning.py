@@ -1,7 +1,10 @@
-"""Sabah brifingi: 5 BIST hissesini yorumlar ve sonucu Telegram'a gonderir.
+"""Sabah brifingi: SADECE kisisel liste + hareketli hisseler icin AI yorumu.
 
-Cron ile her hafta ici sabah (BIST acilisindan once) calistirilmak uzere.
-GUVENLIK: Telegram kimlik bilgileri yoksa AI'a HIC gitmeden cikar (token harcanmaz).
+09:00 acilistan once calistigi icin -hareketli- = onceki seansin belirgin
+hareket edenleri (|gunluk degisim| >= hareketli_esik). Tum BIST-30 ucuzca
+taranir; AI yalnizca kisisel + hareketli alt kume icin calisir (token kontrolu).
+
+GUVENLIK: Telegram kimlik bilgileri yoksa AI cagrilmadan cikilir.
 """
 import html
 import os
@@ -41,52 +44,55 @@ def _esc(s):
     return html.escape(str(s or ""))
 
 
-def build_message(results, now):
-    lines = [f"<b>\U0001F4CA Sabah Brifingi</b> — {now:%Y-%m-%d %H:%M}",
-             "<i>BIST acilisindan once · 5 hisse</i>", ""]
-    evaluated = skipped = total_news = 0
-    for r in results:
-        sym = _esc(r["symbol"])
-        if r.get("skipped"):
-            skipped += 1
-            lines.append(f"{_EMOJI['SKIP']} <b>{sym}</b> — ATLANDI ({_esc(r.get('reason',''))[:40]})")
-            continue
-        evaluated += 1
-        total_news += r.get("haber_sayisi", 0)
-        emoji = _EMOJI.get(r["final_decision"], "⚪")
-        risk = r["risk"]["score"]
-        head = f"{emoji} <b>{sym}</b>  {r['score']}/10 · risk {risk} · {_esc(r['eminlik'])}"
-        lines.append(head)
-        lines.append(f"   → {_esc(r['final_label'])}")
-        lines.append(f"   <i>{_esc(r['gerekce'])[:120]}</i>")
-        if r.get("haber_sayisi"):
-            lines.append(f"   \U0001F4F0 {r['haber_sayisi']} filtreli haber")
-        lines.append("")
-    lines.append(f"<i>Ozet: {evaluated} yorumlandi, {skipped} atlandi · {total_news} haber</i>")
-    return "\n".join(lines)
+def select_targets():
+    """AI brifingi icin hedef hisseleri sec: kisisel + hareketli (onceki seans)."""
+    from src.watchlist import load_index, load_personal, load_mover_threshold
+    from src.alerts.engine import intraday_change
+
+    personal = load_personal()
+    index = load_index()
+    threshold = load_mover_threshold()
+
+    changes = {}
+    for t in index:
+        info = intraday_change(t)
+        if info:
+            changes[t] = info["change"]   # son seansin degisimi
+
+    movers = [t for t in index if abs(changes.get(t, 0.0)) >= threshold]
+
+    targets = []
+    for t in personal + movers:
+        if t not in targets:
+            targets.append(t)
+
+    # Fallback: kisisel bos ve hareketli yoksa en hareketli 3 hisse
+    if not targets and changes:
+        targets = sorted(changes, key=lambda k: abs(changes[k]), reverse=True)[:3]
+        movers = list(targets)
+
+    return {"targets": targets, "personal": personal, "movers": movers,
+            "changes": changes, "threshold": threshold, "taranan": len(index)}
 
 
-def evaluate_all():
+def evaluate_all(targets):
     import anthropic
     from src.export_json import build_snapshot
     from src.ai.commentator import evaluate_stock
     from src.ai import audit
     from src.db import database as db
     from src.news.service import get_news_source, filtered_news
-    from src.watchlist import load_watchlist
 
+    if not targets:
+        return []
     db.seed_default_sources()
-    tickers = load_watchlist()
-    snapshot = build_snapshot(tickers)
+    snapshot = build_snapshot(targets)
     news_src, is_sample = get_news_source(verbose=False)
-    db.update_status("KAP", "ERISILEMEZ" if is_sample else "AKTIF",
-                     "Sabah brifingi.")
     db.update_status("yfinance", "AKTIF", "Sabah brifingi.")
 
     audit.log_run_start(len(snapshot["stocks"]))
     client = anthropic.Anthropic()
-    results = []
-    ev = sk = 0
+    results, ev, sk = [], 0, 0
     for stock in snapshot["stocks"]:
         news = filtered_news(stock["ticker"], source=news_src)
         r = evaluate_stock(stock, news=news, client=client)
@@ -104,24 +110,48 @@ def evaluate_all():
     return results
 
 
+def build_message(results, sel, now):
+    personal = set(sel["personal"])
+    lines = [f"<b>\U0001F4CA Sabah Brifingi</b> — {now:%Y-%m-%d %H:%M}",
+             f"<i>Kisisel: {len(sel['personal'])} · Hareketli: {len(sel['movers'])} "
+             f"(≥%{sel['threshold']:g}) · taranan: {sel['taranan']}</i>", ""]
+    if not results:
+        lines.append("Bugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
+        return "\n".join(lines)
+    for r in results:
+        sym = _esc(r["symbol"])
+        tag = "K" if r["ticker"] in personal else "H"   # Kisisel / Hareketli
+        if r.get("skipped"):
+            lines.append(f"{_EMOJI['SKIP']} <b>{sym}</b> [{tag}] — ATLANDI")
+            continue
+        emoji = _EMOJI.get(r["final_decision"], "⚪")
+        lines.append(f"{emoji} <b>{sym}</b> [{tag}]  {r['score']}/10 · risk {r['risk']['score']} · {_esc(r['eminlik'])}")
+        lines.append(f"   → {_esc(r['final_label'])}")
+        lines.append(f"   <i>{_esc(r['gerekce'])[:120]}</i>")
+        lines.append("")
+    lines.append("<i>K=Kisisel · H=Hareketli</i>")
+    return "\n".join(lines)
+
+
 def main():
     now = datetime.now(_TZ)
-
-    # --- GUVENLIK: Telegram yoksa AI'a gitmeden cik (token harcama) ---
     if not telegram.is_configured():
-        print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis "
-              "(TELEGRAM_BOT_TOKEN/CHAT_ID). Brifing atlandi, token harcanmadi.")
+        print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis. Brifing atlandi, token harcanmadi.")
         return 0
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print(f"[{now:%Y-%m-%d %H:%M}] ANTHROPIC_API_KEY yok. Brifing atlandi.")
         return 1
 
-    print(f"[{now:%Y-%m-%d %H:%M}] Sabah brifingi basliyor...")
-    results = evaluate_all()
-    msg = build_message(results, now)
+    print(f"[{now:%Y-%m-%d %H:%M}] Hedef secimi (kisisel + hareketli)...")
+    sel = select_targets()
+    print(f"  taranan={sel['taranan']} kisisel={len(sel['personal'])} "
+          f"hareketli={len(sel['movers'])} -> AI hedefi: {sel['targets']}")
+
+    results = evaluate_all(sel["targets"])
+    msg = build_message(results, sel, now)
     try:
         telegram.send_message(msg)
-        print(f"[{now:%Y-%m-%d %H:%M}] Telegram'a gonderildi ({len(results)} hisse).")
+        print(f"[{now:%Y-%m-%d %H:%M}] Telegram'a gonderildi ({len(results)} hisse AI yorumu).")
     except (TelegramNotConfigured, RuntimeError) as e:
         print(f"[{now:%Y-%m-%d %H:%M}] Telegram gonderim HATASI: {e}")
         return 1

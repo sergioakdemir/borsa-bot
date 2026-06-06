@@ -39,3 +39,11 @@ def load_watchlist() -> list[str]:
             seen.add(t)
             out.append(t)
     return out or _DEFAULT
+
+
+def load_mover_threshold(default: float = 3.0) -> float:
+    """Brifingde -hareketli- sayilmak icin gereken |gunluk degisim| esigi (%)."""
+    try:
+        return float(_data().get("hareketli_esik", default))
+    except Exception:
+        return default
