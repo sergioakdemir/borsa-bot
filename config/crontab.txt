@@ -1,0 +1,15 @@
+CRON_TZ=Europe/Istanbul
+# Sabah brifingi: hafta ici 09:00 (kisisel + hareketli)
+0 9 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.briefing.morning >> /root/borsa-bot/logs/briefing.log 2>&1
+# Sicak uyari: hafta ici 10:00-17:30 her 30 dk
+0,30 10-17 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts >> /root/borsa-bot/logs/alerts.log 2>&1
+# Sicak uyari: hafta ici 18:00 (kapanis)
+0 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts >> /root/borsa-bot/logs/alerts.log 2>&1
+# Gunluk portfoy takibi: hafta ici 18:15
+15 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.portfolio.run_portfolio >> /root/borsa-bot/logs/portfolio.log 2>&1
+# Haftalik ozet: Pazar 20:00
+0 20 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.weekly_summary >> /root/borsa-bot/logs/alerts.log 2>&1
+# Hetzner haftalik snapshot: Pazar 23:00
+0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
+# Telegram komut yoklayici: her dakika
+* * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.telegram_bot.poller >> /root/borsa-bot/logs/poller.log 2>&1
