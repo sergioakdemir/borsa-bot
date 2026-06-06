@@ -1,0 +1,24 @@
+# Python sanal ortami
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ortam degiskenleri / gizli anahtarlar
+.env
+.env.*
+!.env.example
+
+# Veritabani dosyalari
+*.db
+*.sqlite
+*.sqlite3
+
+# Loglar ve veri ciktilari
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
