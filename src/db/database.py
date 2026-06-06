@@ -168,3 +168,27 @@ if __name__ == "__main__":
     print(f"DB: {DB_PATH}\n")
     print("Kullanicilar:", [u["ad"] for u in list_users()])
     print("Kaynaklar    :", [s["ad"] for s in list_sources()])
+
+
+# ---- genel ayarlar (key-value) ----
+_AYAR_SCHEMA = "CREATE TABLE IF NOT EXISTS ayar (anahtar TEXT PRIMARY KEY, deger TEXT)"
+
+
+def _ensure_ayar():
+    with get_conn() as c:
+        c.execute(_AYAR_SCHEMA)
+
+
+def get_setting(anahtar, default=None):
+    _ensure_ayar()
+    with get_conn() as c:
+        r = c.execute("SELECT deger FROM ayar WHERE anahtar=?", (anahtar,)).fetchone()
+        return r["deger"] if r else default
+
+
+def set_setting(anahtar, deger):
+    _ensure_ayar()
+    with get_conn() as c:
+        c.execute("INSERT INTO ayar (anahtar, deger) VALUES (?, ?) "
+                  "ON CONFLICT(anahtar) DO UPDATE SET deger=excluded.deger",
+                  (anahtar, str(deger)))
