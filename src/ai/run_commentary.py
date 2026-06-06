@@ -1,7 +1,8 @@
-"""5 BIST hissesini yorumlar: puan + eminlik + risk(veto) + nihai karar.
+"""5 BIST hissesini yorumlar: on-sinyal + haber + puan + eminlik + risk(veto).
 
-Karar puandan turetilir, risk ajani 8+ ise veto eder. STALE veri atlanir (kill
-switch). Her calistirmada audit log yazilir ve kaynak sicili guncellenir.
+Her hisse icin: kompakt on-sinyal (ham bar yok) + haber filtresinden gecen
+haberler AI'a verilir. Karar puandan turetilir, risk 8+ veto eder, STALE atlanir.
+Audit log + kaynak sicili guncellenir.
 
 Calistirmak icin ANTHROPIC_API_KEY gereklidir (.env otomatik yuklenir).
 """
@@ -32,6 +33,7 @@ from src.export_json import build_snapshot
 from src.ai.commentator import evaluate_stock
 from src.ai import audit
 from src.db import database as db
+from src.news.service import get_news_source, filtered_news
 
 
 def main():
@@ -45,6 +47,11 @@ def main():
     print("Veri cekiliyor (yfinance)...")
     snapshot = build_snapshot(tickers)
 
+    # haber kaynagi (canli KAP -> ornek fallback)
+    news_src, is_sample = get_news_source(verbose=True)
+    db.update_status("KAP", "ERISILEMEZ" if is_sample else "AKTIF",
+                     "Ornek kaynak (KAP engelli)." if is_sample else "Canli KAP.")
+
     audit.log_run_start(len(snapshot["stocks"]))
     client = anthropic.Anthropic()
     results = []
@@ -53,12 +60,15 @@ def main():
     for stock in snapshot["stocks"]:
         symbol = stock["symbol"]
         status = stock.get("freshness", {}).get("status")
+        ticker = stock["ticker"]
+
+        news = filtered_news(ticker, source=news_src)
         if status == "STALE":
             print(f"  {symbol}: STALE -> ATLANDI (kill switch)", flush=True)
         else:
-            print(f"  {symbol} yorumlaniyor...", flush=True)
+            print(f"  {symbol} yorumlaniyor... (filtreli haber: {len(news)})", flush=True)
 
-        r = evaluate_stock(stock, client=client)
+        r = evaluate_stock(stock, news=news, client=client)
         results.append(r)
 
         if r.get("skipped"):
@@ -67,7 +77,7 @@ def main():
         else:
             evaluated += 1
             note = (f"eminlik={r['eminlik']} risk={r['risk']['score']} "
-                    f"veto={r['vetoed']} puan_karari={r['decision']}")
+                    f"veto={r['vetoed']} puan_karari={r['decision']} haber={r['haber_sayisi']}")
             audit.log_decision(symbol, status, "EVALUATED",
                                decision=r["final_decision"], score=r["score"], note=note)
 
@@ -78,18 +88,19 @@ def main():
     out_path = out_dir / "ai_commentary.json"
     out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    if is_sample:
+        print("\nNOT: Haberler ORNEK kaynaktandir (KAP engelli); fiyatlanma analizi gercek fiyatladir.")
     print(f"\nKaydedildi: {out_path}")
     print(f"Audit log : {audit.AUDIT_LOG}\n")
-    print(f"{'HISSE':10s} {'PUAN':>4s} {'EMINLIK':8s} {'RISK':>4s}  {'NIHAI KARAR':22s} GEREKCE")
-    print("-" * 100)
+    print(f"{'HISSE':10s} {'PUAN':>4s} {'EMINLIK':8s} {'RISK':>4s} {'HBR':>3s}  {'NIHAI KARAR':22s} GEREKCE")
+    print("-" * 105)
     for r in results:
         if r.get("skipped"):
-            print(f"{r['symbol']:10s} {'-':>4s} {'-':8s} {'-':>4s}  "
-                  f"{'ATLANDI (STALE)':22s} {r.get('reason','')[:35]}")
+            print(f"{r['symbol']:10s} {'-':>4s} {'-':8s} {'-':>4s} {r.get('haber_sayisi',0):>3d}  "
+                  f"{'ATLANDI (STALE)':22s} {r.get('reason','')[:30]}")
         else:
-            risk = r["risk"]["score"]
-            print(f"{r['symbol']:10s} {r['score']:>3d}/10 {r['eminlik']:8s} {risk:>3d}/10  "
-                  f"{r['final_label']:22s} {r['gerekce'][:35]}")
+            print(f"{r['symbol']:10s} {r['score']:>3d}/10 {r['eminlik']:8s} {r['risk']['score']:>3d}/10 "
+                  f"{r['haber_sayisi']:>3d}  {r['final_label']:22s} {r['gerekce'][:30]}")
     print(f"\nOzet: {evaluated} yorumlandi, {skipped} atlandi (STALE).")
 
 
