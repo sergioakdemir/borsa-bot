@@ -73,9 +73,10 @@ def evaluate_all():
     from src.ai import audit
     from src.db import database as db
     from src.news.service import get_news_source, filtered_news
+    from src.watchlist import load_watchlist
 
     db.seed_default_sources()
-    tickers = ["THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS"]
+    tickers = load_watchlist()
     snapshot = build_snapshot(tickers)
     news_src, is_sample = get_news_source(verbose=False)
     db.update_status("KAP", "ERISILEMEZ" if is_sample else "AKTIF",

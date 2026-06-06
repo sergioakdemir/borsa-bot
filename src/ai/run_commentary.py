@@ -34,6 +34,7 @@ from src.ai.commentator import evaluate_stock
 from src.ai import audit
 from src.db import database as db
 from src.news.service import get_news_source, filtered_news
+from src.watchlist import load_watchlist
 
 
 def main():
@@ -43,7 +44,7 @@ def main():
     db.seed_default_sources()
     db.update_status("yfinance", "AKTIF", "Yorumlama calistirildi.")
 
-    tickers = ["THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS"]
+    tickers = load_watchlist()
     print("Veri cekiliyor (yfinance)...")
     snapshot = build_snapshot(tickers)
 
