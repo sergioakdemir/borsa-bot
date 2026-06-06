@@ -22,3 +22,6 @@ logs/
 .vscode/
 .idea/
 .DS_Store
+
+# Uretilen veri ciktilari
+data/*.json
