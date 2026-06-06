@@ -1,3 +1,9 @@
 {
-  "bist": ["THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS"]
+  "bist_endeks": [
+    "THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS", "EREGL", "AKBNK", "YKBNK",
+    "SISE", "TCELL", "BIMAS", "FROTO", "TOASO", "KOZAL", "EKGYO", "PETKM",
+    "ARCLK", "SAHOL", "HALKB", "VAKBN", "ISCTR", "TAVHL", "PGSUS", "MGROS",
+    "ULKER", "CCOLA", "DOHOL", "ENKAI", "KORDS", "TTKOM"
+  ],
+  "kisisel": []
 }

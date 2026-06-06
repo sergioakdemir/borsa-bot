@@ -1,5 +1,10 @@
-"""Izleme listesi (watchlist) yukleyici. Tek kaynak: config/watchlist.json.
-Simdi 5 hisse; ileride 20-30 olabilir - sadece JSON'a eklenir."""
+"""Izleme listesi yukleyici. Iki katman: config/watchlist.json.
+
+- bist_endeks : BIST-30 otomatik tarama listesi
+- kisisel     : kullanicinin kisisel izleme listesi (simdilik bos)
+
+load_watchlist() ikisinin birlesik, sirali, tekrarsiz halini dondurur.
+"""
 import json
 from pathlib import Path
 
@@ -7,11 +12,30 @@ _PATH = Path(__file__).resolve().parents[1] / "config" / "watchlist.json"
 _DEFAULT = ["THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS"]
 
 
-def load_watchlist() -> list[str]:
+def _clean(lst):
+    return [str(t).upper().replace(".IS", "").strip() for t in (lst or []) if str(t).strip()]
+
+
+def _data():
     try:
-        data = json.loads(_PATH.read_text(encoding="utf-8"))
-        lst = data.get("bist") or data.get("tickers") or []
-        cleaned = [t.upper().replace(".IS", "").strip() for t in lst if t.strip()]
-        return cleaned or _DEFAULT
+        return json.loads(_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return _DEFAULT
+        return {}
+
+
+def load_index() -> list[str]:
+    d = _data()
+    return _clean(d.get("bist_endeks") or d.get("bist") or d.get("tickers") or [])
+
+
+def load_personal() -> list[str]:
+    return _clean(_data().get("kisisel") or [])
+
+
+def load_watchlist() -> list[str]:
+    seen, out = set(), []
+    for t in load_index() + load_personal():
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out or _DEFAULT

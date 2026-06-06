@@ -1,7 +1,10 @@
-"""SQLite veritabani: kaynak sicili + sicak uyari kayitlari.
+"""SQLite veritabani.
 
-- kaynak_sicil: veri/haber kaynaklarinin durumu.
-- uyari_kayit : gonderilen sicak uyarilar (spam onleme + haftalik ozet icin).
+Tablolar:
+- kaynak_sicil : veri/haber kaynaklarinin durumu
+- uyari_kayit  : gonderilen sicak uyarilar (spam onleme + haftalik ozet)
+- kullanici    : kullanicilar (serhat, yigit, ufuk)
+- portfoy      : kullanici bazli pozisyonlar
 
 DB dosyasi: data/borsa.db (*.db .gitignore'da).
 """
@@ -27,12 +30,26 @@ CREATE TABLE IF NOT EXISTS kaynak_sicil (
 CREATE TABLE IF NOT EXISTS uyari_kayit (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker    TEXT NOT NULL,
-    tarih     TEXT NOT NULL,          -- YYYY-MM-DD (Istanbul)
-    seviye    TEXT NOT NULL,          -- ACIL | IZLE
-    degisim   REAL NOT NULL,          -- gunluk degisim %
+    tarih     TEXT NOT NULL,
+    seviye    TEXT NOT NULL,
+    degisim   REAL NOT NULL,
     ts        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_uyari_ticker_tarih ON uyari_kayit(ticker, tarih);
+CREATE TABLE IF NOT EXISTS kullanici (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ad   TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS portfoy (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
+    ticker        TEXT NOT NULL,
+    adet          REAL NOT NULL,
+    alim_fiyati   REAL NOT NULL,
+    alim_tarihi   TEXT,
+    notlar        TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_portfoy_kullanici ON portfoy(kullanici_id);
 """
 
 
@@ -105,8 +122,49 @@ def alerts_between(start_tarih, end_tarih) -> list[dict]:
             (start_tarih, end_tarih))]
 
 
+# ---- kullanici ----
+def add_user(ad) -> int:
+    init_db()
+    with get_conn() as c:
+        c.execute("INSERT OR IGNORE INTO kullanici (ad) VALUES (?)", (ad,))
+        r = c.execute("SELECT id FROM kullanici WHERE ad=?", (ad,)).fetchone()
+        return r["id"] if r else None
+
+
+def list_users() -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM kullanici ORDER BY id")]
+
+
+def seed_users():
+    for ad in ("serhat", "yigit", "ufuk"):
+        add_user(ad)
+
+
+# ---- portfoy ----
+def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None, notlar=""):
+    init_db()
+    with get_conn() as c:
+        c.execute(
+            """INSERT INTO portfoy (kullanici_id, ticker, adet, alim_fiyati, alim_tarihi, notlar)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (kullanici_id, str(ticker).upper().replace(".IS", ""),
+             adet, alim_fiyati, alim_tarihi, notlar))
+
+
+def list_portfolio(kullanici_id=None) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        if kullanici_id is not None:
+            q = "SELECT * FROM portfoy WHERE kullanici_id=? ORDER BY id"
+            return [dict(r) for r in c.execute(q, (kullanici_id,))]
+        return [dict(r) for r in c.execute("SELECT * FROM portfoy ORDER BY kullanici_id, id")]
+
+
 if __name__ == "__main__":
     seed_default_sources()
+    seed_users()
     print(f"DB: {DB_PATH}\n")
-    for s in list_sources():
-        print(f"{s['ad']:12s} {s['tur']:6s} {s['durum']:12s} {s['aciklama'] or ''}")
+    print("Kullanicilar:", [u["ad"] for u in list_users()])
+    print("Kaynaklar    :", [s["ad"] for s in list_sources()])
