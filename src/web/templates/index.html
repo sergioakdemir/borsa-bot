@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0a">
+<title>Borsa Bot</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --card: #161616;
+    --border: #252525;
+    --text: #ffffff;
+    --muted: #8a8a8a;
+    --green: #00d26a;
+    --yellow: #f5a623;
+    --red: #ff4757;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.4;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,10,10,.92);
+    backdrop-filter: blur(8px);
+    padding: calc(14px + env(safe-area-inset-top)) 18px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+  header .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  main { padding: 16px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ---- kartlar ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+
+  .row { display: flex; align-items: center; justify-content: space-between; }
+  .ticker { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  .price { font-size: 16px; font-weight: 600; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  .badge {
+    font-size: 12px; font-weight: 700; letter-spacing: .5px;
+    padding: 4px 10px; border-radius: 999px;
+    border: 1px solid transparent;
+  }
+  .badge.green  { color: var(--green);  background: rgba(0,210,106,.10);  border-color: rgba(0,210,106,.30); }
+  .badge.yellow { color: var(--yellow); background: rgba(245,166,35,.10);  border-color: rgba(245,166,35,.30); }
+  .badge.red    { color: var(--red);    background: rgba(255,71,87,.10);   border-color: rgba(255,71,87,.30); }
+
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .flat { color: var(--muted); }
+
+  .chg { font-size: 13px; font-weight: 600; }
+
+  /* ---- ozet seridi ---- */
+  .summary {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; margin-bottom: 14px;
+  }
+  .summary .big { font-size: 26px; font-weight: 700; margin: 2px 0 4px; }
+  .summary .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .summary .grid div { font-size: 12px; color: var(--muted); }
+  .summary .grid b { display: block; color: var(--text); font-size: 15px; font-weight: 600; margin-top: 2px; }
+
+  .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; font-size: 14px; }
+
+  /* ---- karne kart ek ---- */
+  .karne-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .karne-stats div { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
+  .karne-stats .label { margin-bottom: 3px; }
+  .karne-stats .v { font-size: 14px; font-weight: 600; }
+
+  /* ---- alt navigasyon ---- */
+  nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    display: flex; background: rgba(13,13,13,.96);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav button {
+    flex: 1; background: none; border: none; cursor: pointer;
+    color: var(--muted); font-family: inherit;
+    padding: 10px 0 12px; font-size: 11px; font-weight: 600;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  nav button .ico { font-size: 19px; line-height: 1; }
+  nav button.active { color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="hdr-title">Ana</h1>
+  <div class="sub" id="hdr-sub">Hisse sinyalleri</div>
+</header>
+
+<main>
+  <section id="page-ana" class="page active"></section>
+  <section id="page-portfoy" class="page"></section>
+  <section id="page-karne" class="page"></section>
+</main>
+
+<nav>
+  <button data-tab="ana" class="active" onclick="showTab('ana')">
+    <span class="ico">📈</span><span>Ana</span></button>
+  <button data-tab="portfoy" onclick="showTab('portfoy')">
+    <span class="ico">💼</span><span>Portföy</span></button>
+  <button data-tab="karne" onclick="showTab('karne')">
+    <span class="ico">🎯</span><span>Karne</span></button>
+</nav>
+
+<script>
+const HDR = {
+  ana:     ["Ana", "Hisse sinyalleri"],
+  portfoy: ["Portföy", "Pozisyonlar & kar/zarar"],
+  karne:   ["Karne", "Backtest sonuçları"],
+};
+const loaded = {};
+
+function fmt(n, d=2) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return Number(n).toLocaleString("tr-TR", {minimumFractionDigits: d, maximumFractionDigits: d});
+}
+function signCls(n) {
+  if (n === null || n === undefined || isNaN(n)) return "flat";
+  return n > 0 ? "pos" : (n < 0 ? "neg" : "flat");
+}
+function pct(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const s = n > 0 ? "+" : "";
+  return s + fmt(n) + "%";
+}
+
+function showTab(tab) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.getElementById("page-" + tab).classList.add("active");
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === tab));
+  document.getElementById("hdr-title").textContent = HDR[tab][0];
+  document.getElementById("hdr-sub").textContent = HDR[tab][1];
+  if (!loaded[tab]) load(tab);
+}
+
+function load(tab) {
+  loaded[tab] = true;
+  ({ana: loadAna, portfoy: loadPortfoy, karne: loadKarne}[tab])();
+}
+
+async function loadAna() {
+  const el = document.getElementById("page-ana");
+  try {
+    const data = await (await fetch("/api/stocks")).json();
+    if (!data.length) { el.innerHTML = empty("Sinyal verisi yok"); return; }
+    el.innerHTML = data.map(s => `
+      <div class="card">
+        <div class="row">
+          <span class="ticker">${s.ticker}</span>
+          <span class="badge ${s.renk}">${s.etiket}</span>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <span class="price">${fmt(s.fiyat)} ₺</span>
+          <span class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</span>
+        </div>
+        <div class="meta">${s.label_full || ""} · Skor ${s.skor ?? "—"}/10 · Dönem ${pct(s.donem)}</div>
+      </div>`).join("");
+  } catch (e) { el.innerHTML = empty("Yüklenemedi"); }
+}
+
+async function loadPortfoy() {
+  const el = document.getElementById("page-portfoy");
+  try {
+    const d = await (await fetch("/api/portfolio")).json();
+    const o = d.ozet || {};
+    let html = `
+      <div class="summary">
+        <div class="label">Toplam Kâr / Zarar</div>
+        <div class="big ${signCls(o.kz)}">${o.kz >= 0 ? "+" : ""}${fmt(o.kz)} ₺</div>
+        <div class="chg ${signCls(o.kz_yuzde)}">${pct(o.kz_yuzde)}</div>
+        <div class="grid">
+          <div>Maliyet<b>${fmt(o.maliyet)} ₺</b></div>
+          <div>Güncel Değer<b>${fmt(o.deger)} ₺</b></div>
+        </div>
+      </div>`;
+    if (!d.pozisyonlar.length) {
+      html += empty("Portföyde pozisyon yok");
+    } else {
+      html += d.pozisyonlar.map(p => `
+        <div class="card">
+          <div class="row">
+            <span class="ticker">${p.ticker}</span>
+            <span class="chg ${signCls(p.kz_yuzde)}">${pct(p.kz_yuzde)}</span>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <span class="meta">${fmt(p.adet,0)} adet · Alış ${fmt(p.alis)} → ${p.guncel != null ? fmt(p.guncel) : "—"} ₺</span>
+            <span class="chg ${signCls(p.kz)}">${p.kz >= 0 ? "+" : ""}${fmt(p.kz)} ₺</span>
+          </div>
+          <div class="meta" style="margin-top:6px">👤 ${p.kullanici}</div>
+        </div>`).join("");
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = empty("Yüklenemedi"); }
+}
+
+async function loadKarne() {
+  const el = document.getElementById("page-karne");
+  try {
+    const d = await (await fetch("/api/karne")).json();
+    const o = d.ozet || {}, a = d.ayar || {};
+    let html = `
+      <div class="summary">
+        <div class="label">Strateji vs BIST100</div>
+        <div class="big ${signCls(o["strateji_vs_bist100_fark_%"])}">${pct(o["strateji_vs_bist100_fark_%"])}</div>
+        <div class="meta">Ağırlıklı başarı: ${fmt(o["agirlikli_basari_orani_%"],1)}% · ${a.start || ""} → ${a.end || ""}</div>
+        <div class="grid">
+          <div>Strateji getiri<b class="${signCls(o["portfoy_strateji_getiri_%"])}">${pct(o["portfoy_strateji_getiri_%"])}</b></div>
+          <div>Al-tut getiri<b class="${signCls(o["portfoy_al_tut_getiri_%"])}">${pct(o["portfoy_al_tut_getiri_%"])}</b></div>
+        </div>
+      </div>`;
+    html += (d.hisseler || []).map(h => `
+      <div class="card">
+        <div class="row">
+          <span class="ticker">${(h.symbol || "").replace(".IS","")}</span>
+          <span class="chg ${signCls(h["strateji_getiri_%"])}">${pct(h["strateji_getiri_%"])}</span>
+        </div>
+        <div class="karne-stats">
+          <div><div class="label">Başarı</div><div class="v">${fmt(h["basari_orani_%"],1)}%</div></div>
+          <div><div class="label">Al-Tut</div><div class="v ${signCls(h["al_tut_getiri_%"])}">${pct(h["al_tut_getiri_%"])}</div></div>
+          <div><div class="label">Sinyal</div><div class="v">${h.isabet}/${h.yonlu_sinyal}</div></div>
+        </div>
+      </div>`).join("");
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = empty("Yüklenemedi"); }
+}
+
+function empty(msg) { return `<div class="empty">${msg}</div>`; }
+
+load("ana");
+</script>
+</body>
+</html>
