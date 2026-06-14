@@ -1,4 +1,4 @@
-"""Risk ajani: bir hisseye 1-10 risk skoru verir. 8+ ise VETO (islemi engeller).
+"""Risk ajani: bir hisseye 1-10 risk skoru verir. 9+ ise VETO (islemi engeller).
 
 Deterministiktir: gercek metriklerden (volatilite, gunluk bant, tazelik, veri
 yeterliligi) hesaplanir; rakam uydurmaz. Ileride AI-destekli yapilabilir.
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from .metrics import compute_metrics
 
-VETO_THRESHOLD = 8
+VETO_THRESHOLD = 9
 
 
 @dataclass
