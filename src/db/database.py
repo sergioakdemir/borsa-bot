@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS portfoy (
     adet          REAL NOT NULL,
     alim_fiyati   REAL NOT NULL,
     alim_tarihi   TEXT,
-    notlar        TEXT
+    notlar        TEXT,
+    para_birimi   TEXT DEFAULT 'TL'
 );
 CREATE INDEX IF NOT EXISTS ix_portfoy_kullanici ON portfoy(kullanici_id);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -82,6 +83,9 @@ def _migrate(c) -> None:
     cols = {r["name"] for r in c.execute("PRAGMA table_info(kullanici)")}
     if "telegram_id" not in cols:
         c.execute("ALTER TABLE kullanici ADD COLUMN telegram_id INTEGER")
+    cols_p = {r["name"] for r in c.execute("PRAGMA table_info(portfoy)")}
+    if "para_birimi" not in cols_p:
+        c.execute("ALTER TABLE portfoy ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
 
 
 def init_db() -> None:
@@ -179,14 +183,24 @@ def get_user_by_telegram_id(telegram_id):
 
 
 # ---- portfoy ----
-def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None, notlar=""):
+def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None,
+                 notlar="", para_birimi="TL"):
     init_db()
     with get_conn() as c:
         c.execute(
-            """INSERT INTO portfoy (kullanici_id, ticker, adet, alim_fiyati, alim_tarihi, notlar)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO portfoy
+                 (kullanici_id, ticker, adet, alim_fiyati, alim_tarihi, notlar, para_birimi)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (kullanici_id, str(ticker).upper().replace(".IS", ""),
-             adet, alim_fiyati, alim_tarihi, notlar))
+             adet, alim_fiyati, alim_tarihi, notlar, (para_birimi or "TL").upper()))
+
+
+def user_id_by_ad(ad):
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT id FROM kullanici WHERE LOWER(ad)=LOWER(?)",
+                      (str(ad),)).fetchone()
+        return r["id"] if r else None
 
 
 def list_portfolio(kullanici_id=None) -> list[dict]:

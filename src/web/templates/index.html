@@ -327,10 +327,11 @@
   }
   .sm-head input:focus { border-color: var(--green); }
   .sm-head .smclose { background: none; border: none; color: var(--muted); font-size: 16px; font-weight: 600; padding: 6px; }
-  .sm-tabs { display: flex; gap: 8px; padding: 12px 16px; }
+  /* kompakt pazar sekmeleri (sikisik degil ama kucuk) */
+  .sm-tabs { display: flex; gap: 7px; padding: 10px 16px 6px; }
   .sm-tabs button {
-    flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text);
-    border-radius: 11px; padding: 9px 0; font-size: 13px; font-weight: 700; letter-spacing: .3px;
+    flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 7px 15px; font-size: 12.5px; font-weight: 700; letter-spacing: .3px;
   }
   .sm-tabs button.active { border-color: var(--green); color: var(--green); background: rgba(0,200,83,.08); }
   .sm-body { flex: 1; overflow-y: auto; padding: 4px 16px 24px; }
@@ -355,6 +356,47 @@
   .alert .at b { font-weight: 700; }
   .alert .am { font-size: 13px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
   .alert .ad { font-size: 11px; color: var(--muted-2); margin-top: 4px; }
+
+  /* ---------- portfoy ekleme modali ---------- */
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; color: #cccccc; font-size: 13px; font-weight: 600;
+    margin-bottom: 6px; letter-spacing: .2px;
+  }
+  .field input, .field select {
+    width: 100%; background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 12px; padding: 12px 14px; font-size: 14.5px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--green); }
+  .field input::placeholder { color: var(--muted-2); }
+  .seg { display: flex; gap: 8px; }
+  .seg button {
+    flex: 1; background: var(--card-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 12px; padding: 11px 0; font-size: 14px; font-weight: 700;
+  }
+  .seg button.active { border-color: var(--green); color: var(--green); background: rgba(0,200,83,.08); }
+  .pf-photo {
+    width: 100%; background: rgba(74,168,255,.1); border: 1px solid rgba(74,168,255,.42);
+    color: var(--blue); border-radius: 14px; padding: 14px; font-size: 15px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+  }
+  .pf-photo:active { background: rgba(74,168,255,.18); }
+  .pf-status { font-size: 13px; color: var(--muted); padding: 12px 2px; text-align: center; }
+  .pf-or { text-align: center; color: var(--muted-2); font-size: 12px; margin: 16px 0 14px;
+    letter-spacing: .5px; }
+  .pf-prev { background: var(--card-2); border: 1px solid var(--border); border-radius: 14px;
+    padding: 6px 14px; margin-bottom: 13px; }
+  .pf-prev .pt { color: #cccccc; font-size: 13px; font-weight: 700; padding: 10px 0 4px; }
+  .pr-row { display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .pr-row:last-child { border-bottom: none; }
+  .pr-row .pr-r { color: var(--muted); font-weight: 600; }
+  .btn-primary {
+    width: 100%; background: var(--green); color: #06351b; border: none;
+    border-radius: 14px; padding: 15px; font-size: 15.5px; font-weight: 800; margin-top: 4px;
+  }
+  .btn-primary:active { filter: brightness(.92); }
+  .btn-primary:disabled { opacity: .5; }
 
   /* ---------- toast ---------- */
   .toast {
@@ -452,6 +494,35 @@
   <div class="sm-body" id="sm-body">
     <div class="sm-hint">Aramak için bir şeyler yazın.</div>
   </div>
+</div>
+
+<!-- portfoy ekleme modali -->
+<div class="scrim" id="pf-scrim" onclick="closePortfolioModal()"></div>
+<div class="sheet" id="pf-sheet">
+  <div class="grabber"></div>
+  <h3 style="font-size:21px;font-weight:800">Portföye Ekle</h3>
+  <div class="sub" style="margin-bottom:18px">Midas fotoğrafı yükle ya da elle gir</div>
+
+  <button class="pf-photo" onclick="document.getElementById('pf-file').click()">
+    📷 Fotoğraf Yükle (Midas)</button>
+  <input type="file" id="pf-file" accept="image/*" style="display:none" onchange="pfHandleFile(event)">
+  <div class="pf-status" id="pf-status" style="display:none"></div>
+  <div id="pf-preview"></div>
+
+  <div class="pf-or">— veya elle gir —</div>
+  <div class="field"><label>Hisse Kodu</label>
+    <input id="pf-ticker" placeholder="THYAO" autocomplete="off" autocapitalize="characters"></div>
+  <div class="field"><label>Adet</label>
+    <input id="pf-adet" type="number" inputmode="decimal" placeholder="100"></div>
+  <div class="field"><label>Alış Fiyatı</label>
+    <input id="pf-fiyat" type="number" inputmode="decimal" placeholder="285.50"></div>
+  <div class="field"><label>Para Birimi</label>
+    <div class="seg">
+      <button id="pf-tl" class="active" onclick="pfCur('TL')">₺ TL</button>
+      <button id="pf-usd" onclick="pfCur('USD')">$ USD</button>
+    </div>
+  </div>
+  <button class="btn-primary" onclick="pfManualAdd()">Ekle</button>
 </div>
 
 <!-- bildirim paneli -->
@@ -902,6 +973,10 @@ async function loadPortfoy() {
     const d = await (await fetch(url)).json();
     const o = d.ozet || {};
     let html = `
+      <div class="section-head">
+        <h2>Portföy</h2>
+        <button class="addbtn" onclick="openPortfolioModal()" aria-label="Portföye ekle">+</button>
+      </div>
       <div class="hero">
         <div class="label">Toplam Kâr / Zarar</div>
         <div class="big ${signCls(o.kz)}">${money(o.kz)}</div>
@@ -919,18 +994,118 @@ async function loadPortfoy() {
             <div class="tick">${esc(p.ticker)} · ${fmt(p.adet,0)} adet · 👤 ${esc(p.kullanici)}</div></div>
           <div class="price-wrap">
             <div class="price ${signCls(p.kz_yuzde)}">${pct(p.kz_yuzde)}</div>
-            <div class="chg ${signCls(p.kz)}">${money(p.kz)}</div>
+            <div class="chg ${signCls(p.kz)}">${money(p.kz, p.para_birimi)}</div>
           </div>
         </div>
         <div class="pos-grid">
-          <div class="cell"><div class="k">Alış</div><div class="v">${money(p.alis)}</div></div>
-          <div class="cell"><div class="k">Güncel</div><div class="v">${p.guncel != null ? money(p.guncel) : "—"}</div></div>
-          <div class="cell"><div class="k">Hedef</div><div class="v pos">${money(p.hedef)}</div></div>
-          <div class="cell"><div class="k">Stop-loss</div><div class="v neg">${money(p.stop)}</div></div>
+          <div class="cell"><div class="k">Alış</div><div class="v">${money(p.alis, p.para_birimi)}</div></div>
+          <div class="cell"><div class="k">Güncel</div><div class="v">${p.guncel != null ? money(p.guncel, p.para_birimi) : "—"}</div></div>
+          <div class="cell"><div class="k">Hedef</div><div class="v pos">${money(p.hedef, p.para_birimi)}</div></div>
+          <div class="cell"><div class="k">Stop-loss</div><div class="v neg">${money(p.stop, p.para_birimi)}</div></div>
         </div>
       </div>`).join("");
     el.innerHTML = html;
   } catch (e) { el.innerHTML = empty("Yüklenemedi"); }
+}
+
+/* ---------- PORTFOY EKLEME MODALI ---------- */
+let PF_CUR = "TL";
+let PF_HOLDINGS = [];
+function openPortfolioModal() {
+  if (!CUR_USER) { toast("Önce kullanıcı seç"); openUserPick(); return; }
+  // alanlari sifirla
+  ["pf-ticker", "pf-adet", "pf-fiyat"].forEach(id => document.getElementById(id).value = "");
+  pfCur("TL");
+  document.getElementById("pf-preview").innerHTML = "";
+  document.getElementById("pf-status").style.display = "none";
+  PF_HOLDINGS = [];
+  document.getElementById("pf-scrim").classList.add("open");
+  document.getElementById("pf-sheet").classList.add("open");
+}
+function closePortfolioModal() {
+  document.getElementById("pf-scrim").classList.remove("open");
+  document.getElementById("pf-sheet").classList.remove("open");
+}
+function pfCur(c) {
+  PF_CUR = c;
+  document.getElementById("pf-tl").classList.toggle("active", c === "TL");
+  document.getElementById("pf-usd").classList.toggle("active", c === "USD");
+}
+async function pfReload() {
+  loaded.portfoy = false;
+  if (document.getElementById("page-portfoy").classList.contains("active")) await loadPortfoy();
+  loadSummary();
+}
+function pfHandleFile(e) {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";                       // ayni dosya tekrar secilebilsin
+  if (!f) return;
+  const status = document.getElementById("pf-status");
+  status.style.display = "block";
+  status.textContent = "📷 Fotoğraf okunuyor (AI)…";
+  document.getElementById("pf-preview").innerHTML = "";
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const r = await fetch("/api/portfolio/parse-image", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({image: reader.result})
+      });
+      const d = await r.json();
+      if (!d.ok) { status.textContent = "Okunamadı: " + (d.hata || ""); return; }
+      status.style.display = "none";
+      pfRenderPreview(d.holdings || []);
+    } catch (err) { status.textContent = "Hata: fotoğraf işlenemedi."; }
+  };
+  reader.readAsDataURL(f);
+}
+function pfRenderPreview(holdings) {
+  const box = document.getElementById("pf-preview");
+  PF_HOLDINGS = holdings.filter(h => h.ticker && h.adet != null && h.fiyat != null);
+  if (!PF_HOLDINGS.length) {
+    box.innerHTML = `<div class="pf-prev"><div class="pt">Fotoğrafta hisse okunamadı</div></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="pf-prev">
+      <div class="pt">Okunan bilgiler (onayla)</div>
+      ${PF_HOLDINGS.map(h => `<div class="pr-row">
+        <span><b>${esc(h.ticker)}</b> · ${fmt(h.adet, 0)} adet</span>
+        <span class="pr-r">${money(h.fiyat, h.para_birimi === "USD" ? "$" : "₺")}</span>
+      </div>`).join("")}
+    </div>
+    <button class="btn-primary" onclick="pfConfirmAdd()">Onayla ve Ekle (${PF_HOLDINGS.length})</button>`;
+}
+async function pfConfirmAdd() {
+  let ok = 0;
+  for (const h of PF_HOLDINGS) {
+    try {
+      const r = await fetch("/api/portfolio/add", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({kullanici: CUR_USER, ticker: h.ticker, adet: h.adet,
+                              alim_fiyati: h.fiyat, para_birimi: h.para_birimi || "TL"})
+      });
+      if ((await r.json()).ok) ok++;
+    } catch (e) {}
+  }
+  toast(ok + " hisse eklendi");
+  closePortfolioModal();
+  pfReload();
+}
+async function pfManualAdd() {
+  const ticker = document.getElementById("pf-ticker").value.trim().toUpperCase();
+  const adet = parseFloat(document.getElementById("pf-adet").value);
+  const fiyat = parseFloat(document.getElementById("pf-fiyat").value);
+  if (!ticker || isNaN(adet) || isNaN(fiyat)) { toast("Kod, adet ve fiyat gerekli"); return; }
+  try {
+    const r = await fetch("/api/portfolio/add", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kullanici: CUR_USER, ticker, adet, alim_fiyati: fiyat, para_birimi: PF_CUR})
+    });
+    const d = await r.json();
+    if (d.ok) { toast(ticker + " eklendi"); closePortfolioModal(); pfReload(); }
+    else toast(d.hata || "Eklenemedi");
+  } catch (e) { toast("Eklenemedi"); }
 }
 
 /* ---------- KARNE (simulasyon + gercek kararlar) ---------- */
@@ -1009,23 +1184,27 @@ async function loadDecisions() {
 function openDecision(id) {
   const r = DECISION_INDEX[id];
   if (!r) return;
-  let extra = "";
-  if (r.durum === "yanlis") {
-    extra = `<div class="block-title">Neden Yanıldı</div>
-      <div class="quote">${esc(r.yanilma)}</div>
-      <div class="block-title">Çıkarılan Ders</div>
-      <div class="quote">${esc(r.ders)}</div>`;
-  }
+  const durumRozet = r.durum === "dogru" ? `<span class="tag fresh">DOĞRU ÇIKTI</span>`
+    : r.durum === "yanlis" ? `<span class="tag warn">YANILDIM</span>`
+    : `<span class="tag">SONUÇ BEKLENİYOR</span>`;
   document.getElementById("sheet-body").innerHTML = `
     <div class="sheet-row">
       <div><h3>${esc(r.isim)}</h3><div class="sub">${esc(r.ticker)} · ${esc(r.tarih)}</div></div>
       <span class="badge ${r.renk}">${esc(r.karar_label)}</span>
     </div>
-    <div class="block-title">Neden Bu Kararı Verdi</div>
-    <div class="quote">${esc(r.neden)}</div>
+    <div style="margin-top:10px">${durumRozet}</div>
+
+    <div class="block-title">1 · Neden bu kararı verdi</div>
+    <div class="quote" style="white-space:pre-line">${esc(r.neden)}</div>
+
+    <div class="block-title">2 · Neden yanıldı (piyasada ne değişti)</div>
+    <div class="quote">${esc(r.yanilma)}</div>
+
+    <div class="block-title">3 · Çıkarılan ders</div>
+    <div class="quote">${esc(r.ders)}</div>
+
     <div class="block-title">Sonuç</div>
-    <div class="quote">${esc(r.sonuc_metin)}</div>
-    ${extra}`;
+    <div class="quote">${esc(r.sonuc_metin)}</div>`;
   document.getElementById("scrim").classList.add("open");
   document.getElementById("sheet").classList.add("open");
 }

@@ -15,9 +15,13 @@ API:
 - /api/alerts     -> son uyari/sinyal listesi (bildirim paneli)
 - /api/summary    -> firsat / uyari sayilari (ust serit)
 """
+import base64
+import binascii
 import json
+import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -31,7 +35,34 @@ CONFIG = ROOT / "config"
 DB_PATH = DATA / "borsa.db"
 WATCHLIST_PATH = CONFIG / "watchlist.json"
 
+# src paketini import edebilmek icin (app.py dogrudan script olarak calisir)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def _load_dotenv():
+    """ANTHROPIC_API_KEY gibi degiskenleri .env'den ortama yukler."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 app = Flask(__name__)
+
+# DB semasini/migrasyonlari hazirla (para_birimi, telegram_id kolonlari vb.)
+try:
+    from src.db import database as _db
+    _db.init_db()
+except Exception:  # pragma: no cover - import yolu sorunlarinda sessiz gec
+    _db = None
 
 # watchlist.json yazimlarini serilestir (eszamanli istek korumasi)
 _WL_LOCK = threading.Lock()
@@ -41,6 +72,7 @@ _SEARCH_CACHE: dict[str, tuple[float, list]] = {}
 _SEARCH_TTL = 60.0  # saniye
 
 _OPPORTUNITY_MIN = 8  # firsat bolgesine girmek icin gereken puan
+_VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
 
 
 # ----------------------------------------------------------------------------
@@ -655,10 +687,12 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         else:
             toplam_deger += maliyet
 
+        birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
         pozisyonlar.append({
             "kullanici": kullanici_map.get(r["kullanici_id"], "-"),
             "ticker": tkr,
             "isim": company_name(tkr),
+            "para_birimi": birim,
             "adet": adet,
             "alis": alis,
             "guncel": guncel,
@@ -683,6 +717,145 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "kz_yuzde": (toplam_kz / toplam_maliyet * 100) if toplam_maliyet else None,
         },
     }
+
+
+_VISION_PROMPT = (
+    "Sen bir hisse senedi portföy ekran görüntüsü okuyucususun. Verilen görsel, "
+    "bir aracı kurum (örn. Midas) portföy/varlıklar ekranıdır. Görseldeki HER hisse "
+    "satırı için şunları çıkar:\n"
+    "- ticker: hisse kodu (BÜYÜK harf, örn. THYAO, AAPL). Yoksa şirket adından makul kod üret.\n"
+    "- adet: sahip olunan lot/adet (sayı).\n"
+    "- fiyat: ortalama alış/maliyet fiyatı (ondalık nokta ile sayı).\n"
+    "- para_birimi: 'TL' veya 'USD' (₺ -> TL, $ -> USD; belirsizse TL).\n"
+    "YALNIZCA şu JSON ile yanıt ver, başka hiçbir metin yazma:\n"
+    '{"holdings":[{"ticker":"THYAO","adet":100,"fiyat":285.5,"para_birimi":"TL"}]}\n'
+    "Okuyamadığın sayısal alan için null koy. Hiç hisse yoksa {\"holdings\":[]} dön."
+)
+
+
+def _extract_json(text: str):
+    """Model yanitindan ilk JSON nesnesini ayiklar."""
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    i, j = text.find("{"), text.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        try:
+            return json.loads(text[i:j + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _num(x):
+    """'1.234,56' / '1,234.56' / '285,5' gibi degerleri float'a cevirir."""
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    s = str(x).strip().replace("₺", "").replace("$", "").replace(" ", "")
+    if not s:
+        return None
+    if "," in s and "." in s:           # 1.234,56 -> 1234.56  | 1,234.56 -> 1234.56
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:                       # 285,5 -> 285.5
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def parse_portfolio_image(image: str) -> dict:
+    """Base64 portfoy fotografini Claude vision ile okur, holdings listesi doner."""
+    if not image:
+        return {"ok": False, "hata": "Görsel boş."}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {"ok": False, "hata": "AI anahtarı (ANTHROPIC_API_KEY) ayarlı değil."}
+
+    # data URL onekini ayikla + media_type belirle
+    media_type = "image/png"
+    b64 = image
+    if image.startswith("data:"):
+        try:
+            head, b64 = image.split(",", 1)
+            media_type = head.split(":", 1)[1].split(";", 1)[0] or media_type
+        except (ValueError, IndexError):
+            return {"ok": False, "hata": "Geçersiz görsel verisi."}
+    # gecerli base64 mi?
+    try:
+        base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return {"ok": False, "hata": "Görsel base64 çözülemedi."}
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model=_VISION_MODEL, max_tokens=1500,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": media_type, "data": b64}},
+                {"type": "text", "text": _VISION_PROMPT},
+            ]}],
+        )
+        text = "".join(getattr(b, "text", "") for b in resp.content
+                       if getattr(b, "type", "") == "text")
+    except Exception as e:
+        return {"ok": False, "hata": f"AI okuma hatası: {type(e).__name__}: {str(e)[:120]}"}
+
+    data = _extract_json(text)
+    if not data or "holdings" not in data:
+        return {"ok": False, "hata": "Fotoğraf okunamadı (geçerli veri çıkmadı)."}
+
+    holdings = []
+    for h in (data.get("holdings") or []):
+        tkr = (str(h.get("ticker") or "").upper().replace(".IS", "").strip())
+        if not tkr:
+            continue
+        pb = (str(h.get("para_birimi") or "TL").upper())
+        pb = "USD" if pb in ("USD", "$", "DOLAR") else "TL"
+        holdings.append({
+            "ticker": tkr,
+            "adet": _num(h.get("adet")),
+            "fiyat": _num(h.get("fiyat")),
+            "para_birimi": pb,
+        })
+    return {"ok": True, "holdings": holdings}
+
+
+def portfolio_add(d: dict) -> dict:
+    """Tek bir pozisyonu portfoy tablosuna ekler."""
+    kullanici = (d.get("kullanici") or "").strip()
+    ticker = (str(d.get("ticker") or "").upper().replace(".IS", "").strip())
+    adet = _num(d.get("adet"))
+    fiyat = _num(d.get("alim_fiyati") if d.get("alim_fiyati") is not None
+                 else d.get("fiyat"))
+    para_birimi = (str(d.get("para_birimi") or "TL").upper())
+    para_birimi = "USD" if para_birimi in ("USD", "$", "DOLAR") else "TL"
+
+    if not kullanici:
+        return {"ok": False, "hata": "Kullanıcı seçili değil."}
+    if not ticker or adet is None or fiyat is None:
+        return {"ok": False, "hata": "Hisse kodu, adet ve fiyat gerekli."}
+    if _db is None:
+        return {"ok": False, "hata": "Veritabanı erişilemiyor."}
+
+    uid = _db.user_id_by_ad(kullanici)
+    if uid is None:
+        return {"ok": False, "hata": f"Kullanıcı bulunamadı: {kullanici}"}
+    try:
+        _db.add_position(uid, ticker, adet, fiyat, para_birimi=para_birimi)
+    except Exception as e:
+        return {"ok": False, "hata": f"Eklenemedi: {type(e).__name__}"}
+    return {"ok": True, "ticker": ticker, "adet": adet,
+            "fiyat": fiyat, "para_birimi": para_birimi}
 
 
 _AY_TR = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz",
@@ -763,12 +936,32 @@ def get_decisions() -> dict:
         etiket, renk = _classify(karar)
         tkr = (r.get("ticker") or "").upper()
         sonuc = r.get("sonuc")
-        # durum: sonuc yoksa bekliyor; varsa basit yorum (+ -> dogru, - -> yanildi)
+        puan = r.get("puan")
+        risk = r.get("risk")
+        eminlik = _eminlik_tr(r.get("eminlik"))
+        gerekce = r.get("gerekce") or "Gerekçe kaydı yok."
+
+        # Neden bu karari verdi (hangi veriye dayanarak)
+        dayanak_parcalari = []
+        if puan is not None:
+            dayanak_parcalari.append(f"puan {puan}/10")
+        if risk is not None:
+            dayanak_parcalari.append(f"risk {risk}/10")
+        if r.get("eminlik"):
+            dayanak_parcalari.append(f"eminlik {eminlik.lower()}")
+        dayanak = (" · ".join(dayanak_parcalari)) or "—"
+        neden = gerekce
+        if dayanak_parcalari:
+            neden = f"{gerekce}\n\nDayanak: {dayanak}."
+
+        # durum + Neden yanildi (piyasada ne degisti) + Cikarilan ders
         if sonuc is None or str(sonuc).strip() == "":
             durum, dogru = "bekliyor", None
             sonuc_metin = "Sonuç henüz belli değil — fiyat takip ediliyor."
-            yanilma = ""
-            ders = ""
+            yanilma = ("Henüz yanılma/başarı belli değil; piyasada ne değiştiği, "
+                       "kararın sonucu netleşince burada görünecek.")
+            ders = ("Sonuç oluşunca bu kurulumda neyin işe yarayıp yaramadığı "
+                    "buraya yazılacak.")
         else:
             s = str(sonuc).strip()
             up = s.upper()
@@ -776,12 +969,17 @@ def get_decisions() -> dict:
                      or "ISABET" in up or "İSABET" in up)
             durum = "dogru" if dogru else "yanlis"
             sonuc_metin = s
-            yanilma = "" if dogru else (
-                f"Beklenen yön tutmadı: {s}. Karar anındaki sinyaller "
-                "fiyat hareketini doğru öngörmedi.")
-            ders = "" if dogru else (
-                "Benzer kurulumda eminlik düşükse pozisyon küçültülmeli veya "
-                "teyit beklenmeli.")
+            if dogru:
+                yanilma = (f"Yanılma yok — beklenen yön tuttu ({s}). "
+                           "Piyasa, karardaki sinyalleri doğruladı.")
+                ders = ("Bu sinyal birleşimi işe yaradı; benzer kurulumda "
+                        "yaklaşıma güven artırılabilir.")
+            else:
+                yanilma = (f"Beklenen yön tutmadı ({s}). Karardan sonra piyasa "
+                           "ters yönde hareket etti; karar anındaki sinyaller bu "
+                           "değişimi öngöremedi.")
+                ders = ("Benzer durumda eminlik düşük ya da hacim teyidi zayıfsa "
+                        "pozisyon küçültülmeli veya ek teyit beklenmeli.")
         satirlar.append({
             "id": r.get("id"),
             "ticker": tkr,
@@ -790,12 +988,13 @@ def get_decisions() -> dict:
             "karar_label": _karar_label(karar),
             "etiket": etiket,
             "renk": renk,
-            "puan": r.get("puan"),
-            "risk": r.get("risk"),
-            "eminlik": _eminlik_tr(r.get("eminlik")),
+            "puan": puan,
+            "risk": risk,
+            "eminlik": eminlik,
+            "dayanak": dayanak,
             "tarih": r.get("tarih"),
-            "gerekce": r.get("gerekce") or "",
-            "neden": r.get("gerekce") or "Gerekçe kaydı yok.",
+            "gerekce": gerekce,
+            "neden": neden,
             "sonuc": sonuc,
             "sonuc_metin": sonuc_metin,
             "durum": durum,
@@ -923,6 +1122,18 @@ def api_watchlist_add():
 def api_watchlist_remove():
     d = request.get_json(silent=True) or {}
     return jsonify(watchlist_remove(d.get("ticker", ""), d.get("market", "bist")))
+
+
+@app.route("/api/portfolio/parse-image", methods=["POST"])
+def api_portfolio_parse_image():
+    d = request.get_json(silent=True) or {}
+    return jsonify(parse_portfolio_image(d.get("image", "")))
+
+
+@app.route("/api/portfolio/add", methods=["POST"])
+def api_portfolio_add():
+    d = request.get_json(silent=True) or {}
+    return jsonify(portfolio_add(d))
 
 
 if __name__ == "__main__":
