@@ -93,39 +93,93 @@ def get_macro() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# EVDS (TCMB) - su an beklemede (yurt disi IP cografi engeli + proxy host kisiti).
-# EVDS_API_KEY + EVDS'ye izin veren bir proxy varsa ileride devreye alinabilir.
+# EVDS3 (TCMB) - yeni endpoint: POST https://evds3.tcmb.gov.tr/igmevdsms-dis/fe
+# (SPA: getSeriVerileri => Le.post("/fe", body)). EVDS_PROXY_URL (TR cikisli)
+# + EVDS_API_KEY ile cekilir. Bright Data sertifika MITM yaptigindan verify=False.
 # ---------------------------------------------------------------------------
-_EVDS_BASE = "https://evds2.tcmb.gov.tr/service/evds"
-_EVDS_SERIES = {"usdtry": "TP.DK.USD.A.YTL",
-                "politika_faizi": "TP.APIFON4",
-                "tufe_yillik": "TP.FG.J0"}
+_EVDS3_FE = "https://evds3.tcmb.gov.tr/igmevdsms-dis/fe"
+_EVDS_SERIES = {
+    "usdtry": ("TP.DK.USD.A.YTL", "avg"),
+    "politika_faizi": ("TP.TF.TG.A1", "avg"),
+    "tufe_yillik": ("TP.FE.OKTG01", "avg"),
+}
 
 
-def _evds_series(code: str, key: str):
+def _evds_proxies():
+    """EVDS_PROXY_URL'i TR cikisli olacak sekilde dondurur (Bright Data -country-tr)."""
+    raw = os.environ.get("EVDS_PROXY_URL")
+    if not raw:
+        return None
+    try:
+        pre, rest = raw.split("://", 1)
+        cred, host = rest.split("@", 1)
+        usr, pw = cred.split(":", 1)
+        if ("superproxy" in host or usr.startswith("brd-")) and "-country-" not in usr:
+            usr = usr + "-country-tr"
+        raw = f"{pre}://{usr}:{pw}@{host}"
+    except Exception:
+        pass
+    return {"http": raw, "https": raw}
+
+
+def _evds_series(code: str, agg: str, key: str):
+    """EVDS3 /fe POST ile bir serinin son degerini dondurur (yoksa None).
+
+    Govde SPA'daki getSeriVerileri ile ayni alanlari tasir. Bright Data residential
+    (no-KYC) hesabi TCMB'ye POST'u engelleyebilir (HTTP 402); o durumda None doner.
+    """
     import requests as rq
+    import urllib3
+    urllib3.disable_warnings()
     today = datetime.now(_TZ).date()
-    start = (today - timedelta(days=45)).strftime("%d-%m-%Y")
-    end = today.strftime("%d-%m-%Y")
-    url = (f"{_EVDS_BASE}/series={code}&startDate={start}&endDate={end}"
-           f"&type=json&key={key}")
-    px = os.environ.get("EVDS_PROXY_URL")
-    for proxies in (None, ({"http": px, "https": px} if px else None)):
-        try:
-            r = rq.get(url, headers={"key": key, "Accept": "application/json",
-                                     "User-Agent": "borsa-bot/1.0"},
-                       proxies=proxies, timeout=15)
-            if r.status_code != 200 or "json" not in r.headers.get("content-type", "").lower():
-                continue
-            items = (r.json() or {}).get("items") or []
-            for row in reversed(items):
-                for k, v in row.items():
-                    if k in ("Tarih", "UNIXTIME") or v in (None, "", "null"):
-                        continue
-                    try:
-                        return round(float(v), 4)
-                    except (TypeError, ValueError):
-                        return v
-        except Exception:
+    body = {
+        "series": code,
+        "aggregationTypes": agg or "avg",
+        "formulas": "0",
+        "startDate": (today - timedelta(days=60)).strftime("%d-%m-%Y"),
+        "endDate": today.strftime("%d-%m-%Y"),
+        "frequency": "1",
+        "decimalSeperator": ".",
+        "decimal": False,
+    }
+    headers = {"key": key, "Accept": "application/json",
+               "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+    try:
+        r = rq.post(_EVDS3_FE, json=body, headers=headers,
+                    proxies=_evds_proxies(), timeout=30, verify=False)
+        if r.status_code != 200:
+            return None
+        if "json" not in r.headers.get("content-type", "").lower():
+            return None
+        data = r.json()
+    except Exception:
+        return None
+    items = data.get("items") or data.get("data") or (data if isinstance(data, list) else [])
+    for row in reversed(items):
+        if not isinstance(row, dict):
             continue
+        for k, v in row.items():
+            if any(t in k.upper() for t in ("TARIH", "DATE", "UNIXTIME")):
+                continue
+            if v in (None, "", "null", "ND"):
+                continue
+            try:
+                return round(float(str(v).replace(",", ".")), 4)
+            except (TypeError, ValueError):
+                continue
     return None
+
+
+def evds_macro() -> dict:
+    """EVDS3'ten USD/TRY, politika faizi, TUFE ceker (EVDS_API_KEY gerekli)."""
+    key = os.environ.get("EVDS_API_KEY")
+    if not key:
+        return {"available": False, "neden": "EVDS_API_KEY yok"}
+    out = {"available": False, "kaynak": "EVDS3"}
+    for ad, (code, agg) in _EVDS_SERIES.items():
+        out[ad] = _evds_series(code, agg, key)
+    if any(out.get(a) is not None for a in _EVDS_SERIES):
+        out["available"] = True
+    else:
+        out["neden"] = "EVDS3 yanit vermedi (muhtemelen proxy POST kisiti / no-KYC)"
+    return out
