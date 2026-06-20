@@ -21,11 +21,24 @@ _SERIES = {
 }
 
 
+def _transports():
+    """EVDS icin denenecek baglanti yollari (sirayla): dogrudan + proxy.
+
+    EVDS_PROXY_URL verilirse o, yoksa KAP_PROXY_URL denenir. Boylece EVDS host'una
+    izin veren bir TR proxy varsa otomatik kullanilir; yoksa dogrudan denenir.
+    """
+    yield None                                       # 1) dogrudan
+    px = os.environ.get("EVDS_PROXY_URL") or os.environ.get("KAP_PROXY_URL")
+    if px:
+        yield {"http": px, "https": px}              # 2) proxy (KAP ile ayni)
+
+
 def _fetch_series(code: str, key: str):
     """Bir seri icin son degeri dondurur (yoksa None).
 
-    EVDS API'si yurt disi/datacenter IP'lerinden JSON yerine web SPA (HTML)
-    dondurebilir (cografi engel). Bu durumda JSON parse edilemez -> None.
+    Once dogrudan, sonra proxy uzerinden denenir; JSON donen ilk yol kullanilir.
+    EVDS yurt disi/datacenter IP'den JSON yerine web SPA (HTML) dondururse veya
+    proxy host'u engellerse nazikce None doner.
     """
     import requests as rq
     today = datetime.now(_TZ).date()
@@ -33,19 +46,21 @@ def _fetch_series(code: str, key: str):
     end = today.strftime("%d-%m-%Y")
     url = (f"{_BASE}/series={code}&startDate={start}&endDate={end}"
            f"&type=json&key={key}")
-    try:
-        # EVDS icin KAP proxy'si kullanilmaz (host whitelist disinda -> 403);
-        # dogrudan baglanilir. Cografi engelde HTML doner, nazikce None'lanir.
-        r = rq.get(url, headers={"key": key, "Accept": "application/json",
-                                 "User-Agent": "borsa-bot/1.0"},
-                   timeout=15)
-        if r.status_code != 200:
-            return None
-        ct = r.headers.get("content-type", "")
-        if "json" not in ct.lower():     # HTML SPA -> API'ye ulasilamadi
-            return None
-        data = r.json()
-    except Exception:
+    data = None
+    for proxies in _transports():
+        try:
+            r = rq.get(url, headers={"key": key, "Accept": "application/json",
+                                     "User-Agent": "borsa-bot/1.0"},
+                       proxies=proxies, timeout=15)
+            if r.status_code != 200:
+                continue
+            if "json" not in r.headers.get("content-type", "").lower():
+                continue                              # HTML SPA -> bu yol calismadi
+            data = r.json()
+            break
+        except Exception:
+            continue
+    if data is None:
         return None
     items = (data or {}).get("items") or []
     # son dolu degeri bul
