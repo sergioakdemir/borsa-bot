@@ -18,9 +18,11 @@ _CACHE = {}
 _TTL = 3600.0   # bilanco verisi yavas degisir; 1 saat onbellek
 
 
-def _sym(ticker: str) -> str:
-    t = (ticker or "").upper().strip()
-    return t if t.endswith(".IS") else f"{t}.IS"
+def _sym(ticker: str, market: str = "bist") -> str:
+    t = (ticker or "").upper().strip().replace(".IS", "")
+    if market in ("us", "abd"):
+        return t                      # ABD: yfinance'te son ek yok
+    return f"{t}.IS"
 
 
 def _f(v):
@@ -38,18 +40,19 @@ def _pct(v):
         return None
 
 
-def get_fundamentals(ticker: str) -> dict:
+def get_fundamentals(ticker: str, market: str = "bist") -> dict:
     """Hisse temel oranlarini dondurur (yfinance .info). TTL onbellekli."""
     ticker = (ticker or "").upper().replace(".IS", "")
     now = time.monotonic()
-    hit = _CACHE.get(ticker)
+    ck = f"{ticker}:{market}"
+    hit = _CACHE.get(ck)
     if hit and (now - hit[0]) < _TTL:
         return hit[1]
 
     info = {}
     try:
         import yfinance as yf
-        info = yf.Ticker(_sym(ticker)).get_info() or {}
+        info = yf.Ticker(_sym(ticker, market)).get_info() or {}
     except Exception:
         info = {}
 
@@ -67,7 +70,7 @@ def get_fundamentals(ticker: str) -> dict:
     metrikler = ("fk", "pddd", "roe_%", "kar_marji_%",
                  "borc_ozsermaye", "gelir_buyume_%", "favok_marji_%")
     out["available"] = any(out.get(k) is not None for k in metrikler)
-    _CACHE[ticker] = (now, out)
+    _CACHE[ck] = (now, out)
     return out
 
 
@@ -75,7 +78,7 @@ _VOL_CACHE = {}
 _VOL_TTL = 600.0   # gun ici hacim degisir; 10 dk onbellek
 
 
-def get_volume_anomaly(ticker: str) -> dict:
+def get_volume_anomaly(ticker: str, market: str = "bist") -> dict:
     """Bugunku hacmi son 5 gunun ortalamasiyla kiyaslar.
 
     - ort_5g  : bugun haric onceki 5 islem gununun ortalama hacmi
@@ -85,14 +88,15 @@ def get_volume_anomaly(ticker: str) -> dict:
     """
     ticker = (ticker or "").upper().replace(".IS", "")
     now = time.monotonic()
-    hit = _VOL_CACHE.get(ticker)
+    ck = f"{ticker}:{market}"
+    hit = _VOL_CACHE.get(ck)
     if hit and (now - hit[0]) < _VOL_TTL:
         return hit[1]
 
     vols = []
     try:
         import yfinance as yf
-        df = yf.Ticker(_sym(ticker)).history(period="1mo")
+        df = yf.Ticker(_sym(ticker, market)).history(period="1mo")
         if df is not None and not df.empty:
             vols = [float(v) for v in df["Volume"].tolist() if v and v > 0]
     except Exception:
@@ -101,7 +105,7 @@ def get_volume_anomaly(ticker: str) -> dict:
     if len(vols) < 6:
         out = {"ticker": ticker, "available": False,
                "neden": "Yeterli hacim verisi yok"}
-        _VOL_CACHE[ticker] = (now, out)
+        _VOL_CACHE[ck] = (now, out)
         return out
 
     bugun = vols[-1]
@@ -123,7 +127,7 @@ def get_volume_anomaly(ticker: str) -> dict:
         "seviye": seviye,
         "anomali": seviye != "NORMAL",
     }
-    _VOL_CACHE[ticker] = (now, out)
+    _VOL_CACHE[ck] = (now, out)
     return out
 
 

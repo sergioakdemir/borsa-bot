@@ -44,8 +44,21 @@ def _esc(s):
     return html.escape(str(s or ""))
 
 
+def _us_portfolio_tickers():
+    """Portfoylerdeki ABD (USD) hisselerinin benzersiz kodlari."""
+    from src.db import database as db
+    try:
+        with db.get_conn() as c:
+            rows = c.execute(
+                "SELECT DISTINCT ticker FROM portfoy WHERE UPPER(para_birimi)='USD'")
+            return [(r[0] or "").upper().replace(".IS", "") for r in rows if r[0]]
+    except Exception:
+        return []
+
+
 def select_targets():
-    """AI brifingi icin hedef hisseleri sec: kisisel + hareketli (onceki seans)."""
+    """AI brifingi icin hedef hisseleri sec: kisisel + hareketli (onceki seans)
+    + portfoydeki ABD hisseleri (':us' etiketli)."""
     from src.watchlist import load_index, load_personal, load_mover_threshold
     from src.alerts.engine import intraday_change
 
@@ -71,7 +84,13 @@ def select_targets():
         targets = sorted(changes, key=lambda k: abs(changes[k]), reverse=True)[:3]
         movers = list(targets)
 
-    return {"targets": targets, "personal": personal, "movers": movers,
+    # Portfoydeki ABD hisselerini ':us' etiketiyle ekle (KAP/analist atlanir)
+    us = _us_portfolio_tickers()
+    for t in us:
+        if t not in targets and f"{t}:us" not in targets:
+            targets.append(f"{t}:us")
+
+    return {"targets": targets, "personal": personal, "movers": movers, "us": us,
             "changes": changes, "threshold": threshold, "taranan": len(index)}
 
 

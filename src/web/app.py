@@ -1277,17 +1277,28 @@ _DATA_RE = re.compile(
     r"%\s*\d|\(\s*\d|\bpuan\b|\d+[.,]\d+\s*(?:tl|₺)", re.I)
 
 
-def _clean_summary(gerekce: str, limit: int = 160) -> str:
-    """Kart icin sade, niteliksel ozet: analist/hedef/F-K gibi VERI cumlelerini eler
-    (bunlar detayda gosterilir). Kalan niteliksel cumlelerden ilk 1-2'sini alir."""
-    parts = re.split(r"(?<=[.;!?])\s+", " ".join((gerekce or "").split()))
-    parts = [p.strip() for p in parts if p.strip()]
-    clean = [p for p in parts if not _DATA_RE.search(p)]
-    text = " ".join(clean[:2]) if clean else (parts[0] if parts else "")
+def _clean_summary(gerekce: str, limit: int = 160, action: str = "") -> str:
+    """Kart icin sade, niteliksel ozet. CUMLECIK (clause) duzeyinde temizler:
+    analist/hedef/F-K/MA/hacim/% iceren parcalari atar (bunlar detayda gosterilir),
+    kalan niteliksel cumleciklerden limit dolana kadar birlestirir.
+    Hicbir temiz parca yoksa karar aksiyonuna duser (asla ham sayi basmaz)."""
+    text = " ".join((gerekce or "").split())
+    parts = re.split(r"[;:,.!?]\s+|[;:,.!?](?=[A-ZÇĞİÖŞÜ])", text)
+    clean = [p.strip() for p in parts
+             if p.strip() and len(p.strip()) > 12 and not _DATA_RE.search(p)]
+    out = ""
+    for c in clean:
+        cand = (out + " " + c).strip() if out else c
+        if out and len(cand) > limit:
+            break
+        out = cand
+    out = out or action or ""
     # bagimsiz kalan bas baglaci temizle ("ancak ...", "ama ...")
-    text = re.sub(r"^\s*(ancak|ama|fakat|ne var ki|bununla birlikte)[,\s]+", "",
-                  text, flags=re.I)
-    return _cap(text[:1].upper() + text[1:] if text else text, limit)
+    out = re.sub(r"^\s*(ancak|ama|fakat|ne var ki|bununla birlikte)[,\s]+", "",
+                 out, flags=re.I).strip()
+    if out and not out.endswith((".", "!", "?")):
+        out += "."
+    return _cap(out[:1].upper() + out[1:] if out else out, limit)
 
 
 _AKSIYON = {
@@ -1307,7 +1318,7 @@ def _structured(rec: dict) -> dict:
     rk, rkr = _risk_kisa(rs)
     return {
         "decision": etiket, "decision_renk": renk,
-        "summary": _clean_summary(gerekce, 160),
+        "summary": _clean_summary(gerekce, 160, _AKSIYON.get(etiket, "")),
         "reason": _cap(gerekce, 500),
         "risk": rk, "risk_renk": rkr,
         "riskReason": _cap(_risk_sebep(rec), 80),
@@ -1358,10 +1369,11 @@ def _mini_view(rec: dict, ozet_limit: int = 160) -> dict:
     sig = rec.get("kullanilan_on_sinyal", {}) or {}
     st = _structured(rec)
     return {
-        "ticker": tkr, "isim": company_name(tkr), "market": "bist",
+        "ticker": tkr, "isim": company_name(tkr),
+        "market": rec.get("market", "bist"),
         "etiket": st["decision"], "renk": st["decision_renk"],
         "fiyat": sig.get("son_kapanis"), "gunluk": sig.get("gunluk_degisim_%"),
-        "para_birimi": "₺",
+        "para_birimi": rec.get("para_birimi", "₺"),
         "summary": _cap(st["summary"], ozet_limit), "action": st["action"],
         "risk": st["risk"], "risk_renk": st["risk_renk"], "riskReason": st["riskReason"],
         "skor": rec.get("score"),
@@ -1566,7 +1578,7 @@ def get_stock_detail(ticker: str, market: str = "bist") -> dict:
                  if v is not None}
     return {
         "ticker": tkr, "isim": company_name(tkr), "market": market,
-        "para_birimi": base.get("para_birimi", "₺"),
+        "para_birimi": (rec or {}).get("para_birimi") or base.get("para_birimi", "₺"),
         "fiyat": son, "gunluk": base.get("gunluk"),
         "decision": etiket, "renk": renk,
         "guven": base.get("eminlik", "—"),

@@ -101,13 +101,16 @@ def _volume_signal(pct):
     return "yuksek" if pct > 25 else ("dusuk" if pct < -25 else "normal")
 
 
-def market_data(ticker: str) -> dict | None:
+def market_data(ticker: str, market: str = "bist") -> dict | None:
     """yfinance'den ~1 yillik veriyle kompakt teknik ozet uretir. Veri yoksa None."""
     from src.data.factory import get_data_source
-    from src.markets.bist import BIST
 
-    market = BIST()
-    symbol = market.to_symbol(ticker)
+    if market in ("us", "abd"):
+        from src.markets.us import US
+        symbol = US().to_symbol(ticker)
+    else:
+        from src.markets.bist import BIST
+        symbol = BIST().to_symbol(ticker)
     start = (datetime.now(_TZ).date() - timedelta(days=400)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
@@ -176,12 +179,17 @@ def market_data(ticker: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # 2+3) KAP bildirimleri (30 gun) + filtreden gecmis haberler (7 gun)
 # ---------------------------------------------------------------------------
-def gather_news(ticker: str, news_src=None, rss_src=None) -> dict:
+def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") -> dict:
     """KAP 30g bildirimler + RSS (24s) + son 7 gun haberleri tek listede birlestirir.
 
     Tum kaynaklar mevcut filtreden gecer: tazelik (YENI/GUNCEL/ESKI = kademe 0-1-2)
     ve fiyatlanma (FIYATLANDI/FIYATLANMADI/VERI_YOK).
+
+    ABD hisseleri icin KAP ve Turkce RSS uygulanmaz (eslesme olmaz); bos doner.
     """
+    if market in ("us", "abd"):
+        return {"bildirimler": [], "haberler": []}
+
     from src.news.service import get_news_source
     from src.news.freshness import check_news_freshness
     from src.news.priced_in import check_priced_in
@@ -281,39 +289,49 @@ _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
 
 
 def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
-                  context=None) -> dict:
-    """Tek hisse icin tam zincir. Web uyumlu kayit dondurur (veri yoksa skipped)."""
+                  context=None, market: str = "bist") -> dict:
+    """Tek hisse icin tam zincir. Web uyumlu kayit dondurur (veri yoksa skipped).
+
+    market='bist' (varsayilan) veya 'us'/'abd'. ABD'de KAP/Turkce haber, analist
+    konsensusu (hedeffiyat.com.tr) ve sektor korelasyon tablosu uygulanmaz;
+    piyasa verisi + yfinance temel oranlari + makro baglam kullanilir.
+    """
     ticker = ticker.upper().replace(".IS", "")
-    sig = market_data(ticker)
+    is_us = market in ("us", "abd")
+    sig = market_data(ticker, market=market)
     if sig is None:
         return {"ticker": ticker, "skipped": True,
                 "reason": "Piyasa verisi yok - yorum yapilmadi."}
 
-    news = gather_news(ticker, news_src=news_src, rss_src=rss_src)
-    # Analist konsensusu (hedeffiyat + borsaveyatirim)
-    try:
-        from src.news.analyst_source import get_analyst_consensus
-        analist = get_analyst_consensus(ticker)
-    except Exception:
-        analist = {"available": False}
-    # Temel (bilanco) veriler (yfinance .info)
+    news = gather_news(ticker, news_src=news_src, rss_src=rss_src, market=market)
+    # Analist konsensusu (hedeffiyat + borsaveyatirim) - yalniz BIST
+    analist = {"available": False}
+    if not is_us:
+        try:
+            from src.news.analyst_source import get_analyst_consensus
+            analist = get_analyst_consensus(ticker)
+        except Exception:
+            analist = {"available": False}
+    # Temel (bilanco) veriler (yfinance .info) - BIST + ABD
     try:
         from src.news.fundamental_source import get_fundamentals
-        temel = get_fundamentals(ticker)
+        temel = get_fundamentals(ticker, market=market)
     except Exception:
         temel = {"available": False}
-    # Hacim anomalisi (bugun vs son 5 gun ortalamasi)
+    # Hacim anomalisi (bugun vs son 5 gun ortalamasi) - BIST + ABD
     try:
         from src.news.fundamental_source import get_volume_anomaly
-        hacim_anom = get_volume_anomaly(ticker)
+        hacim_anom = get_volume_anomaly(ticker, market=market)
     except Exception:
         hacim_anom = {"available": False}
-    # Sektor korelasyonu (statik makro iliski tablosu)
-    try:
-        from src.news.fundamental_source import get_sector_correlation
-        sektor = get_sector_correlation(ticker)
-    except Exception:
-        sektor = {"available": False}
+    # Sektor korelasyonu (statik makro iliski tablosu) - yalniz BIST
+    sektor = {"available": False}
+    if not is_us:
+        try:
+            from src.news.fundamental_source import get_sector_correlation
+            sektor = get_sector_correlation(ticker)
+        except Exception:
+            sektor = {"available": False}
 
     payload = {
         "ticker": ticker,
@@ -366,6 +384,8 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
     return {
         "ticker": ticker,
         "symbol": sig["sembol"],
+        "market": "abd" if is_us else "bist",
+        "para_birimi": "$" if is_us else "₺",
         "skipped": False,
         # --- AI ham ciktisi ---
         "karar": v.karar,
@@ -417,10 +437,14 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dic
     today = datetime.now(_TZ).date().isoformat()
 
     results = []
-    for t in tickers:
+    for raw in tickers:
+        # "TICKER" (bist) veya "TICKER:us"/"TICKER:abd" formatini destekle
+        t, _, mk = str(raw).partition(":")
+        t = t.strip()
+        market = (mk.strip().lower() or "bist")
         try:
             r = analyze_stock(t, news_src=news_src, rss_src=rss_src,
-                              client=client, context=context)
+                              client=client, context=context, market=market)
         except Exception as e:
             if verbose:
                 print(f"  [{t}] HATA: {type(e).__name__}: {str(e)[:100]}")
