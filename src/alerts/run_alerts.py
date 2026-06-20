@@ -116,9 +116,10 @@ def main():
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")
         return 0
 
-    telegram.send_message(build_message(price_alerts, news_alerts, now))
+    sonuc = telegram.broadcast(build_message(price_alerts, news_alerts, now))
+    ok = [c for c, s in sonuc.items() if s == "ok"]
     print(f"[{now:%Y-%m-%d %H:%M}] {len(price_alerts)} fiyat + "
-          f"{len(news_alerts)} haber uyarisi gonderildi.")
+          f"{len(news_alerts)} haber uyarisi -> {len(ok)}/{len(sonuc)} aliciya gonderildi.")
     return 0
 
 

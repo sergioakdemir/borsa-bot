@@ -148,13 +148,11 @@ def main():
 
     results = evaluate_all(sel["targets"])
     msg = build_message(results, sel, now)
-    try:
-        telegram.send_message(msg)
-        print(f"[{now:%Y-%m-%d %H:%M}] Telegram'a gonderildi ({len(results)} hisse AI yorumu).")
-    except (TelegramNotConfigured, RuntimeError) as e:
-        print(f"[{now:%Y-%m-%d %H:%M}] Telegram gonderim HATASI: {e}")
-        return 1
-    return 0
+    sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)
+    ok = [c for c, s in sonuc.items() if s == "ok"]
+    print(f"[{now:%Y-%m-%d %H:%M}] Telegram broadcast: {len(ok)}/{len(sonuc)} alici "
+          f"({len(results)} hisse). Sonuc: {sonuc}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
