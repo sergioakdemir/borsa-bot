@@ -74,19 +74,40 @@ def _investing_last(url):
 
 
 def get_macro() -> dict:
-    """Makro gostergeleri dondurur (investing.com). Hicbiri gelmezse available=False."""
+    """Makro gostergeleri dondurur (iki kaynak birlesik).
+
+    - USD/TRY ve TR 10 yillik faiz: investing.com (su an calisiyor)
+    - Politika faizi ve TUFE: EVDS3 (EVDS_API_KEY + KYC'li proxy gelince otomatik)
+
+    Hangi kaynak veri verirse o alan dolar; hicbiri gelmezse available=False.
+    """
     now = time.monotonic()
     hit = _CACHE.get("macro")
     if hit and (now - hit[0]) < _TTL:
         return hit[1]
 
-    out = {"available": False, "kaynak": "investing.com"}
+    out = {"available": False, "kaynaklar": []}
+
+    # 1) investing.com -> usdtry, tr_10y_faiz
     for ad, url in _INVESTING.items():
         out[ad] = _investing_last(url)
     if any(out.get(a) is not None for a in _INVESTING):
-        out["available"] = True
-    else:
-        out["neden"] = "investing.com makro verisi alinamadi"
+        out["kaynaklar"].append("investing.com")
+
+    # 2) EVDS3 -> politika_faizi, tufe_yillik (KYC sonrasi otomatik devreye girer)
+    key = os.environ.get("EVDS_API_KEY")
+    out["politika_faizi"] = None
+    out["tufe_yillik"] = None
+    if key:
+        for ad in ("politika_faizi", "tufe_yillik"):
+            code, agg = _EVDS_SERIES[ad]
+            out[ad] = _evds_series(code, agg, key)
+        if out.get("politika_faizi") is not None or out.get("tufe_yillik") is not None:
+            out["kaynaklar"].append("EVDS3")
+
+    out["available"] = bool(out["kaynaklar"])
+    if not out["available"]:
+        out["neden"] = "makro veri alinamadi (investing.com + EVDS3 bos)"
 
     _CACHE["macro"] = (now, out)
     return out
