@@ -1521,14 +1521,22 @@ def ask_bot(soru: str, kullanici=None) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
     comm = _commentary_by_ticker()
-    owned = _owned_by_user(kullanici)
+    owned = set(_owned_by_user(kullanici))
     baglam = []
-    for t in owned:
+    for t in sorted(owned):
         r = comm.get(t)
         if r and not r.get("skipped"):
             baglam.append({"hisse": t, "karar": r.get("final_decision"),
                            "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
                            "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
+    # tum izlenen hisseler (sahip olunmayan hisse sorulari icin kisa baglam)
+    piyasa = []
+    for t, r in comm.items():
+        if r.get("skipped"):
+            continue
+        piyasa.append({"hisse": t, "karar": r.get("final_decision"),
+                       "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
+                       "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
     try:
         from src.news.macro import get_macro
         makro = get_macro()
@@ -1547,6 +1555,7 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                     "sohbet eder gibi yanitla (en fazla birkac cumle)."),
             messages=[{"role": "user", "content":
                        f"Portfoyum: {json.dumps(baglam, ensure_ascii=False)}\n"
+                       f"Izlenen hisseler: {json.dumps(piyasa, ensure_ascii=False)}\n"
                        f"Makro: {json.dumps(makro, ensure_ascii=False)}\n\nSoru: {soru}"}],
         )
         cevap = "".join(getattr(b, "text", "") for b in resp.content
@@ -1556,6 +1565,30 @@ def ask_bot(soru: str, kullanici=None) -> dict:
         return {"ok": True, "cevap": cevap or "Yanıt üretemedim."}
     except Exception as e:
         return {"ok": False, "cevap": f"Hata: {type(e).__name__}"}
+
+
+def get_news(limit: int = 20) -> list[dict]:
+    """Mevcut yorumlardaki haberleri kategori + temsili gorsel ile dondurur."""
+    comm = _commentary_by_ticker()
+    out, seen = [], set()
+    for rec in comm.values():
+        tkr = (rec.get("ticker") or "").upper()
+        etiket5, _ = _karar5(rec.get("final_decision"))
+        etki = ("Negatif" if etiket5 in ("SAT", "AZALT") else
+                "Pozitif" if etiket5 == "AL" else "Nötr")
+        for hb in (rec.get("haberler") or []):
+            k = (hb.get("baslik") or "").strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append({**_haber_gorsel(hb.get("baslik")),
+                        "baslik": hb.get("baslik"), "tarih": hb.get("tarih"),
+                        "kaynak": hb.get("kaynak"), "url": hb.get("url"),
+                        "ticker": tkr, "etki": etki,
+                        "fiyatlanma": hb.get("fiyatlanma"),
+                        "yorum": _ilk_cumleler(rec.get("gerekce", ""), 1)})
+    out.sort(key=lambda n: n.get("fiyatlanma") == "FIYATLANMADI", reverse=True)
+    return out[:limit]
 
 
 # ----------------------------------------------------------------------------
@@ -1662,9 +1695,23 @@ def api_stock(ticker):
 
 
 @app.route("/api/ask", methods=["POST"])
+@app.route("/api/chat", methods=["POST"])
 def api_ask():
     d = request.get_json(silent=True) or {}
-    return jsonify(ask_bot(d.get("soru", ""), d.get("kullanici")))
+    return jsonify(ask_bot(d.get("soru") or d.get("mesaj") or d.get("message", ""),
+                           d.get("kullanici")))
+
+
+@app.route("/api/today-summary")
+def api_today_summary():
+    t = get_today(request.args.get("kullanici"))
+    return jsonify({"selamlama": t["selamlama"], "portfoy_yorum": t["portfoy_yorum"],
+                    "etiketler": t["etiketler"]})
+
+
+@app.route("/api/news")
+def api_news():
+    return jsonify(get_news())
 
 
 if __name__ == "__main__":

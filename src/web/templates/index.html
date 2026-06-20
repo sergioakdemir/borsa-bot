@@ -235,7 +235,7 @@
     backdrop-filter:blur(12px);border-top:1px solid var(--border);padding-bottom:env(safe-area-inset-bottom)}
   nav button{flex:1;background:none;border:none;color:var(--muted2);padding:10px 0 12px;font-size:10.5px;
     font-weight:600;display:flex;flex-direction:column;align-items:center;gap:4px}
-  nav button .ico{font-size:20px;line-height:1;opacity:.6}
+  nav button .ico{width:22px;height:22px;opacity:.55}
   nav button.active{color:var(--text)} nav button.active .ico{opacity:1}
 </style>
 </head>
@@ -264,11 +264,16 @@
 </div>
 
 <nav>
-  <button data-tab="bugun" class="active" onclick="showTab('bugun')"><span class="ico">🏠</span><span>Bugün</span></button>
-  <button data-tab="portfoy" onclick="showTab('portfoy')"><span class="ico">💼</span><span>Portföyüm</span></button>
-  <button data-tab="radar" onclick="showTab('radar')"><span class="ico">🎯</span><span>Radar</span></button>
-  <button data-tab="sor" onclick="showTab('sor')"><span class="ico">💬</span><span>Bota Sor</span></button>
-  <button data-tab="bildirim" onclick="showTab('bildirim')"><span class="ico">🔔</span><span>Bildirimler</span></button>
+  <button data-tab="bugun" class="active" onclick="showTab('bugun')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Bugün</span></button>
+  <button data-tab="portfoy" onclick="showTab('portfoy')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Portföyüm</span></button>
+  <button data-tab="radar" onclick="showTab('radar')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg><span>Radar</span></button>
+  <button data-tab="sor" onclick="showTab('sor')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg><span>Bota Sor</span></button>
+  <button data-tab="bildirim" onclick="showTab('bildirim')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.5 21a1.7 1.7 0 0 1-3 0"/></svg><span>Bildirimler</span></button>
 </nav>
 
 <!-- detay overlay -->
@@ -425,12 +430,39 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
         <div class="grid"><div><div class="lbl">Yatırım</div><b>${money(o.maliyet)}</b></div>
           <div><div class="lbl">Toplam K/Z</div><b class="${signCls(o.kz)}">${money(o.kz)}</b></div></div>
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;
-    if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.");fillOverview();return}
+    const karneBtn=`<button class="seemore" onclick="openKarne()" style="margin-top:16px">📒 Geçmiş Kararlar →</button>`;
+    if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.")+karneBtn;fillOverview();return}
     const gr={bist:"BIST Hisselerim",abd:"ABD Hisselerim",kripto:"Kripto Varlıklarım"};
     ["bist","abd","kripto"].forEach(m=>{const ps=d.pozisyonlar.filter(p=>p.market===m);
       if(ps.length){h+=`<div class="sec-title">${gr[m]}</div>`+ps.map(posCardHTML).join("")}});
-    el.innerHTML=h;fillOverview();
+    el.innerHTML=h+karneBtn;fillOverview();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
+
+/* ---- Gecmis Kararlar (Karne) overlay ---- */
+let DEC_INDEX={};
+async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
+  try{const d=await(await fetch("/api/decisions")).json();const rows=d.satirlar||[];DEC_INDEX={};
+    let h=`<h2 style="font-size:21px;font-weight:800">Geçmiş Kararlar</h2>
+      <div class="tick" style="margin-bottom:14px">Botun verdiği AL/TUT/SAT kararları ve sonuçları</div>`;
+    if(!rows.length)h+=empty("Henüz karar kaydı yok");
+    else h+=rows.map(r=>{DEC_INDEX[r.id]=r;
+      const mk=r.durum==="dogru"?"✅":r.durum==="yanlis"?"❌":"⏳";
+      const sc=r.durum==="dogru"?"green":r.durum==="yanlis"?"red":"gray";
+      return`<div class="card stock-card" onclick="openDecision(${r.id})">
+        <div class="row"><div><div class="name">${mk} ${esc(r.ticker)} — <span class="badge ${r.renk}" style="vertical-align:middle">${esc(r.karar_label)}</span></div>
+          <div class="tick">${esc(r.tarih)} · puan ${r.puan??"—"} · ${esc(r.eminlik)}</div></div>
+          <span class="chip ${sc}">${r.durum==="dogru"?"doğru":r.durum==="yanlis"?"yanıldı":"bekliyor"}</span></div></div>`}).join("");
+    document.getElementById("ov-body").innerHTML=h;
+  }catch(e){document.getElementById("ov-body").innerHTML=empty("Yüklenemedi")}}
+function openDecision(id){const r=DEC_INDEX[id];if(!r)return;
+  document.getElementById("ov-body").innerHTML=`
+    <div class="row"><div><h2 style="font-size:21px;font-weight:800">${esc(r.isim)}</h2>
+      <div class="tick">${esc(r.ticker)} · ${esc(r.tarih)}</div></div>${badge(r.karar_label,r.renk)}</div>
+    <div class="sec-title">1 · Neden bu kararı verdi</div><div class="quote" style="white-space:pre-line">${esc(r.neden)}</div>
+    <div class="sec-title">2 · Neden yanıldı (piyasada ne değişti)</div><div class="quote">${esc(r.yanilma)}</div>
+    <div class="sec-title">3 · Çıkarılan ders</div><div class="quote">${esc(r.ders)}</div>
+    <div class="sec-title">Sonuç</div><div class="quote">${esc(r.sonuc_metin)}</div>
+    <button class="seemore" onclick="openKarne()" style="margin-top:16px">← Tüm kararlar</button>`}
 
 /* ============ RADAR ============ */
 let radarTimer=null;
@@ -466,7 +498,7 @@ function radarSearch(q){clearTimeout(radarTimer);q=(q||"").trim();
   }catch(e){b.innerHTML=empty("Arama yapılamadı")}},300)}
 
 /* ============ BOTA SOR ============ */
-const PRESETS=["Bugün portföyümde dikkat etmem gereken ne var?","En riskli hissem hangisi, neden?","Hangi hisseyi azaltmalıyım?","Piyasada genel hava nasıl?"];
+const PRESETS=["THYAO neden TUT?","Bugün fırsat var mı?","En riskli hissem?","Yeni alım yapmalı mıyım?"];
 let CHAT=[];
 function loadSor(){const el=document.getElementById("page-sor");
   el.innerHTML=`<div class="presets">${PRESETS.map(p=>`<button class="preset" onclick="askPreset('${esc(p).replace(/'/g,"\\'")}')">${esc(p)}</button>`).join("")}</div>
@@ -479,8 +511,8 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
   inp.value="";CHAT.push({rol:"user",metin:q});
   const c=document.getElementById("chat");c.insertAdjacentHTML("beforeend",renderBubble({rol:"user",metin:q}));
   c.insertAdjacentHTML("beforeend",`<div class="bubble bot typing" id="typing">yazıyor…</div>`);scrollChat();
-  try{const r=await fetch("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({soru:q,kullanici:CUR_USER})});const d=await r.json();
+  try{const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER})});const d=await r.json();
     document.getElementById("typing")?.remove();
     const a=d.cevap||"Yanıt üretemedim.";CHAT.push({rol:"bot",metin:a});
     c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:a}));scrollChat();
@@ -489,15 +521,30 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
 
 /* ============ BILDIRIMLER ============ */
 const ICO={firsat:"🟢",uyari:"⚠️",haber:"📰",default:"🔔"};
+const BIL_F=["all","Kritik","Haber","Karar","Fiyat"];
+const KAT_RENK={Kritik:"red",Haber:"gray",Karar:"yellow",Fiyat:"gray"};
+let BIL_FILTER="all";
+function alertKat(a){const k=(a.kaynak||"").toLowerCase(),m=(a.mesaj||"")+(a.baslik||"");
+  if(k.indexOf("fiyat")>=0)return m.indexOf("ACIL")>=0?"Kritik":"Fiyat";
+  if(a.tip==="haber")return"Haber";
+  if(m.indexOf("VETO")>=0||m.indexOf("SAT")>=0||m.indexOf("Güçlü")>=0)return"Kritik";
+  return"Karar"}
 async function loadBildirim(){const el=document.getElementById("page-bildirim");
-  el.innerHTML=`<div class="sec-title">Bildirimler</div><div id="bil-body"><div class="spin">Yükleniyor…</div></div>`;
-  try{const list=await(await fetch("/api/alerts")).json();ALERT_INDEX=list;
-    document.getElementById("bil-body").innerHTML=list.length?list.map((a,i)=>
-      `<div class="alert" onclick="openAlert(${i})"><span class="ico">${ICO[a.tip]||ICO.default}</span>
-        <div style="flex:1;min-width:0"><div class="at">${esc(a.ticker)} · ${esc(a.isim)}</div>
-          <div class="am">${esc(a.mesaj)}</div>${a.tarih?`<div class="ad">${esc(a.tarih)}</div>`:""}</div>
-        <span class="achev">›</span></div>`).join(""):empty("Henüz bildirim yok");
-  }catch(e){document.getElementById("bil-body").innerHTML=empty("Yüklenemedi")}}
+  el.innerHTML=`<div class="sec-title">Bildirimler</div>
+    <div class="filters" id="bil-filters"></div><div id="bil-body"><div class="spin">Yükleniyor…</div></div>`;
+  try{ALERT_INDEX=await(await fetch("/api/alerts")).json();renderBilFilters();renderBil()}
+  catch(e){document.getElementById("bil-body").innerHTML=empty("Yüklenemedi")}}
+function renderBilFilters(){document.getElementById("bil-filters").innerHTML=
+  BIL_F.map(x=>`<button class="${x===BIL_FILTER?'active':''}" onclick="setBilFilter('${x}')">${x==="all"?"Tümü":x}</button>`).join("")}
+function setBilFilter(x){BIL_FILTER=x;document.querySelectorAll("#bil-filters button").forEach((b,i)=>b.classList.toggle("active",BIL_F[i]===x));renderBil()}
+function renderBil(){const b=document.getElementById("bil-body");
+  const items=ALERT_INDEX.map((a,i)=>({a,i,kat:alertKat(a)})).filter(o=>BIL_FILTER==="all"||o.kat===BIL_FILTER);
+  b.innerHTML=items.length?items.map(o=>{const a=o.a;
+    return`<div class="alert" onclick="openAlert(${o.i})"><span class="ico">${ICO[a.tip]||ICO.default}</span>
+      <div style="flex:1;min-width:0"><div class="at">${esc(a.ticker)} · ${esc(a.isim)}
+        <span class="chip ${KAT_RENK[o.kat]||'gray'}" style="font-size:9px;padding:2px 7px;margin-left:4px">${o.kat}</span></div>
+        <div class="am">${esc(a.mesaj)}</div>${a.tarih?`<div class="ad">${esc(a.tarih)}</div>`:""}</div>
+      <span class="achev">›</span></div>`}).join(""):empty("Bu kategoride bildirim yok")}
 function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;
   const link=a.url?`<a class="kaplink" href="${esc(a.url)}" target="_blank">🔗 KAP'ta aç</a>`:"";
   ovShow(`<h2 style="font-size:21px;font-weight:800">${ICO[a.tip]||ICO.default} ${esc(a.ticker)}</h2>
