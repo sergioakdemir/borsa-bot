@@ -21,22 +21,28 @@ _SERIES = {
 }
 
 
-def _proxies():
-    url = os.environ.get("KAP_PROXY_URL")
-    return {"http": url, "https": url} if url else None
-
-
 def _fetch_series(code: str, key: str):
-    """Bir seri icin son degeri dondurur (yoksa None)."""
+    """Bir seri icin son degeri dondurur (yoksa None).
+
+    EVDS API'si yurt disi/datacenter IP'lerinden JSON yerine web SPA (HTML)
+    dondurebilir (cografi engel). Bu durumda JSON parse edilemez -> None.
+    """
+    import requests as rq
     today = datetime.now(_TZ).date()
     start = (today - timedelta(days=45)).strftime("%d-%m-%Y")
     end = today.strftime("%d-%m-%Y")
-    url = f"{_BASE}/series={code}&startDate={start}&endDate={end}&type=json"
+    url = (f"{_BASE}/series={code}&startDate={start}&endDate={end}"
+           f"&type=json&key={key}")
     try:
-        from curl_cffi import requests as creq
-        r = creq.get(url, impersonate="chrome", proxies=_proxies(),
-                     headers={"key": key}, timeout=15)
+        # EVDS icin KAP proxy'si kullanilmaz (host whitelist disinda -> 403);
+        # dogrudan baglanilir. Cografi engelde HTML doner, nazikce None'lanir.
+        r = rq.get(url, headers={"key": key, "Accept": "application/json",
+                                 "User-Agent": "borsa-bot/1.0"},
+                   timeout=15)
         if r.status_code != 200:
+            return None
+        ct = r.headers.get("content-type", "")
+        if "json" not in ct.lower():     # HTML SPA -> API'ye ulasilamadi
             return None
         data = r.json()
     except Exception:
