@@ -616,17 +616,24 @@ def get_search(q: str, market: str = "bist") -> list[dict]:
     return out
 
 
-def get_portfolio() -> dict:
+def get_portfolio(kullanici: str | None = None) -> dict:
+    """Portfoy ozeti. kullanici verilirse (ad, orn. 'serhat') yalniz o kisinin
+    pozisyonlari dondurulur; yoksa tum kullanicilar."""
     comm = _commentary_by_ticker()
     pozisyonlar = []
     toplam_maliyet = toplam_deger = 0.0
 
     with sqlite3.connect(DB_PATH) as c:
         c.row_factory = sqlite3.Row
-        kullanici = {r["id"]: r["ad"]
-                     for r in c.execute("SELECT id, ad FROM kullanici")}
-        rows = [dict(r) for r in c.execute(
-            "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
+        kullanici_map = {r["id"]: r["ad"]
+                         for r in c.execute("SELECT id, ad FROM kullanici")}
+        if kullanici:
+            rows = [dict(r) for r in c.execute(
+                "SELECT p.* FROM portfoy p JOIN kullanici k ON k.id = p.kullanici_id "
+                "WHERE LOWER(k.ad) = LOWER(?) ORDER BY p.id", (kullanici,))]
+        else:
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
 
     for r in rows:
         tkr = (r["ticker"] or "").upper()
@@ -649,7 +656,7 @@ def get_portfolio() -> dict:
             toplam_deger += maliyet
 
         pozisyonlar.append({
-            "kullanici": kullanici.get(r["kullanici_id"], "-"),
+            "kullanici": kullanici_map.get(r["kullanici_id"], "-"),
             "ticker": tkr,
             "isim": company_name(tkr),
             "adet": adet,
@@ -875,7 +882,7 @@ def api_stocks():
 
 @app.route("/api/portfolio")
 def api_portfolio():
-    return jsonify(get_portfolio())
+    return jsonify(get_portfolio(request.args.get("kullanici")))
 
 
 @app.route("/api/karne")

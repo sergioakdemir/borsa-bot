@@ -49,6 +49,45 @@
   .hdr-strip .dot { color: var(--muted-2); }
   .hdr-actions { display: flex; align-items: center; gap: 4px; }
 
+  /* ---------- kullanici cipi (header sag ust) ---------- */
+  .userchip {
+    display: flex; align-items: center; gap: 7px;
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 999px; padding: 4px 11px 4px 4px; font-size: 13px; font-weight: 700;
+    margin-right: 2px;
+  }
+  .userchip:active { background: #202020; }
+  .uc-av, .up-av {
+    border-radius: 999px; background: var(--green); color: #0d0d0d;
+    font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .uc-av { width: 24px; height: 24px; font-size: 12px; }
+  .userchip.u-yigit .uc-av, .up-av.u-yigit { background: var(--blue); }
+
+  /* ---------- kullanici secim ekrani ---------- */
+  .userpick {
+    position: fixed; inset: 0; z-index: 70; background: rgba(8,8,8,.94);
+    backdrop-filter: blur(7px); display: none;
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  .userpick.open { display: flex; }
+  .up-card {
+    width: 100%; max-width: 360px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 22px; padding: 28px 22px;
+    animation: fade .25s ease;
+  }
+  .up-title { font-size: 23px; font-weight: 800; text-align: center; letter-spacing: .2px; }
+  .up-sub { font-size: 13.5px; color: var(--muted); text-align: center; margin: 7px 0 24px; }
+  .up-btn {
+    width: 100%; display: flex; align-items: center; gap: 14px;
+    background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 16px; padding: 15px 16px; font-size: 17px; font-weight: 700; margin-bottom: 12px;
+  }
+  .up-btn:active { background: #202020; border-color: var(--green); }
+  .up-av { width: 36px; height: 36px; font-size: 16px; }
+  .up-close { width: 100%; background: none; border: none; color: var(--muted);
+    font-size: 14px; font-weight: 600; padding: 12px; margin-top: 6px; }
+
   .iconbtn {
     position: relative; background: none; border: none; color: var(--text);
     font-size: 22px; line-height: 1; padding: 7px; border-radius: 12px;
@@ -358,6 +397,9 @@
       </div>
     </div>
     <div class="hdr-actions">
+      <button class="userchip" id="userchip" onclick="openUserPick()" aria-label="Kullanıcı">
+        <span class="uc-av" id="uc-av">?</span><span class="uc-name" id="uc-name">—</span>
+      </button>
       <button class="iconbtn" onclick="openSearch()" aria-label="Ara">🔍</button>
       <button class="iconbtn" onclick="openNotif()" aria-label="Bildirimler">
         🔔<span class="count" id="bell-count" style="display:none">0</span>
@@ -421,12 +463,59 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- kullanici secim ekrani -->
+<div class="userpick" id="userpick">
+  <div class="up-card">
+    <div class="up-title">Kim olduğunu seç</div>
+    <div class="up-sub">Portföyünü görmek için kullanıcı seç</div>
+    <button class="up-btn" onclick="setUser('serhat')"><span class="up-av">S</span>Serhat</button>
+    <button class="up-btn" onclick="setUser('yigit')"><span class="up-av u-yigit">Y</span>Yiğit</button>
+    <button class="up-close" id="up-close" onclick="closeUserPick()" style="display:none">Vazgeç</button>
+  </div>
+</div>
+
 <script>
 const HDR = { ana: "Ana", portfoy: "Portföy", karne: "Karne" };
 const loaded = {};
 let STOCK_INDEX = {};      // "market:ticker" -> kart (detay paneli icin)
 let DECISION_INDEX = {};   // id -> gercek karar
 let CUR_MARKET = "bist";
+
+/* ---------- kullanici secimi ---------- */
+const USERS = { serhat: {ad: "Serhat", av: "S"}, yigit: {ad: "Yiğit", av: "Y"} };
+let CUR_USER = null;
+
+function applyUserChip() {
+  const u = USERS[CUR_USER];
+  if (!u) return;
+  document.getElementById("uc-av").textContent = u.av;
+  document.getElementById("uc-name").textContent = u.ad;
+  document.getElementById("userchip").classList.toggle("u-yigit", CUR_USER === "yigit");
+}
+function openUserPick() {
+  document.getElementById("up-close").style.display = CUR_USER ? "block" : "none";
+  document.getElementById("userpick").classList.add("open");
+}
+function closeUserPick() {
+  if (!CUR_USER) return;                 // ilk acilista secim zorunlu
+  document.getElementById("userpick").classList.remove("open");
+}
+function setUser(k) {
+  if (!USERS[k]) return;
+  CUR_USER = k;
+  try { localStorage.setItem("bb_user", k); } catch (e) {}
+  applyUserChip();
+  document.getElementById("userpick").classList.remove("open");
+  // portfoy kullaniciya bagli -> tazele
+  loaded.portfoy = false;
+  if (document.getElementById("page-portfoy").classList.contains("active")) loadPortfoy();
+}
+function initUser() {
+  let u = null;
+  try { u = localStorage.getItem("bb_user"); } catch (e) {}
+  if (u && USERS[u]) { CUR_USER = u; applyUserChip(); }
+  else { openUserPick(); }               // ilk acilis: secim ekrani
+}
 
 /* ---------- bicimlendirme ---------- */
 function fmt(n, d=2) {
@@ -809,7 +898,8 @@ function closeSheet() {
 async function loadPortfoy() {
   const el = document.getElementById("page-portfoy");
   try {
-    const d = await (await fetch("/api/portfolio")).json();
+    const url = "/api/portfolio" + (CUR_USER ? "?kullanici=" + encodeURIComponent(CUR_USER) : "");
+    const d = await (await fetch(url)).json();
     const o = d.ozet || {};
     let html = `
       <div class="hero">
@@ -963,6 +1053,7 @@ function closeNotif() {
 }
 
 /* ---------- baslat ---------- */
+initUser();
 loadSummary();
 load("ana");
 </script>

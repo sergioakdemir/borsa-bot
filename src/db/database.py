@@ -37,8 +37,9 @@ CREATE TABLE IF NOT EXISTS uyari_kayit (
 );
 CREATE INDEX IF NOT EXISTS ix_uyari_ticker_tarih ON uyari_kayit(ticker, tarih);
 CREATE TABLE IF NOT EXISTS kullanici (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    ad   TEXT NOT NULL UNIQUE
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ad          TEXT NOT NULL UNIQUE,
+    telegram_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS portfoy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,9 +77,17 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(c) -> None:
+    """Eski DB'lere eksik kolonlari ekler (idempotent)."""
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(kullanici)")}
+    if "telegram_id" not in cols:
+        c.execute("ALTER TABLE kullanici ADD COLUMN telegram_id INTEGER")
+
+
 def init_db() -> None:
     with get_conn() as c:
         c.executescript(SCHEMA)
+        _migrate(c)
 
 
 # ---- kaynak sicil ----
@@ -152,6 +161,21 @@ def list_users() -> list[dict]:
 def seed_users():
     for ad in ("serhat", "yigit", "ufuk"):
         add_user(ad)
+
+
+def set_telegram_id(ad, telegram_id) -> None:
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE kullanici SET telegram_id=? WHERE ad=?",
+                  (telegram_id, ad))
+
+
+def get_user_by_telegram_id(telegram_id):
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM kullanici WHERE telegram_id=?",
+                      (telegram_id,)).fetchone()
+        return dict(r) if r else None
 
 
 # ---- portfoy ----
