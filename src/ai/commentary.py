@@ -61,7 +61,11 @@ SYSTEM = (
     "(F/K, PD/DD, ROE, kar marji, borc/ozsermaye, gelir buyumesi, FAVOK marji). "
     "Yuksek F/K/PD/DD pahalilik, dusuk ve pozitif degerler ucuzluk/saglam karlilik "
     "isaret edebilir; yuksek borc/ozsermaye riski artirir; gelir buyumesi ve marjlar "
-    "olumlu sinyaldir. Sade dille (jargon yok) acikla; sayilari girdiden birebir al."
+    "olumlu sinyaldir. Sade dille (jargon yok) acikla; sayilari girdiden birebir al.\n\n"
+    "HACIM ANOMALISI: Veride 'hacim_anomalisi' varsa degerlendir. Bugunku hacim son 5 "
+    "gun ortalamasinin kac kati (kat) ve seviye (NORMAL/YUKSEK/COK YUKSEK). Yuksek "
+    "hacim, fiyat hareketine veya bir habere guclu katilim/ilgi demektir; yonu (yukari/"
+    "asagi) fiyat degisimiyle birlikte yorumla. COK YUKSEK hacim dikkatle izlenmeli."
 )
 
 
@@ -293,6 +297,12 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         temel = get_fundamentals(ticker)
     except Exception:
         temel = {"available": False}
+    # Hacim anomalisi (bugun vs son 5 gun ortalamasi)
+    try:
+        from src.news.fundamental_source import get_volume_anomaly
+        hacim_anom = get_volume_anomaly(ticker)
+    except Exception:
+        hacim_anom = {"available": False}
 
     payload = {
         "ticker": ticker,
@@ -304,6 +314,13 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         payload["temel_veriler"] = {k: temel[k] for k in (
             "fk", "pddd", "roe_%", "kar_marji_%", "borc_ozsermaye",
             "gelir_buyume_%", "favok_marji_%") if temel.get(k) is not None}
+    if hacim_anom.get("available"):
+        payload["hacim_anomalisi"] = {
+            "bugun_hacim": hacim_anom.get("bugun_hacim"),
+            "ort_5g_hacim": hacim_anom.get("ort_5g_hacim"),
+            "kat": hacim_anom.get("kat"),
+            "seviye": hacim_anom.get("seviye"),
+        }
     if analist.get("available"):
         payload["analist_konsensus"] = {
             "analist_sayisi": analist.get("analist_sayisi"),
@@ -355,6 +372,7 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         "kullanilan_on_sinyal": sig,
         "analist": analist if analist.get("available") else None,
         "temel": temel if temel.get("available") else None,
+        "hacim_anomalisi": hacim_anom if hacim_anom.get("available") else None,
     }
 
 
