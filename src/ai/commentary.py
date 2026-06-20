@@ -205,6 +205,8 @@ def gather_news(ticker: str, news_src=None, rss_src=None) -> dict:
             "baslik": it.title,
             "tarih": it.published_at.strftime("%Y-%m-%d %H:%M"),
             "kaynak": it.source,
+            "url": getattr(it, "url", None),
+            "ozet": getattr(it, "summary", None),
             "tazelik": fr.status.value,
             "fiyatlanma": pi_status,
         }

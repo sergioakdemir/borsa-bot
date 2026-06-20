@@ -696,14 +696,8 @@ def get_stocks() -> dict:
     return {"firsatlar": firsatlar, "portfoyum": portfoyum, "takip": takip}
 
 
-def get_search(q: str, market: str = "bist") -> list[dict]:
-    """Piyasaya gore arama: BIST (yerel), ABD (yfinance), Kripto (CoinGecko)."""
-    market = (market or "bist").lower()
-    if market == "abd":
-        return search_us(q)
-    if market == "kripto":
-        return search_crypto(q)
-    # BIST: yerel evrende ticker/sirket adina gore (Turkce duyarsiz)
+def _search_bist(q: str) -> list[dict]:
+    """BIST: yerel evrende ticker/sirket adina gore (Turkce duyarsiz)."""
     nq = _norm(q).strip()
     if not nq:
         return []
@@ -713,6 +707,28 @@ def get_search(q: str, market: str = "bist") -> list[dict]:
         if nq in _norm(t) or nq in _norm(name):
             out.append(_stock_card(comm[t]) if t in comm else _minimal_card(t))
     return out
+
+
+def get_search(q: str, market: str = "bist") -> list[dict]:
+    """Piyasaya gore arama. market='all' -> BIST + ABD + Kripto birlesik."""
+    market = (market or "bist").lower()
+    if market == "abd":
+        return search_us(q)
+    if market == "kripto":
+        return search_crypto(q)
+    if market == "all":
+        # evrensel: uc piyasada birden ara, sonuclari birlestir (BIST once)
+        out = _search_bist(q)
+        try:
+            out += search_us(q)
+        except Exception:
+            pass
+        try:
+            out += search_crypto(q)
+        except Exception:
+            pass
+        return out
+    return _search_bist(q)
 
 
 def get_portfolio(kullanici: str | None = None) -> dict:
@@ -777,6 +793,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
 
         birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
         pozisyonlar.append({
+            "id": r.get("id"),
             "kullanici": kullanici_map.get(r["kullanici_id"], "-"),
             "ticker": tkr,
             "isim": company_name(tkr),
@@ -860,14 +877,8 @@ def _num(x):
         return None
 
 
-def parse_portfolio_image(image: str) -> dict:
-    """Base64 portfoy fotografini Claude vision ile okur, holdings listesi doner."""
-    if not image:
-        return {"ok": False, "hata": "Görsel boş."}
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {"ok": False, "hata": "AI anahtarı (ANTHROPIC_API_KEY) ayarlı değil."}
-
-    # data URL onekini ayikla + media_type belirle
+def _image_block(image: str):
+    """Tek base64/data-url gorseli Claude image content blokuna cevirir (yoksa None)."""
     media_type = "image/png"
     b64 = image
     if image.startswith("data:"):
@@ -875,23 +886,44 @@ def parse_portfolio_image(image: str) -> dict:
             head, b64 = image.split(",", 1)
             media_type = head.split(":", 1)[1].split(";", 1)[0] or media_type
         except (ValueError, IndexError):
-            return {"ok": False, "hata": "Geçersiz görsel verisi."}
-    # gecerli base64 mi?
+            return None
     try:
         base64.b64decode(b64, validate=True)
     except (binascii.Error, ValueError):
-        return {"ok": False, "hata": "Görsel base64 çözülemedi."}
+        return None
+    return {"type": "image", "source": {"type": "base64",
+                                        "media_type": media_type, "data": b64}}
+
+
+def parse_portfolio_image(images) -> dict:
+    """Bir veya birden cok base64 portfoy fotografini Claude vision ile okur.
+
+    Tum fotograflar tek istekte degerlendirilir; tum hisseler birlestirilmis
+    holdings listesi olarak doner.
+    """
+    if isinstance(images, str):
+        images = [images]
+    images = [im for im in (images or []) if im]
+    if not images:
+        return {"ok": False, "hata": "Görsel boş."}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {"ok": False, "hata": "AI anahtarı (ANTHROPIC_API_KEY) ayarlı değil."}
+
+    blocks = []
+    for im in images[:8]:                 # makul ust sinir
+        blk = _image_block(im)
+        if blk:
+            blocks.append(blk)
+    if not blocks:
+        return {"ok": False, "hata": "Geçerli görsel çözülemedi."}
+    blocks.append({"type": "text", "text": _VISION_PROMPT})
 
     try:
         import anthropic
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_VISION_MODEL, max_tokens=1500,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64",
-                                             "media_type": media_type, "data": b64}},
-                {"type": "text", "text": _VISION_PROMPT},
-            ]}],
+            model=_VISION_MODEL, max_tokens=2000,
+            messages=[{"role": "user", "content": blocks}],
         )
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text")
@@ -902,11 +934,12 @@ def parse_portfolio_image(image: str) -> dict:
     if not data or "holdings" not in data:
         return {"ok": False, "hata": "Fotoğraf okunamadı (geçerli veri çıkmadı)."}
 
-    holdings = []
+    holdings, seen = [], set()
     for h in (data.get("holdings") or []):
         tkr = (str(h.get("ticker") or "").upper().replace(".IS", "").strip())
-        if not tkr:
+        if not tkr or tkr in seen:
             continue
+        seen.add(tkr)
         pb = (str(h.get("para_birimi") or "TL").upper())
         pb = "USD" if pb in ("USD", "$", "DOLAR") else "TL"
         holdings.append({
@@ -915,7 +948,7 @@ def parse_portfolio_image(image: str) -> dict:
             "fiyat": _num(h.get("fiyat")),
             "para_birimi": pb,
         })
-    return {"ok": True, "holdings": holdings}
+    return {"ok": True, "holdings": holdings, "foto_sayisi": len(blocks) - 1}
 
 
 def portfolio_add(d: dict) -> dict:
@@ -944,6 +977,20 @@ def portfolio_add(d: dict) -> dict:
         return {"ok": False, "hata": f"Eklenemedi: {type(e).__name__}"}
     return {"ok": True, "ticker": ticker, "adet": adet,
             "fiyat": fiyat, "para_birimi": para_birimi}
+
+
+def portfolio_remove(d: dict) -> dict:
+    """Bir portfoy pozisyonunu id'ye gore siler."""
+    pid = d.get("id")
+    if pid is None:
+        return {"ok": False, "hata": "Pozisyon id gerekli."}
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            cur = c.execute("DELETE FROM portfoy WHERE id=?", (int(pid),))
+            c.commit()
+    except (sqlite3.Error, ValueError, TypeError) as e:
+        return {"ok": False, "hata": f"Silinemedi: {type(e).__name__}"}
+    return {"ok": cur.rowcount > 0, "silinen": cur.rowcount}
 
 
 _AY_TR = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz",
@@ -1099,44 +1146,47 @@ def get_alerts() -> list[dict]:
     Oncelik db.uyari_kayit; bos ise ai_commentary sinyallerinden turetir.
     """
     out = []
+    # 1) Fiyat hareketi uyarilari (uyari_kayit)
     try:
         with sqlite3.connect(DB_PATH) as c:
             c.row_factory = sqlite3.Row
             for r in c.execute(
-                    "SELECT * FROM uyari_kayit ORDER BY id DESC LIMIT 10"):
+                    "SELECT * FROM uyari_kayit ORDER BY id DESC LIMIT 8"):
                 tkr = (r["ticker"] or "").upper()
+                mesaj = f"{r['seviye']} hareket: %{r['degisim']:+.2f}"
                 out.append({
-                    "ticker": tkr,
-                    "isim": company_name(tkr),
-                    "tip": "uyari",
-                    "mesaj": f"{r['seviye']} hareket: %{r['degisim']:+.2f}",
-                    "tarih": r["ts"] or r["tarih"],
+                    "ticker": tkr, "isim": company_name(tkr), "tip": "uyari",
+                    "mesaj": mesaj, "tarih": r["ts"] or r["tarih"],
+                    "baslik": f"{tkr} · {r['seviye']} fiyat hareketi",
+                    "ozet": mesaj, "kaynak": "Fiyat hareketi", "url": None,
                 })
     except sqlite3.Error:
         pass
 
-    if out:
-        return out
-
-    # turetilmis: guclu sinyaller + fiyatlanmamis haberler
+    # 2) AI sinyalleri + fiyatlanmamis haberler (detayli)
     for rec in _commentary_by_ticker().values():
         tkr = (rec.get("ticker") or "").upper()
         etiket, _ = _classify(rec.get("final_decision"))
-        sig = rec.get("kullanilan_on_sinyal", {}) or {}
+        gerekce = rec.get("gerekce") or ""
         if etiket == "AL":
             out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "firsat",
-                        "mesaj": f"{rec.get('final_label', 'AL')} sinyali · skor {rec.get('score')}/10",
-                        "tarih": None})
+                        "mesaj": f"{rec.get('final_label', 'AL')} · skor {rec.get('score')}/10",
+                        "tarih": None, "baslik": f"{tkr} · {rec.get('final_label', 'AL')}",
+                        "ozet": gerekce, "kaynak": "AI Analiz", "url": None})
         elif etiket in ("SAT", "VETO"):
             out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "uyari",
                         "mesaj": f"{rec.get('final_label', etiket)} · dikkat",
-                        "tarih": None})
+                        "tarih": None, "baslik": f"{tkr} · {rec.get('final_label', etiket)}",
+                        "ozet": gerekce, "kaynak": "AI Analiz", "url": None})
         for hb in (rec.get("haberler") or []):
             if hb.get("fiyatlanma") == "FIYATLANMADI":
                 out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "haber",
-                            "mesaj": f"Fiyatlanmamış haber: {hb.get('baslik')}",
-                            "tarih": hb.get("tarih")})
-    return out[:10]
+                            "mesaj": f"Fiyatlanmamış: {hb.get('baslik')}",
+                            "tarih": hb.get("tarih"),
+                            "baslik": hb.get("baslik"),
+                            "ozet": hb.get("ozet") or "Bu haber henüz fiyata yansımamış görünüyor.",
+                            "kaynak": hb.get("kaynak") or "KAP", "url": hb.get("url")})
+    return out[:12]
 
 
 def get_summary() -> dict:
@@ -1215,13 +1265,22 @@ def api_watchlist_remove():
 @app.route("/api/portfolio/parse-image", methods=["POST"])
 def api_portfolio_parse_image():
     d = request.get_json(silent=True) or {}
-    return jsonify(parse_portfolio_image(d.get("image", "")))
+    images = d.get("images")
+    if images is None:
+        images = d.get("image", "")          # geri uyumluluk (tek gorsel)
+    return jsonify(parse_portfolio_image(images))
 
 
 @app.route("/api/portfolio/add", methods=["POST"])
 def api_portfolio_add():
     d = request.get_json(silent=True) or {}
     return jsonify(portfolio_add(d))
+
+
+@app.route("/api/portfolio/remove", methods=["POST"])
+def api_portfolio_remove():
+    d = request.get_json(silent=True) or {}
+    return jsonify(portfolio_remove(d))
 
 
 if __name__ == "__main__":
