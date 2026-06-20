@@ -24,7 +24,9 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify, render_template, request
@@ -792,11 +794,16 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             toplam_deger += maliyet
 
         birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
+        market = "abd" if birim == "$" else "bist"
+        karar5, karar5_renk = _karar5(rec.get("final_decision")) if rec else (None, "gray")
+        rs = (rec.get("risk") or {}).get("score") if rec else None
+        risk_lbl, risk_renk = _risk_etiket(rs)
         pozisyonlar.append({
             "id": r.get("id"),
             "kullanici": kullanici_map.get(r["kullanici_id"], "-"),
             "ticker": tkr,
             "isim": company_name(tkr),
+            "market": market,
             "para_birimi": birim,
             "adet": adet,
             "alis": alis,
@@ -806,6 +813,11 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "kz_yuzde": kz_yuzde,
             "etiket": etiket,
             "renk": renk,
+            # yeni arayuz: sade karar + bot yorumu + risk
+            "karar": karar5, "karar_renk": karar5_renk,
+            "yorum": _ilk_cumleler(rec.get("gerekce", ""), 2) if rec else "",
+            "risk_etiket": risk_lbl, "risk_renk": risk_renk,
+            "risk_sebep": _risk_sebep(rec) if rec else "—",
             "tarih": r.get("alim_tarihi"),
             # hedef/stop kayitli degil -> alis fiyatindan turetilen basit kurallar
             "hedef": round(alis * 1.15, 2) if alis else None,
@@ -813,8 +825,11 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         })
 
     toplam_kz = toplam_deger - toplam_maliyet
+    owned_recs = [comm[t] for t in {p["ticker"] for p in pozisyonlar}
+                  if t in comm and not comm[t].get("skipped")]
     return {
         "pozisyonlar": pozisyonlar,
+        "genel_yorum": _overview_fallback(owned_recs),   # AI yorumu /api/overview ile asenkron
         "ozet": {
             "maliyet": toplam_maliyet,
             "deger": toplam_deger,
@@ -1204,6 +1219,345 @@ def get_summary() -> dict:
     return {"firsat": firsat, "uyari": uyari, "bildirim": len(get_alerts())}
 
 
+# ============================================================================
+# YENI ARAYUZ (5 sekme): Bugun / Portfoyum / Radar / Bota Sor / Bildirimler
+# ============================================================================
+_AI_OVERVIEW_CACHE = {}          # kullanici -> (ts, metin)
+_AI_TTL = 1800.0
+_CHAT_MODEL = "claude-sonnet-4-6"
+_USER_AD = {"serhat": "Serhat", "yigit": "Yiğit", "ufuk": "Ufuk"}
+
+
+def _karar5(fd: str):
+    """final_decision -> sade 5'li etiket (AL/BEKLE/TUT/AZALT/SAT) + renk."""
+    d = (fd or "").upper()
+    return {
+        "AL": ("AL", "green"), "AL_TEMKINLI": ("BEKLE", "yellow"),
+        "TUT": ("TUT", "yellow"), "VETO": ("BEKLE", "yellow"),
+        "SAT": ("AZALT", "red"), "GUCLU_SAT": ("SAT", "red"),
+    }.get(d, ("TUT", "yellow"))
+
+
+def _risk_etiket(score):
+    if score is None:
+        return ("—", "gray")
+    if score >= 7:
+        return ("Yüksek risk", "red")
+    if score >= 4:
+        return ("Orta risk", "yellow")
+    return ("Düşük risk", "green")
+
+
+def _risk_sebep(rec: dict) -> str:
+    sig = rec.get("kullanilan_on_sinyal", {}) or {}
+    sek = rec.get("sektor_korelasyonu") or {}
+    parts = []
+    if (sig.get("volatilite_%") or 0) >= 2.5:
+        parts.append("fiyat oynak")
+    temel = rec.get("temel") or {}
+    if (temel.get("borc_ozsermaye") or 0) and temel["borc_ozsermaye"] >= 80:
+        parts.append("borç yüksek")
+    if sek.get("ozet"):
+        parts.append(sek["ozet"].lower())
+    return "; ".join(parts) or (rec.get("risk", {}) or {}).get("message", "").rstrip(".") or "—"
+
+
+def _haber_gorsel(baslik: str):
+    """Haber kategorisi -> ikon + gradient (kategori bazli temsili gorsel)."""
+    t = _norm(baslik or "")
+    if any(w in t for w in ("savas", "ates", "hurmuz", "iran", "israil", "jeopolit",
+                            "saldiri", "ambargo", "gerilim", "catisma")):
+        return {"kategori": "Jeopolitik", "ikon": "🌍",
+                "gradient": "linear-gradient(135deg,#ef4444,#f59e0b)"}
+    if any(w in t for w in ("faiz", "enflasyon", "tufe", "dolar", "kur", "merkez",
+                            "tcmb", "fed", "makro", "buyume", "resesyon")):
+        return {"kategori": "Makro", "ikon": "📊",
+                "gradient": "linear-gradient(135deg,#3b82f6,#8b5cf6)"}
+    if any(w in t for w in ("petrol", "enerji", "dogalgaz", "elektrik", "celik",
+                            "emtia", "altin", "gumus")):
+        return {"kategori": "Enerji/Sektör", "ikon": "⚡",
+                "gradient": "linear-gradient(135deg,#f59e0b,#f97316)"}
+    if any(w in t for w in ("bilanco", "kar", "temettu", "ihrac", "sozlesme", "yatirim",
+                            "fabrika", "satin alma", "birlesme", "hat", "siparis")):
+        return {"kategori": "Şirket", "ikon": "🏢",
+                "gradient": "linear-gradient(135deg,#00c853,#14b8a6)"}
+    return {"kategori": "Piyasa", "ikon": "📈",
+            "gradient": "linear-gradient(135deg,#8b5cf6,#3b82f6)"}
+
+
+def _mini_view(rec: dict) -> dict:
+    """Commentary kaydindan sade kart (Bugun/Radar icin)."""
+    tkr = (rec.get("ticker") or "").upper()
+    etiket, renk = _karar5(rec.get("final_decision"))
+    sig = rec.get("kullanilan_on_sinyal", {}) or {}
+    rs = (rec.get("risk") or {}).get("score")
+    risk_lbl, risk_renk = _risk_etiket(rs)
+    return {
+        "ticker": tkr, "isim": company_name(tkr), "market": "bist",
+        "etiket": etiket, "renk": renk,
+        "fiyat": sig.get("son_kapanis"), "gunluk": sig.get("gunluk_degisim_%"),
+        "para_birimi": "₺",
+        "yorum": _ilk_cumleler(rec.get("gerekce", ""), 2),
+        "risk_etiket": risk_lbl, "risk_renk": risk_renk, "risk_sebep": _risk_sebep(rec),
+        "skor": rec.get("score"),
+    }
+
+
+def _owned_by_user(kullanici=None) -> list[str]:
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            if kullanici:
+                q = ("SELECT DISTINCT p.ticker FROM portfoy p JOIN kullanici k "
+                     "ON k.id = p.kullanici_id WHERE LOWER(k.ad)=LOWER(?)")
+                rows = c.execute(q, (kullanici,))
+            else:
+                rows = c.execute("SELECT DISTINCT ticker FROM portfoy")
+            return [(r[0] or "").upper().split(".")[0] for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def _overview_fallback(recs) -> str:
+    """AI'siz, aninda gosterilebilen deterministik portfoy ozeti."""
+    if not recs:
+        return "Portföyünde takip ettiğimiz hisse yok. Radar sekmesinden fırsatlara göz atabilirsin."
+    al = sum(1 for r in recs if _karar5(r.get("final_decision"))[0] == "AL")
+    sat = sum(1 for r in recs if _karar5(r.get("final_decision"))[0] in ("SAT", "AZALT"))
+    riskli = sum(1 for r in recs if ((r.get("risk") or {}).get("score") or 0) >= 7)
+    return (f"Portföyünde {len(recs)} hisse var: {al} tanesi olumlu, {sat} tanesi "
+            f"satış/azaltma yönünde, {riskli} hissede risk yüksek. "
+            "Genelde panik gerektiren bir tablo yok; riskli olanları yakından izle.")
+
+
+def _portfolio_overview(kullanici, recs) -> str:
+    """Portfoy geneli icin 2-3 cumle Claude yorumu (kullanici basina onbellekli).
+
+    YAVAS olabilir (canli Claude); arayuz bunu /api/overview ile ASENKRON ceker.
+    """
+    if not recs:
+        return _overview_fallback(recs)
+    ck = (kullanici or "_").lower()
+    hit = _AI_OVERVIEW_CACHE.get(ck)
+    if hit and (time.monotonic() - hit[0]) < _AI_TTL:
+        return hit[1]
+    fallback = _overview_fallback(recs)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return fallback
+    try:
+        import anthropic
+        ozet = [{"hisse": r.get("ticker"), "karar": r.get("final_decision"),
+                 "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
+                 "not": _ilk_cumleler(r.get("gerekce", ""), 1)} for r in recs]
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model=_CHAT_MODEL, max_tokens=300,
+            system=("Sen kullanicinin kisisel borsa asistanisin. Sade, sicak Turkce; "
+                    "jargon yok. Portfoyun GENEL durumunu 2-3 cumlede ozetle: panik mi "
+                    "var, nelere dikkat etmeli. Sadece verilen veriyi kullan, rakam uydurma. "
+                    "Markdown, baslik, yildiz veya madde KULLANMA; sadece duz cumleler yaz."),
+            messages=[{"role": "user", "content":
+                       "Portfoy hisseleri:\n" + json.dumps(ozet, ensure_ascii=False)}],
+        )
+        txt = "".join(getattr(b, "text", "") for b in resp.content
+                      if getattr(b, "type", "") == "text").strip()
+        txt = re.sub(r"[#*`>_]+", "", txt).strip() or fallback
+    except Exception:
+        txt = fallback
+    _AI_OVERVIEW_CACHE[ck] = (time.monotonic(), txt)
+    return txt
+
+
+def get_today(kullanici=None) -> dict:
+    comm = _commentary_by_ticker()
+    owned = _owned_by_user(kullanici)
+    recs = [comm[t] for t in owned if t in comm and not comm[t].get("skipped")]
+
+    saat = datetime.now(ZoneInfo("Europe/Istanbul")).hour
+    selam = ("Günaydın" if 5 <= saat < 12 else
+             "İyi günler" if 12 <= saat < 18 else "İyi akşamlar")
+    ad = _USER_AD.get((kullanici or "").lower(), (kullanici or "").title() or "")
+
+    hisseler = [_mini_view(r) for r in recs]
+    sat_n = sum(1 for h in hisseler if h["etiket"] in ("SAT", "AZALT"))
+    risk_n = sum(1 for h in hisseler if h["risk_renk"] == "red")
+    koru_n = sum(1 for h in hisseler if h["etiket"] in ("TUT", "BEKLE", "AL"))
+    etiketler = [
+        {"metin": "Panik yok" if sat_n == 0 else "Dikkatli ol",
+         "renk": "green" if sat_n == 0 else "red"},
+        {"metin": f"{risk_n} hisse dikkat", "renk": "yellow"},
+        {"metin": f"{koru_n} pozisyon koru", "renk": "gray"},
+    ]
+
+    # Bugunun onemli haberi: tum yorumlardaki haberlerden en dikkat cekici
+    haber = None
+    best = None
+    for rec in comm.values():
+        for hb in (rec.get("haberler") or []):
+            puan = (2 if hb.get("fiyatlanma") == "FIYATLANMADI" else 0) + \
+                   (1 if hb.get("tazelik") == "YENI" else 0)
+            if best is None or puan > best[0]:
+                best = (puan, rec, hb)
+    if best:
+        _, rec, hb = best
+        tkr = (rec.get("ticker") or "").upper()
+        gor = _haber_gorsel(hb.get("baslik"))
+        etiket5, _ = _karar5(rec.get("final_decision"))
+        etki = ("Negatif" if etiket5 in ("SAT", "AZALT") else
+                "Pozitif" if etiket5 == "AL" else "Nötr")
+        haber = {**gor, "baslik": hb.get("baslik"), "tarih": hb.get("tarih"),
+                 "kaynak": hb.get("kaynak"), "url": hb.get("url"),
+                 "etkilenen": [tkr], "etki": etki,
+                 "yorum": _ilk_cumleler(rec.get("gerekce", ""), 2)}
+
+    firsatlar = [_mini_view(r) for r in comm.values()
+                 if _karar5(r.get("final_decision"))[0] == "AL"
+                 and (r.get("score") or 0) >= _OPPORTUNITY_MIN]
+    firsatlar.sort(key=lambda c: c.get("skor") or 0, reverse=True)
+
+    return {
+        "selamlama": f"{selam}{(' ' + ad) if ad else ''}",
+        "portfoy_yorum": _overview_fallback(recs),   # AI yorumu /api/overview ile asenkron
+        "etiketler": etiketler,
+        "hisseler": hisseler,
+        "onemli_haber": haber,
+        "firsatlar": firsatlar[:5],
+    }
+
+
+def get_radar(market: str = "all") -> dict:
+    comm = _commentary_by_ticker()
+    wl = _load_watchlist()
+    izleme_kodlar = {t.upper() for t in wl.get("kisisel", [])}
+
+    alinabilir, riskli = [], []
+    for rec in comm.values():
+        etiket, _ = _karar5(rec.get("final_decision"))
+        mv = _mini_view(rec)
+        if etiket == "AL":
+            alinabilir.append(mv)
+        elif etiket in ("SAT", "AZALT"):
+            riskli.append(mv)
+    alinabilir.sort(key=lambda c: c.get("skor") or 0, reverse=True)
+    izleme = [_mini_view(comm[t]) if t in comm else
+              {"ticker": t, "isim": company_name(t), "market": "bist",
+               "etiket": None, "renk": "gray", "fiyat": None, "gunluk": None,
+               "para_birimi": "₺", "yorum": "Veri bekleniyor", "risk_etiket": "—",
+               "risk_renk": "gray", "risk_sebep": "—"}
+              for t in izleme_kodlar]
+    return {"alinabilir": alinabilir, "izleme": izleme, "riskli": riskli}
+
+
+def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
+    """Son ~gun gunluk kapanis serisi + destek/direnc icin yuksek/dusuk."""
+    from src.data.factory import get_data_source
+    t = (ticker or "").upper().replace(".IS", "")
+    symbol = t if market in ("abd", "kripto") else f"{t}.IS"
+    start = (datetime.now(ZoneInfo("Europe/Istanbul")).date()
+             - timedelta(days=gun + 20)).isoformat()
+    try:
+        df = get_data_source().get_history(symbol, start=start)
+        df = df[df["Volume"] > 0].tail(gun)
+    except Exception:
+        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
+    if df is None or df.empty:
+        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
+    import pandas as pd
+    seri = [{"t": pd.Timestamp(ix).date().isoformat(), "c": round(float(c), 2)}
+            for ix, c in df["Close"].items()]
+    return {"seri": seri,
+            "dusuk": round(float(df["Low"].min()), 2),
+            "yuksek": round(float(df["High"].max()), 2),
+            "son": round(float(df["Close"].iloc[-1]), 2)}
+
+
+def get_stock_detail(ticker: str, market: str = "bist") -> dict:
+    tkr = (ticker or "").upper().replace(".IS", "")
+    comm = _commentary_by_ticker()
+    rec = comm.get(tkr)
+    base = _stock_card(rec) if rec else _minimal_card(tkr)
+    etiket, renk = _karar5(rec.get("final_decision")) if rec else (None, "gray")
+
+    ps = _price_series(tkr, market)
+    son = ps["son"] or base.get("fiyat")
+    analist = (rec or {}).get("analist") or {}
+    hedef = analist.get("ortalama_hedef") or (round(son * 1.15, 2) if son else None)
+    destek = ps["dusuk"]
+    direnc = ps["yuksek"]
+    stop = round(son * 0.92, 2) if son else None
+
+    haberler = []
+    for hb in ((rec or {}).get("haberler") or [])[:3]:
+        haberler.append({**_haber_gorsel(hb.get("baslik")),
+                         "baslik": hb.get("baslik"), "tarih": hb.get("tarih"),
+                         "kaynak": hb.get("kaynak"), "url": hb.get("url"),
+                         "etki": ("Negatif" if hb.get("fiyatlanma") == "FIYATLANMADI"
+                                  and etiket in ("SAT", "AZALT") else "Nötr")})
+
+    benzer = None
+    rs = (rec or {}).get("risk", {}) or {}
+    return {
+        "ticker": tkr, "isim": company_name(tkr), "market": market,
+        "para_birimi": base.get("para_birimi", "₺"),
+        "fiyat": son, "gunluk": base.get("gunluk"),
+        "etiket": etiket, "renk": renk,
+        "guven": base.get("eminlik", "—"),
+        "risk_etiket": _risk_etiket(rs.get("score"))[0],
+        "risk_renk": _risk_etiket(rs.get("score"))[1],
+        "yorum": (rec or {}).get("gerekce", "") or "Bu hisse için henüz AI yorumu yok.",
+        "risk_sebep": _risk_sebep(rec) if rec else "—",
+        "seviyeler": {"destek": destek, "direnc": direnc, "hedef": hedef, "stop": stop},
+        "grafik": ps["seri"],
+        "haberler": haberler,
+        "analist": analist if analist.get("available") else None,
+        "temel": (rec or {}).get("temel"),
+        "benzer_donem": benzer,
+    }
+
+
+def ask_bot(soru: str, kullanici=None) -> dict:
+    soru = (soru or "").strip()
+    if not soru:
+        return {"ok": False, "cevap": "Bir soru yaz."}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
+    comm = _commentary_by_ticker()
+    owned = _owned_by_user(kullanici)
+    baglam = []
+    for t in owned:
+        r = comm.get(t)
+        if r and not r.get("skipped"):
+            baglam.append({"hisse": t, "karar": r.get("final_decision"),
+                           "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
+                           "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
+    try:
+        from src.news.macro import get_macro
+        makro = get_macro()
+    except Exception:
+        makro = {}
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model=_CHAT_MODEL, max_tokens=600,
+            system=("Sen kullanicinin kisisel borsa asistanisin. Sade, net, sicak Turkce "
+                    "konus; jargon (RSI/MACD) yok. Yanitlarini SADECE verilen baglama "
+                    "(kullanicinin portfoyu + makro) dayandir; baglamda yoksa 'elimde bu "
+                    "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir. "
+                    "Markdown, tablo, baslik veya yildiz KULLANMA; kisa, duz cumlelerle "
+                    "sohbet eder gibi yanitla (en fazla birkac cumle)."),
+            messages=[{"role": "user", "content":
+                       f"Portfoyum: {json.dumps(baglam, ensure_ascii=False)}\n"
+                       f"Makro: {json.dumps(makro, ensure_ascii=False)}\n\nSoru: {soru}"}],
+        )
+        cevap = "".join(getattr(b, "text", "") for b in resp.content
+                        if getattr(b, "type", "") == "text").strip()
+        cevap = re.sub(r"^[#>\-\*\s]*\|.*$", "", cevap, flags=re.M)   # tablo satirlari
+        cevap = re.sub(r"[#*`_]+", "", cevap).strip()
+        return {"ok": True, "cevap": cevap or "Yanıt üretemedim."}
+    except Exception as e:
+        return {"ok": False, "cevap": f"Hata: {type(e).__name__}"}
+
+
 # ----------------------------------------------------------------------------
 # rotalar
 # ----------------------------------------------------------------------------
@@ -1281,6 +1635,36 @@ def api_portfolio_add():
 def api_portfolio_remove():
     d = request.get_json(silent=True) or {}
     return jsonify(portfolio_remove(d))
+
+
+@app.route("/api/today")
+def api_today():
+    return jsonify(get_today(request.args.get("kullanici")))
+
+
+@app.route("/api/overview")
+def api_overview():
+    kullanici = request.args.get("kullanici")
+    comm = _commentary_by_ticker()
+    recs = [comm[t] for t in _owned_by_user(kullanici)
+            if t in comm and not comm[t].get("skipped")]
+    return jsonify({"yorum": _portfolio_overview(kullanici, recs)})
+
+
+@app.route("/api/radar")
+def api_radar():
+    return jsonify(get_radar(request.args.get("market", "all")))
+
+
+@app.route("/api/stock/<ticker>")
+def api_stock(ticker):
+    return jsonify(get_stock_detail(ticker, request.args.get("market", "bist")))
+
+
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    d = request.get_json(silent=True) or {}
+    return jsonify(ask_bot(d.get("soru", ""), d.get("kullanici")))
 
 
 if __name__ == "__main__":
