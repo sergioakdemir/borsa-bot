@@ -77,7 +77,7 @@ _VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
 # Portfoy ticker -> bigpara fiyat kaynagi (yfinance'de olmayan/yanlis gelen
 # enstrumanlar icin). KAP_PROXY_URL uzerinden cekilir. Deger = bigpara URL slug'i.
 _BIGPARA_SOURCES = {
-    "GMSTR.F": "gmstrf-finans-portfoy-gumus-byf-detay",
+    "GMSTR.F": "gmstr-qnb-portfoy-gumus-katilim-byf-detay",
 }
 
 
