@@ -71,7 +71,7 @@ _WL_LOCK = threading.Lock()
 _SEARCH_CACHE: dict[str, tuple[float, list]] = {}
 _SEARCH_TTL = 60.0  # saniye
 
-_OPPORTUNITY_MIN = 8  # firsat bolgesine girmek icin gereken puan
+_OPPORTUNITY_MIN = 7  # firsat bolgesine girmek icin gereken puan
 _VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
 
 # Portfoy ticker -> bigpara fiyat kaynagi (yfinance'de olmayan/yanlis gelen
