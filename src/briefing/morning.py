@@ -106,6 +106,19 @@ def evaluate_all(targets):
             note = f"eminlik={r['eminlik']} risk={r['risk']['score']} veto={r['vetoed']} haber={r['haber_sayisi']}"
             audit.log_decision(stock["symbol"], status, "EVALUATED",
                                decision=r["final_decision"], score=r["score"], note=note)
+            # Gercek karar gunlugu: her AL/TUT/SAT karari decisions tablosuna yazilir
+            # (sonuc=None; ileride fiyat takibiyle doldurulacak).
+            try:
+                db.record_decision(
+                    ticker=r["ticker"],
+                    karar=r["final_decision"],
+                    puan=r.get("score"),
+                    risk=(r.get("risk") or {}).get("score"),
+                    eminlik=r.get("eminlik"),
+                    gerekce=r.get("gerekce"),
+                )
+            except Exception as e:
+                print(f"  [karar-kaydi] {r['ticker']} yazilamadi: {type(e).__name__}: {e}")
     audit.log_run_end(ev, sk)
     return results
 

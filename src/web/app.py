@@ -16,17 +16,31 @@ API:
 - /api/summary    -> firsat / uyari sayilari (ust serit)
 """
 import json
+import re
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
+import requests
 from flask import Flask, jsonify, render_template, request
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 CONFIG = ROOT / "config"
 DB_PATH = DATA / "borsa.db"
+WATCHLIST_PATH = CONFIG / "watchlist.json"
 
 app = Flask(__name__)
+
+# watchlist.json yazimlarini serilestir (eszamanli istek korumasi)
+_WL_LOCK = threading.Lock()
+
+# Disari acilan arama sonuclari icin kucuk TTL onbellegi (rate-limit korumasi)
+_SEARCH_CACHE: dict[str, tuple[float, list]] = {}
+_SEARCH_TTL = 60.0  # saniye
+
+_OPPORTUNITY_MIN = 8  # firsat bolgesine girmek icin gereken puan
 
 
 # ----------------------------------------------------------------------------
@@ -164,14 +178,108 @@ def _son_haber(rec: dict) -> dict | None:
     }
 
 
+def _ilk_cumleler(metin: str, n: int = 2) -> str:
+    """Bir metnin ilk n cumlesini dondurur (kisa AI ozeti icin).
+
+    Cumle sonu = nokta/unlem/soru + bosluk. Ondalik sayilar (1.89) icinde
+    bosluk olmadigi icin yanlislikla bolunmez.
+    """
+    metin = (metin or "").strip()
+    if not metin:
+        return ""
+    parcalar = re.split(r"(?<=[.!?])\s+", metin)
+    return " ".join(parcalar[:n]).strip()
+
+
+def _ozet(rec: dict) -> str:
+    """Detay panelinin ustundeki kisa AI ozeti (2-3 cumle, sade)."""
+    return _ilk_cumleler(rec.get("gerekce", ""), 3)
+
+
+def _firsat_neden(rec: dict) -> str:
+    """Firsat serisindeki kart icin tek cumlelik 'neden' metni."""
+    gozlemler = rec.get("gozlemler") or []
+    if gozlemler:
+        return str(gozlemler[0]).strip()
+    return _ilk_cumleler(rec.get("gerekce", ""), 1)
+
+
+_ETIKET_SADE = {
+    "AL": "almayı düşünebileceğin, olumlu görünen bir hisse",
+    "SAT": "satış baskısı olan, dikkatli olunması gereken bir hisse",
+    "TUT": "şu an için beklemenin/elde tutmanın mantıklı göründüğü bir hisse",
+    "VETO": "bir risk nedeniyle sistemin şimdilik uzak durmayı önerdiği bir hisse",
+}
+
+
+def _aciklama(card: dict) -> str:
+    """Yeni başlayan birine yönelik, sade Türkçe açıklama üretir.
+
+    Yapay zekâ çağrısı yapmaz; karttaki yapısal sinyallerden cümle kurar.
+    """
+    isim = card.get("isim") or card.get("ticker")
+    etiket = card.get("etiket") or "TUT"
+    skor = card.get("skor")
+    risk = card.get("risk")
+    trend = card.get("trend")
+    eminlik = (card.get("eminlik") or "").lower()
+    hacim = card.get("hacim")
+
+    s = []
+    s.append(f"Sistem {isim} için “{etiket}” diyor — yani "
+             f"{_ETIKET_SADE.get(etiket, 'kararsız kalınan bir hisse')}.")
+
+    if skor is not None:
+        if skor >= 8:
+            nitelik = "oldukça güçlü"
+        elif skor >= 6:
+            nitelik = "iyiye yakın ama temkinli"
+        elif skor >= 4:
+            nitelik = "ortalama / belirsiz"
+        else:
+            nitelik = "zayıf"
+        s.append(f"Puan {skor}/10: hissenin şu anki teknik görünümü {nitelik}. "
+                 f"Puan 10'a yaklaştıkça tablo daha olumlu demektir.")
+
+    if risk is not None:
+        if risk >= 7:
+            rs = "yüksek risk — fiyat sert oynayabilir, dikkatli ol"
+        elif risk >= 4:
+            rs = "orta risk — normal dalgalanma beklenir"
+        else:
+            rs = "düşük risk — fiyat görece sakin"
+        s.append(f"Risk {risk}/10: {rs}.")
+
+    if trend == "yukselen":
+        s.append("Fiyat son dönemde yukarı yönlü hareket ediyor (yükselen trend).")
+    elif trend == "dusen":
+        s.append("Fiyat son dönemde aşağı yönlü hareket ediyor (düşen trend).")
+    elif trend:
+        s.append("Fiyat son dönemde yatay, belirgin bir yön yok.")
+
+    if hacim == "yuksek":
+        s.append("İşlem hacmi yüksek; yani harekete katılım güçlü, sinyal daha güvenilir.")
+    elif hacim == "dusuk":
+        s.append("İşlem hacmi düşük; az kişi alıp sattığı için sinyali temkinli karşıla.")
+
+    if eminlik:
+        s.append(f"Sistemin bu yorumdaki güveni: {eminlik}. "
+                 "Güven düşükse veriyle birlikte kendi araştırmanı da yap.")
+
+    s.append("Not: Bu bir yatırım tavsiyesi değil, sistemin verilerden çıkardığı bir yorumdur.")
+    return "\n".join(s)
+
+
 def _stock_card(rec: dict) -> dict:
     """ai_commentary kaydini zengin karta cevirir."""
     sig = rec.get("kullanilan_on_sinyal", {}) or {}
     etiket, renk = _classify(rec.get("final_decision"))
     tkr = (rec.get("ticker") or "").upper()
-    return {
+    card = {
         "ticker": tkr,
         "isim": company_name(tkr),
+        "market": "bist",
+        "para_birimi": "₺",
         "etiket": etiket,
         "renk": renk,
         "label_full": rec.get("final_label", ""),
@@ -186,11 +294,15 @@ def _stock_card(rec: dict) -> dict:
         "hacim": sig.get("hacim_sinyali"),
         # detay panel
         "yorum": rec.get("gerekce", ""),
+        "ozet": _ozet(rec),
         "gozlemler": rec.get("gozlemler", []),
         "puan_detay": _puan_detay(rec, sig),
         "son_haber": _son_haber(rec),
+        "firsat_neden": _firsat_neden(rec),
         "has_data": True,
     }
+    card["aciklama"] = _aciklama(card)
+    return card
 
 
 def _minimal_card(ticker: str) -> dict:
@@ -198,11 +310,13 @@ def _minimal_card(ticker: str) -> dict:
     t = (ticker or "").upper()
     return {
         "ticker": t, "isim": company_name(t),
+        "market": "bist", "para_birimi": "₺",
         "etiket": None, "renk": "yellow", "label_full": "",
         "fiyat": None, "gunluk": None, "donem": None,
         "skor": None, "risk": None, "eminlik": "—",
         "trend": None, "fiyat_konumu": None, "hacim": None,
-        "yorum": "", "gozlemler": [], "puan_detay": {}, "son_haber": None,
+        "yorum": "", "ozet": "", "aciklama": "", "gozlemler": [],
+        "puan_detay": {}, "son_haber": None, "firsat_neden": "",
         "has_data": False,
     }
 
@@ -211,6 +325,215 @@ def _commentary_by_ticker() -> dict:
     out = {}
     for x in _read_json(DATA / "ai_commentary.json", []):
         out[(x.get("ticker") or "").upper()] = x
+    return out
+
+
+# ----------------------------------------------------------------------------
+# takip listesi (watchlist.json) okuma/yazma
+# ----------------------------------------------------------------------------
+def _load_watchlist() -> dict:
+    wl = _read_json(WATCHLIST_PATH, {})
+    if not isinstance(wl, dict):
+        wl = {}
+    wl.setdefault("bist_endeks", [])
+    wl.setdefault("kisisel", [])         # BIST kisisel takip (brifing bunu okur)
+    wl.setdefault("kisisel_diger", [])   # ABD/Kripto takip (brifing yok sayar)
+    return wl
+
+
+def _save_watchlist(wl: dict) -> None:
+    WATCHLIST_PATH.write_text(
+        json.dumps(wl, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def watchlist_add(ticker: str, market: str = "bist",
+                  isim: str = "", cg_id: str = "") -> dict:
+    ticker = (ticker or "").upper().strip().replace(".IS", "")
+    market = (market or "bist").lower()
+    if not ticker:
+        return {"ok": False, "hata": "ticker bos"}
+    with _WL_LOCK:
+        wl = _load_watchlist()
+        if market == "bist":
+            if ticker not in [t.upper() for t in wl["kisisel"]]:
+                wl["kisisel"].append(ticker)
+        else:
+            key = (ticker, market)
+            if not any((d.get("ticker"), d.get("market")) == key
+                       for d in wl["kisisel_diger"]):
+                wl["kisisel_diger"].append({
+                    "ticker": ticker, "market": market,
+                    "isim": isim or ticker, "cg_id": cg_id})
+        _save_watchlist(wl)
+    return {"ok": True, "ticker": ticker, "market": market}
+
+
+def watchlist_remove(ticker: str, market: str = "bist") -> dict:
+    ticker = (ticker or "").upper().strip().replace(".IS", "")
+    market = (market or "bist").lower()
+    with _WL_LOCK:
+        wl = _load_watchlist()
+        if market == "bist":
+            wl["kisisel"] = [t for t in wl["kisisel"]
+                             if t.upper() != ticker]
+        else:
+            wl["kisisel_diger"] = [d for d in wl["kisisel_diger"]
+                                   if not (d.get("ticker") == ticker
+                                           and d.get("market") == market)]
+        _save_watchlist(wl)
+    return {"ok": True, "ticker": ticker, "market": market}
+
+
+# ----------------------------------------------------------------------------
+# disari acilan piyasa aramasi (ABD: yfinance, Kripto: CoinGecko)
+# ----------------------------------------------------------------------------
+def _cache_get(key: str):
+    hit = _SEARCH_CACHE.get(key)
+    if hit and (time.monotonic() - hit[0]) < _SEARCH_TTL:
+        return hit[1]
+    return None
+
+
+def _cache_set(key: str, val: list):
+    _SEARCH_CACHE[key] = (time.monotonic(), val)
+
+
+def _us_card(symbol, isim, fiyat=None, gunluk=None, borsa="") -> dict:
+    return {
+        "ticker": symbol, "isim": isim or symbol,
+        "market": "abd", "para_birimi": "$", "borsa": borsa,
+        "fiyat": fiyat, "gunluk": gunluk,
+        "etiket": None, "renk": "yellow", "label_full": "",
+        "skor": None, "risk": None, "eminlik": "—",
+        "yorum": "", "ozet": "", "aciklama": "", "gozlemler": [],
+        "puan_detay": {}, "son_haber": None, "firsat_neden": "",
+        "has_data": fiyat is not None,
+    }
+
+
+def _crypto_card(symbol, isim, fiyat=None, gunluk=None, cg_id="") -> dict:
+    return {
+        "ticker": symbol, "isim": isim or symbol,
+        "market": "kripto", "para_birimi": "$", "cg_id": cg_id,
+        "fiyat": fiyat, "gunluk": gunluk,
+        "etiket": None, "renk": "yellow", "label_full": "",
+        "skor": None, "risk": None, "eminlik": "—",
+        "yorum": "", "ozet": "", "aciklama": "", "gozlemler": [],
+        "puan_detay": {}, "son_haber": None, "firsat_neden": "",
+        "has_data": fiyat is not None,
+    }
+
+
+def search_us(q: str) -> list[dict]:
+    """ABD hisseleri: yfinance arama + toplu fiyat/gunluk degisim."""
+    q = (q or "").strip()
+    if not q:
+        return []
+    ck = f"us:{q.lower()}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    try:
+        import yfinance as yf
+        res = yf.Search(q, max_results=12)
+        quotes = [x for x in (res.quotes or [])
+                  if x.get("quoteType") == "EQUITY" and x.get("symbol")]
+    except Exception:
+        return []
+    quotes = quotes[:8]
+    syms = [x["symbol"] for x in quotes]
+    prices = _us_prices(syms)
+    out = []
+    for x in quotes:
+        s = x["symbol"]
+        p = prices.get(s, {})
+        out.append(_us_card(
+            s, x.get("shortname") or x.get("longname") or s,
+            fiyat=p.get("fiyat"), gunluk=p.get("gunluk"),
+            borsa=x.get("exchange") or ""))
+    _cache_set(ck, out)
+    return out
+
+
+def _us_prices(symbols: list[str]) -> dict:
+    """Coklu ABD sembolu icin {sembol: {fiyat, gunluk}} (tek toplu istek)."""
+    if not symbols:
+        return {}
+    try:
+        import yfinance as yf
+        df = yf.download(symbols, period="2d", progress=False,
+                         threads=True, auto_adjust=True)
+    except Exception:
+        return {}
+    out = {}
+    try:
+        closes = df["Close"]
+    except Exception:
+        return {}
+    for s in symbols:
+        try:
+            col = closes[s].dropna() if len(symbols) > 1 else closes.dropna()
+            if len(col) >= 2:
+                prev, last = float(col.iloc[-2]), float(col.iloc[-1])
+                chg = ((last - prev) / prev * 100) if prev else None
+                out[s] = {"fiyat": round(last, 2),
+                          "gunluk": round(chg, 2) if chg is not None else None}
+            elif len(col) >= 1:
+                out[s] = {"fiyat": round(float(col.iloc[-1]), 2), "gunluk": None}
+        except Exception:
+            continue
+    return out
+
+
+def search_crypto(q: str) -> list[dict]:
+    """Kripto paralar: CoinGecko arama + toplu fiyat/24s degisim."""
+    q = (q or "").strip()
+    if not q:
+        return []
+    ck = f"cg:{q.lower()}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/search",
+                         params={"query": q}, timeout=12)
+        coins = (r.json() or {}).get("coins", [])[:8]
+    except Exception:
+        return []
+    if not coins:
+        _cache_set(ck, [])
+        return []
+    ids = ",".join(c["id"] for c in coins if c.get("id"))
+    prices = _crypto_prices(ids)
+    out = []
+    for c in coins:
+        cid = c.get("id")
+        p = prices.get(cid, {})
+        out.append(_crypto_card(
+            (c.get("symbol") or "").upper(), c.get("name") or cid,
+            fiyat=p.get("fiyat"), gunluk=p.get("gunluk"), cg_id=cid))
+    _cache_set(ck, out)
+    return out
+
+
+def _crypto_prices(ids: str) -> dict:
+    """CoinGecko markets: {coin_id: {fiyat, gunluk(24s %)}}."""
+    if not ids:
+        return {}
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={"vs_currency": "usd", "ids": ids,
+                    "price_change_percentage": "24h"}, timeout=12)
+        data = r.json() or []
+    except Exception:
+        return {}
+    out = {}
+    for c in data:
+        out[c.get("id")] = {
+            "fiyat": c.get("current_price"),
+            "gunluk": c.get("price_change_percentage_24h"),
+        }
     return out
 
 
@@ -227,11 +550,13 @@ def _owned_tickers() -> set:
 
 
 def get_stocks() -> dict:
-    """Ana sayfa: portfoyum (sahip olunan) + takip listesi (watchlist)."""
+    """Ana sayfa: firsatlar + portfoyum (sahip olunan) + takip listesi (kisisel)."""
     comm = _commentary_by_ticker()
     owned = _owned_tickers()
-    wl = _read_json(CONFIG / "watchlist.json", {})
-    watch = [t.upper() for t in (wl.get("bist_endeks", []) + wl.get("kisisel", []))]
+    wl = _load_watchlist()
+    # Takip Listesi = yalnizca kullanicinin kisisel listesi (BIST).
+    # bist_endeks brifingin tarama evrenidir, kullanici takip listesi degil.
+    watch = [t.upper() for t in wl.get("kisisel", [])]
 
     portfoyum = [_stock_card(comm[t]) for t in sorted(owned) if t in comm]
 
@@ -243,11 +568,43 @@ def get_stocks() -> dict:
         seen.add(t)
         takip.append(_stock_card(comm[t]) if t in comm else _minimal_card(t))
 
-    return {"portfoyum": portfoyum, "takip": takip}
+    # ABD/Kripto kisisel takip (canli fiyat ile)
+    diger = wl.get("kisisel_diger", []) or []
+    us_syms = [d["ticker"] for d in diger if d.get("market") == "abd"]
+    cg_ids = [d.get("cg_id") for d in diger if d.get("market") == "kripto" and d.get("cg_id")]
+    us_px = _us_prices(us_syms) if us_syms else {}
+    cg_px = _crypto_prices(",".join(cg_ids)) if cg_ids else {}
+    for d in diger:
+        if d.get("market") == "abd":
+            p = us_px.get(d["ticker"], {})
+            takip.append(_us_card(d["ticker"], d.get("isim"),
+                                  fiyat=p.get("fiyat"), gunluk=p.get("gunluk")))
+        elif d.get("market") == "kripto":
+            p = cg_px.get(d.get("cg_id"), {})
+            takip.append(_crypto_card(d["ticker"], d.get("isim"),
+                                      fiyat=p.get("fiyat"), gunluk=p.get("gunluk"),
+                                      cg_id=d.get("cg_id")))
+
+    # Firsat bolgesi: puan >= esik olan AL kararlari
+    firsatlar = []
+    for rec in comm.values():
+        etiket, _ = _classify(rec.get("final_decision"))
+        skor = rec.get("score") or 0
+        if etiket == "AL" and skor >= _OPPORTUNITY_MIN:
+            firsatlar.append(_stock_card(rec))
+    firsatlar.sort(key=lambda c: c.get("skor") or 0, reverse=True)
+
+    return {"firsatlar": firsatlar, "portfoyum": portfoyum, "takip": takip}
 
 
-def get_search(q: str) -> list[dict]:
-    """BIST evreninde ticker/sirket adina gore arama (Turkce duyarsiz)."""
+def get_search(q: str, market: str = "bist") -> list[dict]:
+    """Piyasaya gore arama: BIST (yerel), ABD (yfinance), Kripto (CoinGecko)."""
+    market = (market or "bist").lower()
+    if market == "abd":
+        return search_us(q)
+    if market == "kripto":
+        return search_crypto(q)
+    # BIST: yerel evrende ticker/sirket adina gore (Turkce duyarsiz)
     nq = _norm(q).strip()
     if not nq:
         return []
@@ -373,6 +730,75 @@ def get_karne() -> dict:
     return {"satirlar": satirlar, "ozet": bt.get("ozet", {}), "ayar": ayar}
 
 
+def _karar_label(karar: str) -> str:
+    return {"AL": "AL", "AL_TEMKINLI": "AL (temkinli)", "TUT": "TUT",
+            "SAT": "SAT", "GUCLU_SAT": "Güçlü SAT", "VETO": "VETO"}.get(
+        (karar or "").upper(), karar or "—")
+
+
+def get_decisions() -> dict:
+    """Gercek karar gunlugu: bot'un verdigi AL/TUT/SAT kararlari (decisions tablosu).
+
+    sonuc=None iken karar 'bekliyor'; ileride fiyat takibiyle dogru/yanlis isaretlenir.
+    """
+    rows = []
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM decisions ORDER BY id DESC LIMIT 100")]
+    except sqlite3.Error:
+        rows = []
+
+    satirlar = []
+    for r in rows:
+        karar = r.get("karar")
+        etiket, renk = _classify(karar)
+        tkr = (r.get("ticker") or "").upper()
+        sonuc = r.get("sonuc")
+        # durum: sonuc yoksa bekliyor; varsa basit yorum (+ -> dogru, - -> yanildi)
+        if sonuc is None or str(sonuc).strip() == "":
+            durum, dogru = "bekliyor", None
+            sonuc_metin = "Sonuç henüz belli değil — fiyat takip ediliyor."
+            yanilma = ""
+            ders = ""
+        else:
+            s = str(sonuc).strip()
+            up = s.upper()
+            dogru = (up.startswith("+") or "DOGRU" in up or "DOĞRU" in up
+                     or "ISABET" in up or "İSABET" in up)
+            durum = "dogru" if dogru else "yanlis"
+            sonuc_metin = s
+            yanilma = "" if dogru else (
+                f"Beklenen yön tutmadı: {s}. Karar anındaki sinyaller "
+                "fiyat hareketini doğru öngörmedi.")
+            ders = "" if dogru else (
+                "Benzer kurulumda eminlik düşükse pozisyon küçültülmeli veya "
+                "teyit beklenmeli.")
+        satirlar.append({
+            "id": r.get("id"),
+            "ticker": tkr,
+            "isim": company_name(tkr),
+            "karar": karar,
+            "karar_label": _karar_label(karar),
+            "etiket": etiket,
+            "renk": renk,
+            "puan": r.get("puan"),
+            "risk": r.get("risk"),
+            "eminlik": _eminlik_tr(r.get("eminlik")),
+            "tarih": r.get("tarih"),
+            "gerekce": r.get("gerekce") or "",
+            "neden": r.get("gerekce") or "Gerekçe kaydı yok.",
+            "sonuc": sonuc,
+            "sonuc_metin": sonuc_metin,
+            "durum": durum,
+            "dogru": dogru,
+            "yanilma": yanilma,
+            "ders": ders,
+        })
+    return {"satirlar": satirlar}
+
+
 def get_alerts() -> list[dict]:
     """Bildirim paneli: son uyari/sinyaller (en fazla 10).
 
@@ -469,8 +895,28 @@ def api_summary():
 
 @app.route("/api/search")
 def api_search():
-    return jsonify(get_search(request.args.get("q", "")))
+    return jsonify(get_search(request.args.get("q", ""),
+                              request.args.get("market", "bist")))
+
+
+@app.route("/api/decisions")
+def api_decisions():
+    return jsonify(get_decisions())
+
+
+@app.route("/api/watchlist/add", methods=["POST"])
+def api_watchlist_add():
+    d = request.get_json(silent=True) or {}
+    return jsonify(watchlist_add(
+        d.get("ticker", ""), d.get("market", "bist"),
+        d.get("isim", ""), d.get("cg_id", "")))
+
+
+@app.route("/api/watchlist/remove", methods=["POST"])
+def api_watchlist_remove():
+    d = request.get_json(silent=True) or {}
+    return jsonify(watchlist_remove(d.get("ticker", ""), d.get("market", "bist")))
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)

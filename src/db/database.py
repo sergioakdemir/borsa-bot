@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS portfoy (
     notlar        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_portfoy_kullanici ON portfoy(kullanici_id);
+CREATE TABLE IF NOT EXISTS decisions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker    TEXT NOT NULL,
+    karar     TEXT NOT NULL,
+    puan      INTEGER,
+    risk      INTEGER,
+    eminlik   TEXT,
+    gerekce   TEXT,
+    tarih     TEXT NOT NULL,
+    sonuc     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_decisions_ticker_tarih ON decisions(ticker, tarih);
 """
 
 
@@ -160,6 +172,34 @@ def list_portfolio(kullanici_id=None) -> list[dict]:
             q = "SELECT * FROM portfoy WHERE kullanici_id=? ORDER BY id"
             return [dict(r) for r in c.execute(q, (kullanici_id,))]
         return [dict(r) for r in c.execute("SELECT * FROM portfoy ORDER BY kullanici_id, id")]
+
+
+# ---- karar gunlugu (decisions) ----
+def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
+                    gerekce=None, tarih=None, sonuc=None) -> int:
+    """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None)."""
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO decisions (ticker, karar, puan, risk, eminlik, gerekce, tarih, sonuc)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
+             eminlik, gerekce, tarih, sonuc))
+        return cur.lastrowid
+
+
+def list_decisions(limit: int = 100) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+def set_decision_outcome(decision_id, sonuc) -> None:
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE decisions SET sonuc=? WHERE id=?", (sonuc, decision_id))
 
 
 if __name__ == "__main__":
