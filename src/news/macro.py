@@ -73,6 +73,27 @@ def _investing_last(url):
     return _num(m.group(1)) if m else None
 
 
+def _investing_cpi_yoy(url=None):
+    """investing.com ekonomik-takvim event sayfasindan TUFE (yillik) degerini ceker.
+
+    Turkiye CPI (YoY) event URL'i ortamda erisilemez (JS/anti-scraping); bu yuzden
+    URL yapilandirilabilir (TUFE_INVESTING_URL). Verilirse event sayfasindaki en
+    guncel 'Gerceklesen' (yoksa 'Onceki') yuzde degeri parse edilir.
+    """
+    url = url or os.environ.get("TUFE_INVESTING_URL")
+    if not url:
+        return None
+    html = _fetch(url)
+    if not html:
+        return None
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    for m in re.finditer(r"(?:Gerçekleşen|Önceki)\s*:?\s*%?\s*([\d][\d.,]*)", t):
+        v = _num(m.group(1))
+        if v is not None:
+            return v
+    return None
+
+
 def get_macro() -> dict:
     """Makro gostergeleri dondurur (iki kaynak birlesik).
 
@@ -104,6 +125,13 @@ def get_macro() -> dict:
             out[ad] = _evds_series(code, agg, key)
         if out.get("politika_faizi") is not None or out.get("tufe_yillik") is not None:
             out["kaynaklar"].append("EVDS3")
+
+    # 3) TUFE EVDS'ten gelmediyse investing.com event sayfasindan (TUFE_INVESTING_URL)
+    if out.get("tufe_yillik") is None:
+        tv = _investing_cpi_yoy()
+        if tv is not None:
+            out["tufe_yillik"] = tv
+            out["kaynaklar"].append("investing.com(TUFE)")
 
     out["available"] = bool(out["kaynaklar"])
     if not out["available"]:

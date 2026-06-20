@@ -9,6 +9,8 @@ CRON_TZ=Europe/Istanbul
 15 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.portfolio.run_portfolio >> /root/borsa-bot/logs/portfolio.log 2>&1
 # Haftalik ozet: Pazar 20:00
 0 20 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.weekly_summary >> /root/borsa-bot/logs/alerts.log 2>&1
+# Karar sonuclarini doldur (hafiza/ogrenme): her gece 23:30
+30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_decisions >> /root/borsa-bot/logs/decisions.log 2>&1
 # Hetzner haftalik snapshot: Pazar 23:00
 0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
 # Telegram komut yoklayici: her dakika
