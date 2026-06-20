@@ -34,7 +34,8 @@ from src.alerts.engine import intraday_change, classify, level_rank
 from src.notify import telegram
 from src.db import database as db
 
-_EMOJI = {"ACIL": "\U0001F6A8", "IZLE": "\U0001F440", "HABER": "\U0001F4F0"}
+_EMOJI = {"ACIL": "\U0001F6A8", "IZLE": "\U0001F440", "HABER": "\U0001F4F0",
+          "HACIM": "\U0001F4CA"}
 
 
 def unpriced_fresh_news(ticker, news_src=None):
@@ -49,7 +50,7 @@ def unpriced_fresh_news(ticker, news_src=None):
     return None
 
 
-def build_message(price_alerts, news_alerts, now):
+def build_message(price_alerts, news_alerts, vol_alerts, now):
     acil = [a for a in price_alerts if a["seviye"] == "ACIL"]
     izle = [a for a in price_alerts if a["seviye"] == "IZLE"]
     lines = [f"<b>\U0001F525 Sicak Uyari</b> — {now:%Y-%m-%d %H:%M}", ""]
@@ -67,6 +68,15 @@ def build_message(price_alerts, news_alerts, now):
     if izle:
         lines.append(f"{_EMOJI['IZLE']} <b>IZLE</b>")
         lines += ["  " + fmt(a) for a in izle]
+        lines.append("")
+    if vol_alerts:
+        # son 5 gun ortalamasinin 3 katindan fazla -> COK YUKSEK hacim
+        lines.append(f"{_EMOJI['HACIM']} <b>COK YUKSEK HACIM</b> "
+                     "<i>(5 gun ortalamasinin 3x+ usti)</i>")
+        for a in vol_alerts:
+            sign = "+" if a.get("change", 0) > 0 else ""
+            lines.append(f"  ⚡ <b>{a['ticker']}</b> hacim {a['kat']}x "
+                         f"(fiyat {sign}{a['change']}%)")
         lines.append("")
     if news_alerts:
         # KAP haberi var ama fiyat henuz oynamamis -> firsat penceresi
@@ -86,10 +96,11 @@ def main():
         return 0
 
     from src.news.service import get_news_source
+    from src.news.fundamental_source import get_volume_anomaly
     news_src, _ = get_news_source(verbose=False)
 
     today = now.date().isoformat()
-    price_alerts, news_alerts = [], []
+    price_alerts, news_alerts, vol_alerts = [], [], []
     checked = 0
     for ticker in load_watchlist():
         info = intraday_change(ticker, today=now.date())
@@ -112,14 +123,25 @@ def main():
                 news_alerts.append({"ticker": ticker, "change": info["change"],
                                     "haber": haber})
 
-    if not price_alerts and not news_alerts:
+        # HACIM anomalisi: COK YUKSEK (5g ort. 3x+) -> uyari (gunde bir kez)
+        try:
+            va = get_volume_anomaly(ticker)
+        except Exception:
+            va = {}
+        if va.get("seviye") == "COK YUKSEK" and \
+                "HACIM" not in db.alert_levels_today(ticker, today):
+            db.record_alert(ticker, today, "HACIM", va.get("kat") or 0)
+            vol_alerts.append({"ticker": ticker, "kat": va.get("kat"),
+                               "change": info["change"]})
+
+    if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")
         return 0
 
-    sonuc = telegram.broadcast(build_message(price_alerts, news_alerts, now))
+    sonuc = telegram.broadcast(build_message(price_alerts, news_alerts, vol_alerts, now))
     ok = [c for c, s in sonuc.items() if s == "ok"]
-    print(f"[{now:%Y-%m-%d %H:%M}] {len(price_alerts)} fiyat + "
-          f"{len(news_alerts)} haber uyarisi -> {len(ok)}/{len(sonuc)} aliciya gonderildi.")
+    print(f"[{now:%Y-%m-%d %H:%M}] {len(price_alerts)} fiyat + {len(news_alerts)} haber + "
+          f"{len(vol_alerts)} hacim uyarisi -> {len(ok)}/{len(sonuc)} aliciya gonderildi.")
     return 0
 
 

@@ -127,9 +127,58 @@ def get_volume_anomaly(ticker: str) -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------
+# Sektor korelasyonu (statik): hisse -> hangi makro gostergeyle iliskili + yon
+# ----------------------------------------------------------------------------
+_GOSTERGE_AD = {
+    "petrol": "Petrol fiyatı",
+    "dolar": "Dolar/TL",
+    "faiz": "Faiz",
+    "celik_demir": "Çelik/Demir fiyatı",
+}
+
+# her hisse: [(gosterge, yon)] - yon: 'pozitif' veya 'ters'
+_SECTOR_CORR = {
+    # Havayolu: yakit (petrol) maliyeti -> ters; dovizli gelir -> dolar pozitif
+    "THYAO": [("petrol", "ters"), ("dolar", "pozitif")],
+    "PGSUS": [("petrol", "ters"), ("dolar", "ters")],
+    # Bankalar: faiz artisi -> ters
+    "GARAN": [("faiz", "ters")],
+    "AKBNK": [("faiz", "ters")],
+    "ISCTR": [("faiz", "ters")],
+    "YKBNK": [("faiz", "ters")],
+    "HALKB": [("faiz", "ters")],
+    "VAKBN": [("faiz", "ters")],
+    # Savunma/teknoloji: dovizli gelir -> dolar pozitif
+    "ASELS": [("dolar", "pozitif")],
+    # Demir-celik: emtia fiyati -> pozitif
+    "EREGL": [("celik_demir", "pozitif")],
+    "KRDMD": [("celik_demir", "pozitif")],
+    "KORDS": [("celik_demir", "pozitif")],
+    # Rafineri/gaz: petrol -> pozitif
+    "TUPRS": [("petrol", "pozitif")],
+    "AYGAZ": [("petrol", "pozitif")],
+}
+
+
+def get_sector_correlation(ticker: str) -> dict:
+    """Hissenin hangi makro gostergeyle (ve hangi yonde) iliskili oldugunu dondurur."""
+    ticker = (ticker or "").upper().replace(".IS", "")
+    pairs = _SECTOR_CORR.get(ticker)
+    if not pairs:
+        return {"ticker": ticker, "available": False}
+    korelasyonlar = [{"gosterge": _GOSTERGE_AD.get(g, g), "yon": y} for g, y in pairs]
+    ozet = ", ".join(
+        f"{_GOSTERGE_AD.get(g, g)} ile {'pozitif' if y == 'pozitif' else 'ters'}"
+        for g, y in pairs)
+    return {"ticker": ticker, "available": True,
+            "korelasyonlar": korelasyonlar, "ozet": ozet}
+
+
 if __name__ == "__main__":
     import json
     import sys
     for tk in (sys.argv[1:] or ["THYAO"]):
         print(json.dumps(get_fundamentals(tk), ensure_ascii=False, indent=2))
         print(json.dumps(get_volume_anomaly(tk), ensure_ascii=False, indent=2))
+        print(json.dumps(get_sector_correlation(tk), ensure_ascii=False, indent=2))

@@ -65,7 +65,12 @@ SYSTEM = (
     "HACIM ANOMALISI: Veride 'hacim_anomalisi' varsa degerlendir. Bugunku hacim son 5 "
     "gun ortalamasinin kac kati (kat) ve seviye (NORMAL/YUKSEK/COK YUKSEK). Yuksek "
     "hacim, fiyat hareketine veya bir habere guclu katilim/ilgi demektir; yonu (yukari/"
-    "asagi) fiyat degisimiyle birlikte yorumla. COK YUKSEK hacim dikkatle izlenmeli."
+    "asagi) fiyat degisimiyle birlikte yorumla. COK YUKSEK hacim dikkatle izlenmeli.\n\n"
+    "SEKTOR KORELASYONU: Veride 'sektor_korelasyonu' varsa, hissenin hangi makro "
+    "gostergeyle (petrol, dolar, faiz, celik/demir) ve hangi yonde (pozitif/ters) "
+    "iliskili oldugunu dikkate al. Piyasa baglamindaki makro veriyle (USD/TRY, faiz) "
+    "birlestir: orn. faizle ters iliskili bankada faiz yuksekse bu olumsuzdur; petrolle "
+    "ters havayolu icin petrol artisi olumsuzdur. Iliskiyi sade dille gerekceye yansit."
 )
 
 
@@ -303,6 +308,12 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         hacim_anom = get_volume_anomaly(ticker)
     except Exception:
         hacim_anom = {"available": False}
+    # Sektor korelasyonu (statik makro iliski tablosu)
+    try:
+        from src.news.fundamental_source import get_sector_correlation
+        sektor = get_sector_correlation(ticker)
+    except Exception:
+        sektor = {"available": False}
 
     payload = {
         "ticker": ticker,
@@ -320,6 +331,11 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
             "ort_5g_hacim": hacim_anom.get("ort_5g_hacim"),
             "kat": hacim_anom.get("kat"),
             "seviye": hacim_anom.get("seviye"),
+        }
+    if sektor.get("available"):
+        payload["sektor_korelasyonu"] = {
+            "ozet": sektor.get("ozet"),
+            "korelasyonlar": sektor.get("korelasyonlar"),
         }
     if analist.get("available"):
         payload["analist_konsensus"] = {
@@ -373,6 +389,7 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         "analist": analist if analist.get("available") else None,
         "temel": temel if temel.get("available") else None,
         "hacim_anomalisi": hacim_anom if hacim_anom.get("available") else None,
+        "sektor_korelasyonu": sektor if sektor.get("available") else None,
     }
 
 
