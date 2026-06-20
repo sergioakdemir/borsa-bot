@@ -76,73 +76,59 @@ def select_targets():
 
 
 def evaluate_all(targets):
-    import anthropic
-    from src.export_json import build_snapshot
-    from src.ai.commentator import evaluate_stock
-    from src.ai import audit
-    from src.db import database as db
-    from src.news.service import get_news_source, filtered_news
+    """Her hedef hisse icin TAM analiz zincirini calistirir (commentary.py).
 
+    Zincir: yfinance + KAP(30g) + haber(7g) -> Claude -> karar/puan/risk/...
+    ai_commentary.json'a yazar ve her karari decisions tablosuna kaydeder.
+    """
+    from src.ai import commentary
     if not targets:
         return []
-    db.seed_default_sources()
-    snapshot = build_snapshot(targets)
-    news_src, is_sample = get_news_source(verbose=False)
-    db.update_status("yfinance", "AKTIF", "Sabah brifingi.")
-
-    audit.log_run_start(len(snapshot["stocks"]))
-    client = anthropic.Anthropic()
-    results, ev, sk = [], 0, 0
-    for stock in snapshot["stocks"]:
-        news = filtered_news(stock["ticker"], source=news_src)
-        r = evaluate_stock(stock, news=news, client=client)
-        results.append(r)
-        status = stock.get("freshness", {}).get("status")
-        if r.get("skipped"):
-            sk += 1
-            audit.log_decision(stock["symbol"], status, "SKIPPED_STALE", note=r.get("reason", ""))
-        else:
-            ev += 1
-            note = f"eminlik={r['eminlik']} risk={r['risk']['score']} veto={r['vetoed']} haber={r['haber_sayisi']}"
-            audit.log_decision(stock["symbol"], status, "EVALUATED",
-                               decision=r["final_decision"], score=r["score"], note=note)
-            # Gercek karar gunlugu: her AL/TUT/SAT karari decisions tablosuna yazilir
-            # (sonuc=None; ileride fiyat takibiyle doldurulacak).
-            try:
-                db.record_decision(
-                    ticker=r["ticker"],
-                    karar=r["final_decision"],
-                    puan=r.get("score"),
-                    risk=(r.get("risk") or {}).get("score"),
-                    eminlik=r.get("eminlik"),
-                    gerekce=r.get("gerekce"),
-                )
-            except Exception as e:
-                print(f"  [karar-kaydi] {r['ticker']} yazilamadi: {type(e).__name__}: {e}")
-    audit.log_run_end(ev, sk)
-    return results
+    return commentary.run(targets, save=True, verbose=True)
 
 
 def build_message(results, sel, now):
+    """Kisa ozet + en iyi firsat + hisse basina tek satir."""
     personal = set(sel["personal"])
-    lines = [f"<b>\U0001F4CA Sabah Brifingi</b> — {now:%Y-%m-%d %H:%M}",
-             f"<i>Kisisel: {len(sel['personal'])} · Hareketli: {len(sel['movers'])} "
-             f"(≥%{sel['threshold']:g}) · taranan: {sel['taranan']}</i>", ""]
+    valid = [r for r in results if not r.get("skipped")]
+    al = [r for r in valid if r["final_decision"] == "AL"]
+    tut = [r for r in valid if r["final_decision"] == "TUT"]
+    sat = [r for r in valid if r["final_decision"] in ("SAT", "GUCLU_SAT")]
+    veto = [r for r in valid if r["final_decision"] == "VETO"]
+
+    lines = [f"<b>\U0001F305 Sabah Brifingi</b> — {now:%Y-%m-%d %H:%M}"]
     if not results:
-        lines.append("Bugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
+        lines.append("\nBugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
         return "\n".join(lines)
+
+    ozet = f"{len(al)} AL · {len(tut)} TUT · {len(sat)} SAT"
+    if veto:
+        ozet += f" · {len(veto)} VETO"
+    lines.append(f"<b>Ozet:</b> {ozet}")
+    lines.append(f"<i>Kisisel {len(sel['personal'])} · Hareketli {len(sel['movers'])} "
+                 f"(≥%{sel['threshold']:g}) · taranan {sel['taranan']}</i>")
+
+    # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
+    cand = [r for r in valid if r["final_decision"] != "VETO"]
+    cand.sort(key=lambda r: (r["final_decision"] == "AL", r.get("score") or 0), reverse=True)
+    if cand:
+        b = cand[0]
+        lines.append("")
+        lines.append(f"⭐ <b>En iyi firsat: {_esc(b['ticker'])}</b> "
+                     f"({b['score']}/10 · risk {b['risk']['score']} · {_esc(b['final_label'])})")
+        lines.append(f"<i>{_esc((b.get('gerekce') or '')[:220])}</i>")
+
+    lines.append("")
     for r in results:
-        sym = _esc(r["symbol"])
-        tag = "K" if r["ticker"] in personal else "H"   # Kisisel / Hareketli
+        sym = _esc(r.get("ticker") or r.get("symbol"))
+        tag = "K" if r.get("ticker") in personal else "H"
         if r.get("skipped"):
             lines.append(f"{_EMOJI['SKIP']} <b>{sym}</b> [{tag}] — ATLANDI")
             continue
         emoji = _EMOJI.get(r["final_decision"], "⚪")
-        lines.append(f"{emoji} <b>{sym}</b> [{tag}]  {r['score']}/10 · risk {r['risk']['score']} · {_esc(r['eminlik'])}")
-        lines.append(f"   → {_esc(r['final_label'])}")
-        lines.append(f"   <i>{_esc(r['gerekce'])[:120]}</i>")
-        lines.append("")
-    lines.append("<i>K=Kisisel · H=Hareketli</i>")
+        lines.append(f"{emoji} <b>{sym}</b> [{tag}] {r['final_label']} · "
+                     f"{r['score']}/10 · risk {r['risk']['score']} · {_esc(r['eminlik'])}")
+    lines.append("\n<i>K=Kisisel · H=Hareketli</i>")
     return "\n".join(lines)
 
 
