@@ -118,18 +118,23 @@ def build_message(results, sel, now):
                      f"({b['score']}/10 · risk {b['risk']['score']} · {_esc(b['final_label'])})")
         lines.append(f"<i>{_esc((b.get('gerekce') or '')[:220])}</i>")
 
-    lines.append("")
-    for r in results:
-        sym = _esc(r.get("ticker") or r.get("symbol"))
-        tag = "K" if r.get("ticker") in personal else "H"
-        if r.get("skipped"):
-            lines.append(f"{_EMOJI['SKIP']} <b>{sym}</b> [{tag}] — ATLANDI")
-            continue
-        emoji = _EMOJI.get(r["final_decision"], "⚪")
-        lines.append(f"{emoji} <b>{sym}</b> [{tag}] {r['final_label']} · "
-                     f"{r['score']}/10 · risk {r['risk']['score']} · {_esc(r['eminlik'])}")
-    lines.append("\n<i>K=Kisisel · H=Hareketli</i>")
-    return "\n".join(lines)
+    # Kisa tut (Telegram ~1000-1200 karakter): yalniz dikkat ceken kararlar.
+    # TUT'lar tek satirda ozetlenir.
+    notable = [r for r in valid if r["final_decision"] != "TUT"]
+    if notable:
+        lines.append("")
+        for r in notable:
+            sym = _esc(r.get("ticker") or r.get("symbol"))
+            emoji = _EMOJI.get(r["final_decision"], "⚪")
+            lines.append(f"{emoji} <b>{sym}</b> {r['final_label']} · "
+                         f"{r['score']}/10 · risk {r['risk']['score']}")
+    if tut:
+        lines.append(f"\n⚪ TUT ({len(tut)}): " + ", ".join(
+            _esc(r.get("ticker")) for r in tut[:12]))
+    msg = "\n".join(lines)
+    if len(msg) > 1200:                       # guvenli ust sinir
+        msg = msg[:1180].rsplit("\n", 1)[0] + "\n…"
+    return msg
 
 
 def main():

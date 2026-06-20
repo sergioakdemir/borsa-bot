@@ -72,17 +72,29 @@
   .mtag.bist{color:var(--green);background:rgba(0,200,83,.12)}
   .price{font-size:15px;font-weight:800} .chg{font-size:12px;font-weight:700;margin-top:1px}
 
-  .stock-card .yorum{font-size:13px;color:var(--muted);line-height:1.5;margin-top:10px}
-  .stock-card .riskline{font-size:11.5px;margin-top:10px;display:flex;align-items:center;gap:7px}
   .stock-card{cursor:pointer;transition:border-color .12s,transform .08s}
   .stock-card:active{transform:scale(.992);border-color:#2a2a2a}
+  .summary{font-size:15px;line-height:1.55;color:#d1d5db;margin-top:10px;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .action{font-size:12.5px;color:var(--muted);margin-top:8px;font-weight:600}
+  .riskline{font-size:12px;margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .rr{font-size:11.5px;color:var(--muted)}
+  .pline{font-size:13px;color:var(--muted);margin-top:5px}
+  .dots{background:none;border:none;color:var(--muted);font-size:20px;line-height:1;padding:0 6px;border-radius:8px}
+  .dots:active{background:#1e1e1e}
 
   .seemore{width:100%;background:var(--card2);border:1px solid var(--border);color:var(--muted);
     border-radius:13px;padding:12px;font-size:13px;font-weight:700;margin-top:2px}
 
   /* ---- Onemli haber ---- */
   .news-hero{border-radius:18px;overflow:hidden;border:1px solid var(--border);margin-bottom:4px}
-  .news-hero .banner{height:96px;display:flex;align-items:center;justify-content:center;font-size:42px}
+  .news-hero .banner{height:72px;display:flex;align-items:center;gap:12px;padding:0 16px;position:relative}
+  .news-hero .banner::after{content:"";position:absolute;inset:0;
+    background:radial-gradient(120% 140% at 90% 10%,rgba(255,255,255,.12),transparent 60%)}
+  .news-hero .banner .bico{width:38px;height:38px;border-radius:11px;background:rgba(255,255,255,.16);
+    display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;z-index:1}
+  .news-hero .banner .bcat{font-size:12.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;
+    color:#fff;z-index:1}
   .news-hero .body{background:var(--card);padding:15px}
   .news-hero .cat{font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;
     color:var(--muted)}
@@ -242,7 +254,7 @@
 <body>
 
 <header>
-  <div class="brand">Borsa<span class="dot">.</span>Asistanı</div>
+  <div class="brand">Borsa Takip</div>
   <button class="userchip" id="userchip" onclick="openUserPick()">
     <span class="uc-av" id="uc-av">?</span><span id="uc-name">—</span>
   </button>
@@ -358,16 +370,18 @@ function load(t){loaded[t]=true;({bugun:loadBugun,portfoy:loadPortfoy,radar:load
 const uq=()=>CUR_USER?("?kullanici="+encodeURIComponent(CUR_USER)):"";
 
 /* ============ BUGUN ============ */
+function priceBlock(s){return s.fiyat==null?"":`<div style="text-align:right">
+  <div class="price">${money(s.fiyat,s.para_birimi)}</div>
+  <div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>`}
+function riskLine(s){if(!s.risk||s.risk==="—")return"";
+  return`<div class="riskline"><span class="chip ${s.risk_renk}">Risk: ${esc(s.risk)}</span>${s.riskReason?`<span class="rr">${esc(s.riskReason)}</span>`:""}</div>`}
 function stockCardHTML(s){const k=reg(s);
   return`<div class="card stock-card" onclick="openStock('${k}')">
     <div class="row"><div><div class="name">${esc(s.isim)}</div><div class="tick">${esc(s.ticker)}</div></div>
-      <div style="display:flex;align-items:center;gap:10px">
-        ${s.fiyat!=null?`<div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div>
-          <div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>`:""}
-        ${badge(s.etiket,s.renk)}</div></div>
-    ${s.yorum?`<div class="yorum">${esc(s.yorum)}</div>`:""}
-    <div class="riskline"><span class="chip ${s.risk_renk}">${esc(s.risk_etiket)}</span>
-      <span class="c-gray" style="font-size:11.5px">${esc(s.risk_sebep||"")}</span></div></div>`}
+      <div style="display:flex;align-items:center;gap:10px">${priceBlock(s)}${badge(s.etiket,s.renk)}</div></div>
+    ${s.summary?`<div class="summary">${esc(s.summary)}</div>`:""}
+    ${s.action?`<div class="action">→ ${esc(s.action)}</div>`:""}
+    ${riskLine(s)}</div>`}
 
 async function loadBugun(){const el=document.getElementById("page-bugun");
   try{const d=await(await fetch("/api/today"+uq())).json();
@@ -382,9 +396,9 @@ async function loadBugun(){const el=document.getElementById("page-bugun");
         <template id="bugun-rest">${kalan.map(stockCardHTML).join("")}</template>`;}
     if(d.onemli_haber){const n=d.onemli_haber;const ec=n.etki==="Pozitif"?"green":n.etki==="Negatif"?"red":"gray";
       h+=`<div class="sec-title">Bugünün önemli haberi</div>
-      <div class="news-hero"><div class="banner" style="background:${n.gradient}">${n.ikon}</div>
-        <div class="body"><div class="cat">${esc(n.kategori)}</div>
-          <div class="baslik">${esc(n.baslik)}</div>
+      <div class="news-hero"><div class="banner" style="background:${n.gradient}">
+        <div class="bico">${n.ikon}</div><div class="bcat">${esc(n.kategori)}</div></div>
+        <div class="body"><div class="baslik">${esc(n.baslik)}</div>
           <div class="quote" style="font-size:13px;color:var(--muted)">${esc(n.yorum||"")}</div>
           <div class="meta" style="margin-top:11px">${(n.etkilenen||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join("")}
             <span class="chip ${ec}">Etki: ${esc(n.etki)}</span>
@@ -393,7 +407,7 @@ async function loadBugun(){const el=document.getElementById("page-bugun");
       <div class="hscroll">${d.firsatlar.map(s=>{const k=reg(s);
         return`<div class="opp" onclick="openStock('${k}')"><div class="row">
           <span class="name">${esc(s.ticker)}</span>${badge(s.etiket,s.renk)}</div>
-          <div class="why">${esc(s.yorum||s.isim)}</div></div>`}).join("")}</div>`;}
+          <div class="why">${esc(s.summary||s.isim)}</div></div>`}).join("")}</div>`;}
     el.innerHTML=h;fillOverview();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
 
@@ -405,20 +419,20 @@ async function fillOverview(){if(!CUR_USER)return;
 
 /* ============ PORTFOYUM ============ */
 function posCardHTML(p){const k=reg(p);
+  const kz=p.kz!=null?` · <span class="${signCls(p.kz)}">K/Z: ${money(p.kz,p.para_birimi)} (${pct(p.kz_yuzde)})</span>`:"";
   return`<div class="card stock-card" onclick="openStock('${k}')">
-    <div class="row"><div><div class="name">${esc(p.isim)}${mtag(p.market)}</div>
-        <div class="tick">${esc(p.ticker)} · ${fmt(p.adet,0)} adet</div></div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div style="text-align:right"><div class="price">${money(p.guncel,p.para_birimi)}</div>
-          <div class="chg ${signCls(p.gunluk)}">${pct(p.gunluk)}</div></div>
-        <button class="trash" onclick="event.stopPropagation();pfRemove(${p.id},'${esc(p.ticker)}')">🗑️</button></div></div>
-    <div class="pos-grid">
-      <div class="cell"><div class="k">Maliyet</div><div class="v">${money(p.alis,p.para_birimi)}</div></div>
-      <div class="cell"><div class="k">Kar/Zarar</div><div class="v ${signCls(p.kz)}">${money(p.kz,p.para_birimi)} (${pct(p.kz_yuzde)})</div></div></div>
-    <div class="riskline" style="margin-top:12px">${badge(p.karar,p.karar_renk)}
-      <span class="c-gray" style="font-size:12px">${esc(p.yorum||"")}</span></div>
-    <div class="riskline"><span class="chip ${p.risk_renk}">${esc(p.risk_etiket)}</span>
-      <span class="c-gray" style="font-size:11.5px">${esc(p.risk_sebep||"")}</span></div></div>`}
+    <div class="row"><div class="name">${esc(p.isim)} ${mtag(p.market)} ${badge(p.karar,p.karar_renk)}</div>
+      <button class="dots" onclick="event.stopPropagation();posMenu('${k}',${p.id},'${esc(p.ticker)}')">⋯</button></div>
+    <div class="pline">${esc(p.ticker)} · ${fmt(p.adet,0)} adet${p.alis!=null?` · Maliyet: ${money(p.alis,p.para_birimi)}`:""}</div>
+    ${p.guncel!=null?`<div class="pline">Güncel: ${money(p.guncel,p.para_birimi)}${kz}</div>`:""}
+    ${p.summary?`<div class="summary">${esc(p.summary)}</div>`:""}
+    ${riskLine(p)}</div>`}
+function posMenu(k,id,t){menuAt=Date.now();
+  document.getElementById("menu-head").textContent=t;
+  document.getElementById("menu-body").innerHTML=
+    `<button onclick="closeMenu();openStock('${k}')">Detayı aç</button>
+     <button class="danger" onclick="closeMenu();pfRemove(${id},'${t}')">Sil</button>`;
+  document.getElementById("menu-scrim").classList.add("open");document.getElementById("menu").classList.add("open")}
 
 async function loadPortfoy(){const el=document.getElementById("page-portfoy");
   if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
@@ -477,11 +491,9 @@ function setRadarFilter(f){RADAR_FILTER=f;document.querySelectorAll(".filters bu
 function radarCard(s){const k=reg(s);
   return`<div class="card stock-card" ${lpAttr(k,'search')}>
     <div class="row"><div><div class="name">${esc(s.isim)}${mtag(s.market)}</div><div class="tick">${esc(s.ticker)}</div></div>
-      <div style="display:flex;align-items:center;gap:10px">
-        ${s.fiyat!=null?`<div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div>
-          <div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>`:""}${badge(s.etiket,s.renk)}</div></div>
-    ${s.yorum?`<div class="yorum">${esc(s.yorum)}</div>`:""}
-    ${s.risk_etiket&&s.risk_etiket!=="—"?`<div class="riskline"><span class="chip ${s.risk_renk}">${esc(s.risk_etiket)}</span></div>`:""}</div>`}
+      <div style="display:flex;align-items:center;gap:10px">${priceBlock(s)}${badge(s.etiket,s.renk)}</div></div>
+    ${s.summary?`<div class="summary" style="-webkit-line-clamp:2">${esc(s.summary)}</div>`:""}
+    ${riskLine(s)}</div>`}
 function flt(arr){return RADAR_FILTER==="all"?arr:arr.filter(s=>(s.market||"bist")===RADAR_FILTER)}
 function renderRadar(){const b=document.getElementById("radar-body");if(!RADAR_DATA){return}
   const al=flt(RADAR_DATA.alinabilir),iz=flt(RADAR_DATA.izleme),ri=flt(RADAR_DATA.riskli);
@@ -494,15 +506,15 @@ function radarSearch(q){clearTimeout(radarTimer);q=(q||"").trim();
   if(q.length<1){renderRadar();return}
   const b=document.getElementById("radar-body");b.innerHTML=`<div class="spin">Aranıyor… (BIST·ABD·Kripto)</div>`;
   radarTimer=setTimeout(async()=>{try{const list=await(await fetch("/api/search?market=all&q="+encodeURIComponent(q))).json();
-    b.innerHTML=list.length?`<div class="sec-title">"${esc(q)}" sonuçları</div>`+list.map(s=>radarCard({...s,yorum:s.ozet||s.yorum})).join(""):empty(`"${esc(q)}" için sonuç yok`);
+    b.innerHTML=list.length?`<div class="sec-title">"${esc(q)}" sonuçları</div>`+list.map(s=>radarCard({...s,summary:(s.ozet||"").slice(0,120)})).join(""):empty(`"${esc(q)}" için sonuç yok`);
   }catch(e){b.innerHTML=empty("Arama yapılamadı")}},300)}
 
 /* ============ BOTA SOR ============ */
-const PRESETS=["THYAO neden TUT?","Bugün fırsat var mı?","En riskli hissem?","Yeni alım yapmalı mıyım?"];
+const PRESETS=["Bugün portföyümde dikkat etmem gereken ne var?","En riskli hissem hangisi?","Hangi hisseyi azaltmalıyım?","Bugün yeni alım yapılır mı?","THYAO neden TUT?"];
 let CHAT=[];
 function loadSor(){const el=document.getElementById("page-sor");
   el.innerHTML=`<div class="presets">${PRESETS.map(p=>`<button class="preset" onclick="askPreset('${esc(p).replace(/'/g,"\\'")}')">${esc(p)}</button>`).join("")}</div>
-    <div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Merhaba! Portföyün ve piyasa hakkında bana soru sorabilirsin. Yanıtlarım sadece elimizdeki verilere dayanır, yatırım tavsiyesi değildir.</div>`}</div>`;
+    <div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Portföyün, hisselerin ve piyasa görünümü hakkında soru sorabilirsin. Cevaplar elimizdeki güncel verilere göre hazırlanır.</div>`}</div>`;
   scrollChat()}
 function renderBubble(m){return`<div class="bubble ${m.rol}">${esc(m.metin)}</div>`}
 function scrollChat(){const c=document.getElementById("chat");if(c)window.scrollTo(0,document.body.scrollHeight)}
@@ -524,10 +536,10 @@ const ICO={firsat:"🟢",uyari:"⚠️",haber:"📰",default:"🔔"};
 const BIL_F=["all","Kritik","Haber","Karar","Fiyat"];
 const KAT_RENK={Kritik:"red",Haber:"gray",Karar:"yellow",Fiyat:"gray"};
 let BIL_FILTER="all";
-function alertKat(a){const k=(a.kaynak||"").toLowerCase(),m=(a.mesaj||"")+(a.baslik||"");
-  if(k.indexOf("fiyat")>=0)return m.indexOf("ACIL")>=0?"Kritik":"Fiyat";
-  if(a.tip==="haber")return"Haber";
-  if(m.indexOf("VETO")>=0||m.indexOf("SAT")>=0||m.indexOf("Güçlü")>=0)return"Kritik";
+function alertKat(a){const t=a.tur||"";
+  if(t.indexOf("Kritik")>=0||t.indexOf("Sabah")>=0)return"Kritik";
+  if(t.indexOf("Haber")>=0)return"Haber";
+  if(t.indexOf("Fiyat")>=0)return"Fiyat";
   return"Karar"}
 async function loadBildirim(){const el=document.getElementById("page-bildirim");
   el.innerHTML=`<div class="sec-title">Bildirimler</div>
@@ -541,16 +553,18 @@ function renderBil(){const b=document.getElementById("bil-body");
   const items=ALERT_INDEX.map((a,i)=>({a,i,kat:alertKat(a)})).filter(o=>BIL_FILTER==="all"||o.kat===BIL_FILTER);
   b.innerHTML=items.length?items.map(o=>{const a=o.a;
     return`<div class="alert" onclick="openAlert(${o.i})"><span class="ico">${ICO[a.tip]||ICO.default}</span>
-      <div style="flex:1;min-width:0"><div class="at">${esc(a.ticker)} · ${esc(a.isim)}
-        <span class="chip ${KAT_RENK[o.kat]||'gray'}" style="font-size:9px;padding:2px 7px;margin-left:4px">${o.kat}</span></div>
-        <div class="am">${esc(a.mesaj)}</div>${a.tarih?`<div class="ad">${esc(a.tarih)}</div>`:""}</div>
+      <div style="flex:1;min-width:0"><div class="at">${esc(a.baslik)}
+        <span class="chip ${KAT_RENK[o.kat]||'gray'}" style="font-size:9px;padding:2px 7px;margin-left:4px">${esc(a.tur||o.kat)}</span></div>
+        <div class="am">${esc(a.aciklama||"")}</div>${a.tarih?`<div class="ad">${esc(a.tarih)}</div>`:""}</div>
       <span class="achev">›</span></div>`}).join(""):empty("Bu kategoride bildirim yok")}
 function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;
   const link=a.url?`<a class="kaplink" href="${esc(a.url)}" target="_blank">🔗 KAP'ta aç</a>`:"";
-  ovShow(`<h2 style="font-size:21px;font-weight:800">${ICO[a.tip]||ICO.default} ${esc(a.ticker)}</h2>
-    <div class="tick" style="margin-bottom:14px">${esc(a.isim)}</div>
-    <div class="sec-title">Başlık</div><div class="quote">${esc(a.baslik||a.mesaj)}</div>
-    <div class="sec-title">Özet</div><div class="quote">${esc(a.ozet||a.mesaj||"—")}</div>
+  ovShow(`<h2 style="font-size:21px;font-weight:800">${esc(a.baslik)}</h2>
+    <div class="tick" style="margin-bottom:12px">${esc(a.tur||"")}</div>
+    <div class="quote">${esc(a.aciklama||"")}</div>
+    ${(a.ilgili&&a.ilgili.length)?`<div class="sec-title">İlgili hisseler</div>
+      <div>${a.ilgili.map(t=>`<span class="chip" style="margin-right:6px">${esc(t)}</span>`).join("")}</div>`:""}
+    ${a.ham_baslik?`<div class="sec-title">Kaynak haber</div><div class="quote" style="font-size:13px;color:var(--muted)">${esc(a.ham_baslik)}</div>`:""}
     <div class="anbox" style="margin-top:16px"><div class="row"><span class="c-gray">Kaynak: <b style="color:#fff">${esc(a.kaynak||"—")}</b></span>
       <span class="c-gray">${esc(a.tarih||"")}</span></div>${link?`<div style="margin-top:10px">${link}</div>`:""}</div>`)}
 
@@ -566,31 +580,31 @@ async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;con
   ovShow(`<div class="spin">Yükleniyor…</div>`);
   try{const d=await(await fetch(`/api/stock/${encodeURIComponent(ticker)}?market=${market}`)).json();
     const lv=d.seviyeler||{};const an=d.analist;
+    const lvl=(k,v,c)=>v==null?"":`<div class="lvl"><div class="k">${k}</div><div class="v ${c}">${money(v,d.para_birimi)}</div></div>`;
     let h=`<div class="row"><div><h2 style="font-size:22px;font-weight:800">${esc(d.isim)}</h2>
-        <div class="tick">${esc(d.ticker)}${mtag(d.market)}</div></div>${badge(d.etiket,d.renk)}</div>
+        <div class="tick">${esc(d.ticker)}${mtag(d.market)}</div></div>${badge(d.decision,d.renk)}</div>
       <div class="row" style="margin-top:12px"><div><div class="price" style="font-size:24px">${money(d.fiyat,d.para_birimi)}</div>
         <div class="chg ${signCls(d.gunluk)}">${pct(d.gunluk)}</div></div>
-        <div style="text-align:right"><span class="chip ${d.risk_renk}">${esc(d.risk_etiket)}</span>
+        <div style="text-align:right"><span class="chip ${d.risk_renk}">Risk: ${esc(d.risk)}</span>
           <div class="c-gray" style="font-size:11.5px;margin-top:6px">Güven: ${esc(d.guven)}</div></div></div>
       ${sparkline(d.grafik)}
-      <div class="sec-title">Bot yorumu</div><div class="quote">${esc(d.yorum)}</div>
-      ${d.risk_sebep&&d.risk_sebep!=="—"?`<div class="sec-title">Risk sebebi</div><div class="quote">${esc(d.risk_sebep)}</div>`:""}
-      <div class="sec-title">Önemli seviyeler</div>
-      <div class="lvls"><div class="lvl"><div class="k">Destek</div><div class="v c-green">${money(lv.destek,d.para_birimi)}</div></div>
-        <div class="lvl"><div class="k">Direnç</div><div class="v c-red">${money(lv.direnc,d.para_birimi)}</div></div>
-        <div class="lvl"><div class="k">Hedef</div><div class="v c-green">${money(lv.hedef,d.para_birimi)}</div></div>
-        <div class="lvl"><div class="k">Stop-loss</div><div class="v c-red">${money(lv.stop,d.para_birimi)}</div></div></div>`;
-    if(an&&an.available){const kc=an.konsensus==="AL"?"green":an.konsensus==="SAT"?"red":"yellow";
-      h+=`<div class="sec-title">Analist konsensüsü</div><div class="anbox">
-        <div class="row"><span>${an.analist_sayisi} kurum · <b class="c-${kc==='green'?'green':kc==='red'?'red':'yellow'}">${esc(an.konsensus)}</b></span>
+      ${d.action?`<div class="anbox" style="margin-top:14px;border-color:rgba(0,200,83,.3)"><b class="c-green">Ne yapmalı?</b> ${esc(d.action)}</div>`:""}
+      <div class="sec-title">Bot yorumu</div><div class="quote">${esc(d.reason)}</div>
+      ${d.riskReason&&d.riskReason!=="—"?`<div class="sec-title">Risk sebebi</div><div class="quote">${esc(d.riskReason)}</div>`:""}`;
+    const sev=lvl("Destek",lv.destek,"c-green")+lvl("Direnç",lv.direnc,"c-red")+lvl("Hedef",lv.hedef,"c-green")+lvl("Stop-loss",lv.stop,"c-red");
+    if(sev)h+=`<div class="sec-title">Önemli seviyeler</div><div class="lvls">${sev}</div>`;
+    if(an&&an.available){
+      h+=`<div class="sec-title">Analist beklentisi</div><div class="anbox">
+        <div class="row"><span>${an.analist_sayisi} kurum · <b class="${an.konsensus==='AL'?'c-green':an.konsensus==='SAT'?'c-red':'c-yellow'}">${esc(an.konsensus)}</b></span>
           <span>Ort. hedef <b>${fmt(an.ortalama_hedef)} ₺</b> <span class="${signCls(an.potansiyel)}">${pct(an.potansiyel)}</span></span></div>
         <div class="row" style="margin-top:11px;font-size:12.5px"><span class="c-green">AL ${an.al_sayisi}</span>
           <span class="c-yellow">TUT ${an.tut_sayisi}</span><span class="c-red">SAT ${an.sat_sayisi}</span></div></div>`;}
     if(d.haberler&&d.haberler.length){h+=`<div class="sec-title">Haber etkisi</div>`+
-      d.haberler.map(n=>`<div class="news-hero" style="margin-bottom:10px"><div class="banner" style="height:60px;font-size:28px;background:${n.gradient}">${n.ikon}</div>
+      d.haberler.map(n=>`<div class="news-hero" style="margin-bottom:10px"><div class="banner" style="height:56px;background:${n.gradient}">
+        <div class="bico" style="width:32px;height:32px;font-size:16px">${n.ikon}</div><div class="bcat">${esc(n.kategori)}</div></div>
         <div class="body" style="padding:12px"><div class="baslik" style="font-size:13.5px;margin:0 0 6px">${esc(n.baslik)}</div>
-          <div class="meta"><span class="chip">${esc(n.kategori)}</span>${n.tarih?`<span class="chip">${esc(n.tarih)}</span>`:""}
-            ${n.url?`<a class="kaplink" href="${esc(n.url)}" target="_blank">🔗</a>`:""}</div></div></div>`).join("");}
+          <div class="meta">${n.tarih?`<span class="chip">${esc(n.tarih)}</span>`:""}
+            ${n.url?`<a class="kaplink" href="${esc(n.url)}" target="_blank">🔗 Kaynak</a>`:""}</div></div></div>`).join("");}
     if(d.benzer_donem)h+=`<div class="sec-title">Benzer dönem</div><div class="quote">${esc(d.benzer_donem)}</div>`;
     document.getElementById("ov-body").innerHTML=h;
   }catch(e){document.getElementById("ov-body").innerHTML=empty("Detay yüklenemedi")}}
