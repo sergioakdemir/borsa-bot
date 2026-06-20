@@ -809,9 +809,12 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "gunluk": gunluk,
             "kz": kz,
             "kz_yuzde": kz_yuzde,
-            # yeni arayuz: sade karar + kisa yorum + aksiyon + risk
+            # yeni arayuz: sade karar + kisa yorum + aksiyon + yumusak durum
             "karar": st.get("decision"), "karar_renk": st.get("decision_renk", "gray"),
-            "summary": st.get("summary", ""), "action": st.get("action", ""),
+            "cardText": st.get("cardText", ""), "actionText": st.get("actionText", ""),
+            "statusPhrase": st.get("statusPhrase", ""), "statusColor": st.get("statusColor", "gray"),
+            # geriye donuk
+            "summary": st.get("cardText", ""), "action": st.get("actionText", ""),
             "risk": st.get("risk", "—"), "risk_renk": st.get("risk_renk", "gray"),
             "riskReason": st.get("riskReason", ""),
             "tarih": r.get("alim_tarihi"),
@@ -1178,30 +1181,32 @@ def get_alerts() -> list[dict]:
     # 2) AI sinyalleri + fiyatlanmamis haberler -> kullanicinin anlayacagi bot ozeti
     for rec in _commentary_by_ticker().values():
         tkr = (rec.get("ticker") or "").upper()
+        ad = company_name(tkr)
         etiket, _ = _karar5(rec.get("final_decision"))
-        ozet = _cap(_ilk_cumleler(rec.get("gerekce") or "", 2), 140)
+        ozet = _clean_summary(rec.get("gerekce") or "", 140, _AKSIYON.get(etiket, ""))
         if etiket == "AL":
-            out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "firsat",
+            out.append({"ticker": tkr, "isim": ad, "tip": "firsat",
                         "tur": "Karar Güncellendi",
-                        "baslik": f"{tkr} için fırsat sinyali",
-                        "aciklama": ozet or "Olumlu görünüm; radarda değerlendirilebilir.",
+                        "baslik": _cap(f"{tkr} fırsat olabilir", 45),
+                        "aciklama": ozet or "Görünüm olumlu; radarda değerlendirilebilir.",
                         "ilgili": [tkr], "ham_baslik": None,
                         "kaynak": "AI Analiz", "url": None, "tarih": None})
         elif etiket in ("SAT", "AZALT"):
-            out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "uyari",
+            out.append({"ticker": tkr, "isim": ad, "tip": "uyari",
                         "tur": "Kritik Uyarı",
-                        "baslik": f"{tkr} için dikkat",
-                        "aciklama": ozet or "Zayıf görünüm; pozisyon gözden geçirilmeli.",
+                        "baslik": _cap(f"{tkr} için dikkat", 45),
+                        "aciklama": ozet or "Görünüm zayıf; pozisyon gözden geçirilmeli.",
                         "ilgili": [tkr], "ham_baslik": None,
                         "kaynak": "AI Analiz", "url": None, "tarih": None})
         for hb in (rec.get("haberler") or []):
             if hb.get("fiyatlanma") == "FIYATLANMADI":
-                out.append({"ticker": tkr, "isim": company_name(tkr), "tip": "haber",
+                # generic tekrar yerine hissenin kendi durumundan kisa, ozel yorum
+                aciklama = ozet or (f"{ad} tarafında yeni bir gelişme var; "
+                                    "etkisi henüz fiyata yansımadı.")
+                out.append({"ticker": tkr, "isim": ad, "tip": "haber",
                             "tur": "Haber Etkisi",
-                            "baslik": f"{tkr} için haber etkisi",
-                            "aciklama": _cap(
-                                f"{tkr} tarafında yeni bir gelişme henüz fiyata "
-                                "yansımamış görünüyor; etkisi izlenmeli.", 140),
+                            "baslik": _cap(f"{tkr} için gelişme ihtimali", 45),
+                            "aciklama": _cap(aciklama, 140),
                             "ilgili": [tkr], "ham_baslik": hb.get("baslik"),
                             "kaynak": hb.get("kaynak") or "KAP", "url": hb.get("url"),
                             "tarih": hb.get("tarih")})
@@ -1309,20 +1314,46 @@ _AKSIYON = {
     "SAT": "Satışı değerlendir.",
 }
 
+# Ana kartlarda "Risk: Yüksek" yerine dogal, yumusak durum ifadesi (renk: green/yellow/red/gray)
+_STATUS = {
+    "AL": ("Fırsat olabilir", "green"),
+    "BEKLE": ("Yeni alım için net değil", "yellow"),
+    "TUT": ("Pozisyon korunabilir", "gray"),
+    "AZALT": ("Yakından izle", "red"),
+    "SAT": ("Riskli, dikkatli ol", "red"),
+}
+
+
+def _status_phrase(decision: str, risk_score=None):
+    """Karar + risk -> sade durum ifadesi. Yuksek riskte tonu sertlestirir."""
+    metin, renk = _STATUS.get(decision, ("İzlemede", "gray"))
+    if decision in ("TUT", "BEKLE") and (risk_score or 0) >= 7:
+        return ("Şimdilik sakin, dikkatli ol", "yellow")
+    return (metin, renk)
+
 
 def _structured(rec: dict) -> dict:
-    """AI ciktisini sade alanlara boler: decision/summary/reason/risk/riskReason/action."""
+    """AI ciktisini her ekran icin AYRI sade alanlara boler (formatter katmani):
+    decision / cardText / actionText / radarText / reasonShort / reasonLong /
+    statusPhrase (+ teknik: risk / riskReason)."""
     etiket, renk = _karar5(rec.get("final_decision"))
     gerekce = rec.get("gerekce", "") or ""
     rs = (rec.get("risk") or {}).get("score")
     rk, rkr = _risk_kisa(rs)
+    action = _AKSIYON.get(etiket, "")
+    sp, spc = _status_phrase(etiket, rs)
+    card = _clean_summary(gerekce, 160, action)
     return {
         "decision": etiket, "decision_renk": renk,
-        "summary": _clean_summary(gerekce, 160, _AKSIYON.get(etiket, "")),
-        "reason": _cap(gerekce, 500),
-        "risk": rk, "risk_renk": rkr,
-        "riskReason": _cap(_risk_sebep(rec), 80),
-        "action": _AKSIYON.get(etiket, ""),
+        "cardText": card, "actionText": _cap(action, 80),
+        "radarText": _clean_summary(gerekce, 120, action),
+        "reasonShort": _clean_summary(gerekce, 240, action),
+        "reasonLong": _cap(gerekce, 500),
+        "statusPhrase": sp, "statusColor": spc,
+        # teknik (yalniz detay ekraninda gosterilir)
+        "risk": rk, "risk_renk": rkr, "riskReason": _cap(_risk_sebep(rec), 80),
+        # geriye donuk uyumluluk
+        "summary": card, "reason": _cap(gerekce, 500), "action": action,
     }
 
 
@@ -1368,13 +1399,17 @@ def _mini_view(rec: dict, ozet_limit: int = 160) -> dict:
     tkr = (rec.get("ticker") or "").upper()
     sig = rec.get("kullanilan_on_sinyal", {}) or {}
     st = _structured(rec)
+    cardtext = st["radarText"] if ozet_limit <= 120 else st["cardText"]
     return {
         "ticker": tkr, "isim": company_name(tkr),
         "market": rec.get("market", "bist"),
         "etiket": st["decision"], "renk": st["decision_renk"],
         "fiyat": sig.get("son_kapanis"), "gunluk": sig.get("gunluk_degisim_%"),
         "para_birimi": rec.get("para_birimi", "₺"),
-        "summary": _cap(st["summary"], ozet_limit), "action": st["action"],
+        "cardText": cardtext, "actionText": st["actionText"],
+        "statusPhrase": st["statusPhrase"], "statusColor": st["statusColor"],
+        # geriye donuk + ic mantik (today etiketleri risk_renk kullanir)
+        "summary": cardtext, "action": st["actionText"],
         "risk": st["risk"], "risk_renk": st["risk_renk"], "riskReason": st["riskReason"],
         "skor": rec.get("score"),
     }
@@ -1449,10 +1484,14 @@ def get_today(kullanici=None) -> dict:
     owned = _owned_by_user(kullanici)
     recs = [comm[t] for t in owned if t in comm and not comm[t].get("skipped")]
 
-    saat = datetime.now(ZoneInfo("Europe/Istanbul")).hour
+    now = datetime.now(ZoneInfo("Europe/Istanbul"))
+    saat = now.hour
     selam = ("Günaydın" if 5 <= saat < 12 else
              "İyi günler" if 12 <= saat < 18 else "İyi akşamlar")
     ad = _USER_AD.get((kullanici or "").lower(), (kullanici or "").title() or "")
+    _AYLAR = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    tarih_str = f"Bugün · {now.day} {_AYLAR[now.month]}"
 
     hisseler = [_mini_view(r) for r in recs]
     sat_n = sum(1 for h in hisseler if h["etiket"] in ("SAT", "AZALT"))
@@ -1482,9 +1521,10 @@ def get_today(kullanici=None) -> dict:
         etki = ("Negatif" if etiket5 in ("SAT", "AZALT") else
                 "Pozitif" if etiket5 == "AL" else "Nötr")
         haber = {**gor, "baslik": hb.get("baslik"), "tarih": hb.get("tarih"),
-                 "kaynak": hb.get("kaynak"), "url": hb.get("url"),
+                 "kaynak": hb.get("kaynak"), "url": hb.get("url"), "ticker": tkr,
                  "etkilenen": [tkr], "etki": etki,
-                 "yorum": _cap(_ilk_cumleler(rec.get("gerekce", ""), 1), 140)}
+                 "yorum": _clean_summary(rec.get("gerekce", ""), 140,
+                                         _AKSIYON.get(etiket5, ""))}
 
     firsatlar = [_mini_view(r) for r in comm.values()
                  if _karar5(r.get("final_decision"))[0] == "AL"
@@ -1493,6 +1533,7 @@ def get_today(kullanici=None) -> dict:
 
     return {
         "selamlama": f"{selam}{(' ' + ad) if ad else ''}",
+        "tarih": tarih_str,
         "portfoy_yorum": _cap(_overview_fallback(recs), 280),   # AI yorumu /api/overview ile asenkron
         "etiketler": etiketler,
         "hisseler": hisseler,
@@ -1679,6 +1720,22 @@ def get_news(limit: int = 20) -> list[dict]:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/manifest.webmanifest")
+def manifest():
+    return jsonify({
+        "name": "Borsa Takip", "short_name": "Borsa Takip",
+        "description": "Kişisel borsa asistanı",
+        "start_url": "/", "scope": "/", "display": "standalone",
+        "orientation": "portrait",
+        "background_color": "#06080D", "theme_color": "#06080D",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png",
+             "purpose": "any maskable"},
+        ],
+    })
 
 
 @app.route("/api/stocks")
