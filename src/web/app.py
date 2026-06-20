@@ -474,7 +474,7 @@ def search_us(q: str) -> list[dict]:
         return []
     quotes = quotes[:8]
     syms = [x["symbol"] for x in quotes]
-    prices = _us_prices(syms)
+    prices = _yf_prices(syms)
     out = []
     for x in quotes:
         s = x["symbol"]
@@ -487,13 +487,22 @@ def search_us(q: str) -> list[dict]:
     return out
 
 
-def _us_prices(symbols: list[str]) -> dict:
-    """Coklu ABD sembolu icin {sembol: {fiyat, gunluk}} (tek toplu istek)."""
+def _yf_prices(symbols: list[str]) -> dict:
+    """Coklu yfinance sembolu icin {sembol: {fiyat, gunluk}} (tek toplu istek).
+
+    BIST (.IS), ABD ve diger yfinance sembolleri ile calisir. Kisa TTL onbellegi
+    ile ayni sembol setini tekrar tekrar cekmekten kacinir.
+    """
+    symbols = sorted({s for s in symbols if s})
     if not symbols:
         return {}
+    ck = "yfpx:" + ",".join(symbols)
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
     try:
         import yfinance as yf
-        df = yf.download(symbols, period="2d", progress=False,
+        df = yf.download(symbols, period="5d", progress=False,
                          threads=True, auto_adjust=True)
     except Exception:
         return {}
@@ -514,7 +523,21 @@ def _us_prices(symbols: list[str]) -> dict:
                 out[s] = {"fiyat": round(float(col.iloc[-1]), 2), "gunluk": None}
         except Exception:
             continue
+    _cache_set(ck, out)
     return out
+
+
+def _yf_symbol(ticker: str, para_birimi: str = "TL") -> str:
+    """Portfoy ticker'ini dogru yfinance sembolune cevirir.
+
+    - TL (BIST): taban kod + '.IS' (yanlis ekleri ele; 'GMSTR.F' -> 'GMSTR.IS')
+    - USD (ABD): kod oldugu gibi (orn. 'AAPL')
+    """
+    t = (ticker or "").upper().strip()
+    if (para_birimi or "TL").upper() == "USD":
+        return t
+    base = t.split(".")[0]
+    return f"{base}.IS" if base else t
 
 
 def search_crypto(q: str) -> list[dict]:
@@ -604,7 +627,7 @@ def get_stocks() -> dict:
     diger = wl.get("kisisel_diger", []) or []
     us_syms = [d["ticker"] for d in diger if d.get("market") == "abd"]
     cg_ids = [d.get("cg_id") for d in diger if d.get("market") == "kripto" and d.get("cg_id")]
-    us_px = _us_prices(us_syms) if us_syms else {}
+    us_px = _yf_prices(us_syms) if us_syms else {}
     cg_px = _crypto_prices(",".join(cg_ids)) if cg_ids else {}
     for d in diger:
         if d.get("market") == "abd":
@@ -667,13 +690,29 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             rows = [dict(r) for r in c.execute(
                 "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
 
+    # Guncel fiyat = CANLI yfinance (dogru sembolle). Bayat snapshot degil.
+    # GMSTR.F -> GMSTR.IS, TUPRS -> TUPRS.IS, USD hisseleri kendi koduyla.
+    sym_of = {r["id"]: _yf_symbol(r["ticker"], r.get("para_birimi"))
+              for r in rows}
+    live = _yf_prices(list(sym_of.values())) if rows else {}
+
     for r in rows:
-        tkr = (r["ticker"] or "").upper()
+        raw = (r["ticker"] or "").upper()
+        birim_kod = (r.get("para_birimi") or "TL").upper()
+        # BIST kodu gosterimde sade olsun (GMSTR.F -> GMSTR); USD oldugu gibi
+        tkr = raw if birim_kod == "USD" else raw.split(".")[0] or raw
         adet = r["adet"] or 0.0
         alis = r["alim_fiyati"] or 0.0
         rec = comm.get(tkr, {}) or {}
         sig = rec.get("kullanilan_on_sinyal", {}) or {}
-        guncel = sig.get("son_kapanis")
+        lp = live.get(sym_of.get(r["id"]), {}) or {}
+        # canli fiyat -> yoksa snapshot son_kapanis -> yoksa None
+        guncel = lp.get("fiyat")
+        if guncel is None:
+            guncel = sig.get("son_kapanis")
+        gunluk = lp.get("gunluk")
+        if gunluk is None:
+            gunluk = sig.get("gunluk_degisim_%")
         etiket, renk = _classify(rec.get("final_decision"))
         maliyet = adet * alis
         toplam_maliyet += maliyet
@@ -696,7 +735,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "adet": adet,
             "alis": alis,
             "guncel": guncel,
-            "gunluk": sig.get("gunluk_degisim_%"),
+            "gunluk": gunluk,
             "kz": kz,
             "kz_yuzde": kz_yuzde,
             "etiket": etiket,
