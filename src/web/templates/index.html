@@ -234,6 +234,20 @@
   .quote{font-size:14.5px;line-height:1.55;color:#D9DEE7}
   .anbox{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px}
 
+  /* ---- zaman filtreli grafik ---- */
+  .periods{display:flex;gap:6px;margin:12px 0 2px}
+  .periods button{flex:1;background:var(--card);border:1px solid var(--border);color:var(--muted);
+    border-radius:11px;padding:8px 0;font-size:12.5px;font-weight:650;min-height:38px}
+  .periods button.active{border-color:rgba(52,211,153,.4);color:var(--green);background:var(--green-bg)}
+  #chart{margin-top:8px;min-height:122px;transition:opacity .18s var(--ease)}
+  .chart-svg .grid{stroke:rgba(255,255,255,.06);stroke-width:1}
+  .chart-svg .area{opacity:0;animation:areain .4s var(--ease) forwards}
+  .chart-svg .line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+  .chart-svg .line.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .55s var(--ease) forwards}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  @keyframes areain{to{opacity:1}}
+  .chart-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted2);margin-top:4px}
+
   /* ---- bottom sheet (menu / portfoy ekle) ---- */
   .sheet{position:fixed;left:0;right:0;bottom:0;z-index:55;background:var(--card);
     border-top:1px solid var(--border2);border-radius:24px 24px 0 0;
@@ -609,12 +623,30 @@ function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;const link=a.url?`<a c
     <div class="anbox" style="margin-top:16px"><div class="row"><span class="muted">Kaynak: <b style="color:#fff">${esc(a.kaynak||"—")}</b></span><span class="muted">${esc(a.tarih||"")}</span></div>${link?`<div style="margin-top:10px">${link}</div>`:""}</div>`)}
 
 /* ============ HISSE DETAY ============ */
-function sparkline(pts){if(!pts||pts.length<2)return"";const cs=pts.map(p=>p.c);
-  const mn=Math.min(...cs),mx=Math.max(...cs),W=320,H=70,n=cs.length;
-  const x=i=>i/(n-1)*W,y=c=>mx===mn?H/2:H-4-(c-mn)/(mx-mn)*(H-8);
-  const dp=cs.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ");
-  const up=cs[cs.length-1]>=cs[0];
-  return`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="margin-top:8px"><path d="${dp}" fill="none" stroke="${up?'var(--green)':'var(--red)'}" stroke-width="2"/></svg>`}
+const PERIODS=["1A","2A","3A","6A","1Y","5Y"];
+function chartSVG(pts,bcur){
+  if(!pts||pts.length<2)return`<div class="muted" style="padding:36px 0;text-align:center;font-size:13px">Grafik verisi yok</div>`;
+  const cs=pts.map(p=>p.c);const mn=Math.min(...cs),mx=Math.max(...cs);
+  const W=320,H=120,pad=8,n=cs.length;
+  const x=i=>(i/(n-1))*W,y=c=>mx===mn?H/2:pad+(1-(c-mn)/(mx-mn))*(H-2*pad);
+  const line=cs.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ");
+  const area=`M0 ${H} `+cs.map((c,i)=>`L${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ")+` L${W} ${H} Z`;
+  const grid=[0.25,0.5,0.75].map(f=>{const yy=(pad+f*(H-2*pad)).toFixed(1);return`<line class="grid" x1="0" y1="${yy}" x2="${W}" y2="${yy}"/>`}).join("");
+  const up=cs[cs.length-1]>=cs[0];const col=up?"#34D399":"#F87171";
+  return`<svg class="chart-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="garea" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="${col}" stop-opacity="0.20"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+    ${grid}<path class="area" d="${area}" fill="url(#garea)"/><path class="line draw" pathLength="1" d="${line}" style="stroke:${col}"/></svg>
+    <div class="chart-meta"><span>En düşük ${money(mn,bcur)}</span><span>En yüksek ${money(mx,bcur)}</span></div>`}
+async function loadSeries(ticker,market,period,btn){
+  document.querySelectorAll("#chartbox .periods button").forEach(b=>b.classList.remove("active"));btn.classList.add("active");
+  const c=document.getElementById("chart");c.style.opacity=".35";const bcur=btn.dataset.bcur||"₺";
+  try{const d=await(await fetch(`/api/series/${encodeURIComponent(ticker)}?market=${market}&period=${period}`)).json();
+    c.innerHTML=chartSVG(d.grafik,bcur);c.style.opacity="1";
+  }catch(e){c.style.opacity="1";c.innerHTML=`<div class="muted" style="padding:36px 0;text-align:center;font-size:13px">Grafik yüklenemedi</div>`}}
+function chartBox(ticker,market,grafik,bcur){
+  return`<div id="chartbox"><div class="periods">${PERIODS.map(p=>`<button class="${p==='1A'?'active':''}" data-bcur="${bcur}" onclick="loadSeries('${ticker}','${market}','${p}',this)">${p}</button>`).join("")}</div>
+    <div id="chart">${chartSVG(grafik,bcur)}</div></div>`}
 async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;const market=s?(s.market||"bist"):"bist";
   ovShow(`<div class="spin">Yükleniyor…</div>`);
   try{const d=await(await fetch(`/api/stock/${encodeURIComponent(ticker)}?market=${market}`)).json();const lv=d.seviyeler||{};const an=d.analist;
@@ -622,7 +654,7 @@ async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;con
     let h=`<div class="row"><div><h2 style="font-size:22px;font-weight:700">${esc(d.isim)}</h2><div class="tick">${esc(d.ticker)}${mtag(d.market)}</div></div>${pill(d.decision,d.renk)}</div>
       <div class="row" style="margin-top:12px"><div><div class="price" style="font-size:24px">${money(d.fiyat,d.para_birimi)}</div><div class="chg ${signCls(d.gunluk)}">${pct(d.gunluk)}</div></div>
         <div style="text-align:right">${statusLine({statusPhrase:d.statusPhrase||("Risk: "+d.risk),statusColor:d.risk_renk})}<div class="muted" style="font-size:11.5px;margin-top:6px">Güven: ${esc(d.guven)}</div></div></div>
-      ${sparkline(d.grafik)}
+      ${chartBox(d.ticker,d.market,d.grafik,d.para_birimi||"₺")}
       ${d.action?`<div class="anbox" style="margin-top:14px;border-color:rgba(52,211,153,.3)"><b class="c-green">Ne yapmalı?</b> ${esc(d.action)}</div>`:""}
       <div class="sec-title">Bot yorumu</div><div class="quote">${esc(d.reason)}</div>
       ${d.riskReason&&d.riskReason!=="—"?`<div class="sec-title">Risk · ${esc(d.risk)}</div><div class="quote">${esc(d.riskReason)}</div>`:""}`;

@@ -1833,6 +1833,24 @@ def api_stock(ticker):
     return jsonify(get_stock_detail(ticker, request.args.get("market", "bist")))
 
 
+_PERIODS = {"1A": 30, "2A": 60, "3A": 90, "6A": 180, "1Y": 365, "5Y": 1825}
+
+
+@app.route("/api/series/<ticker>")
+def api_series(ticker):
+    """Zaman filtreli fiyat serisi (1A/2A/3A/6A/1Y/5Y). SVG icin <=180 noktaya seyreltir."""
+    market = request.args.get("market", "bist")
+    period = (request.args.get("period") or "1A").upper()
+    gun = _PERIODS.get(period, 30)
+    ps = _price_series(ticker, market, gun)
+    seri = ps["seri"]
+    if len(seri) > 180:                       # uzun periyotlarda seyrelt (son nokta korunur)
+        step = len(seri) // 180 + 1
+        seri = seri[::step] + ([seri[-1]] if (len(seri) - 1) % step else [])
+    return jsonify({"period": period, "grafik": seri,
+                    "dusuk": ps["dusuk"], "yuksek": ps["yuksek"], "son": ps["son"]})
+
+
 @app.route("/api/ask", methods=["POST"])
 @app.route("/api/chat", methods=["POST"])
 def api_ask():
