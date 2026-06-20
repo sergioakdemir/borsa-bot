@@ -106,6 +106,11 @@
   .firsat-card .fprice { font-size: 12.5px; color: var(--muted); margin-top: 9px; font-weight: 600; }
 
   /* ---------- hisse kart ---------- */
+  /* uzun basilabilen ogeler: tarayicinin secim/callout jestini kapat */
+  .card, .wl-row, .firsat-card {
+    -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 18px; padding: 16px 18px; margin-bottom: 12px;
@@ -247,8 +252,10 @@
   .tag.fresh { color: var(--green); background: rgba(0,200,83,.12); }
 
   /* ---------- aksiyon menusu (uzun basinca) ---------- */
+  /* arama modali z-index 50; menu onun da ustunde olmali ki gorunsun */
+  #menu-scrim { z-index: 54; }
   .menu {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 46;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
     background: var(--card); border-top: 1px solid var(--border);
     border-radius: 22px 22px 0 0; padding: 8px 16px calc(20px + env(safe-area-inset-bottom));
     transform: translateY(100%); transition: transform .25s cubic-bezier(.32,.72,0,1);
@@ -382,7 +389,7 @@
 </div>
 
 <!-- aksiyon menusu (uzun basinca) -->
-<div class="scrim" id="menu-scrim" onclick="closeMenu()"></div>
+<div class="scrim" id="menu-scrim" onclick="menuScrimClose()"></div>
 <div class="menu" id="menu">
   <div class="mhead" id="menu-head"></div>
   <div id="menu-body"></div>
@@ -478,35 +485,55 @@ async function loadSummary() {
   } catch (e) {}
 }
 
-/* ---------- uzun basma (long-press) yonetimi ---------- */
-let lpTimer = null, lpFired = false, lpX = 0, lpY = 0;
-function lpDown(e, k, ctx) {
-  lpFired = false;
+/* ---------- uzun basma (long-press) yonetimi ----------
+   Mobilde guvenilir calismasi icin pointer degil dogrudan touch olaylari
+   kullanilir (tarayici secim/scroll jestinde pointercancel firlatip zamani
+   iptal ediyordu). Secim/callout CSS ile (user-select/touch-callout: none)
+   kapatildi; varsayilan menu de oncontextmenu ile engellenir. */
+let lpTimer = null, lpFired = false, lpMoved = false, lpX = 0, lpY = 0, lpTouchTs = 0;
+function lpStart(e, k, ctx) {
+  // touchstart sonrasi sentezlenen mousedown'i yok say (cift tetikleme onleme)
+  if (e.type === "mousedown" && (Date.now() - lpTouchTs) < 700) return;
+  if (e.type === "touchstart") lpTouchTs = Date.now();
+  lpFired = false; lpMoved = false;
   const p = e.touches ? e.touches[0] : e;
   lpX = p.clientX; lpY = p.clientY;
+  clearTimeout(lpTimer);
   lpTimer = setTimeout(() => {
-    lpFired = true;
-    if (navigator.vibrate) navigator.vibrate(15);
+    lpTimer = null; lpFired = true;
+    if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) {} }
     openMenu(k, ctx);
   }, 500);
 }
-function lpMove(e) {
-  if (!lpTimer) return;
+function lpMoveH(e) {
   const p = e.touches ? e.touches[0] : e;
   if (Math.abs(p.clientX - lpX) > 10 || Math.abs(p.clientY - lpY) > 10) {
-    clearTimeout(lpTimer); lpTimer = null;
+    lpMoved = true;                       // kaydirma: uzun basma sayilmaz
+    if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
   }
 }
-function lpUp() { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } }
-function lpTap(k) {           // tek dokunus: uzun basma tetiklendiyse yut
-  if (lpFired) { lpFired = false; return; }
+function lpEnd(e) {
+  if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+  // uzun basma tetiklendiyse: parmak kalkinca olusan hayalet tikla(ma)yi engelle
+  // (aksi halde menu scrim'ine dusup menuyu aninda kapatiyordu)
+  if (lpFired && e && e.cancelable && e.preventDefault) e.preventDefault();
+}
+function lpTap(e, k) {                     // tek dokunus: uzun basma/kaydirma olduysa yut
+  if (lpFired || lpMoved) {
+    if (e && e.preventDefault) e.preventDefault();
+    lpFired = false; lpMoved = false; return;
+  }
   openSheet(k);
 }
-/* uzun basma + dokunma davranisini elemana baglayan ortak nitelik dizgesi */
+/* uzun basma + dokunma davranisini elemana baglayan ortak nitelik dizgesi.
+   touch (mobil) ve mouse (masaustu) olaylari ayri ayri baglanir. */
 function lpAttr(k, ctx) {
-  return `onpointerdown="lpDown(event,'${k}','${ctx}')" onpointermove="lpMove(event)" `
-       + `onpointerup="lpUp()" onpointercancel="lpUp()" oncontextmenu="return false" `
-       + `onclick="lpTap('${k}')"`;
+  return `ontouchstart="lpStart(event,'${k}','${ctx}')" ontouchmove="lpMoveH(event)" `
+       + `ontouchend="lpEnd(event)" ontouchcancel="lpEnd(event)" `
+       + `onmousedown="lpStart(event,'${k}','${ctx}')" onmousemove="lpMoveH(event)" `
+       + `onmouseup="lpEnd(event)" onmouseleave="lpEnd(event)" `
+       + `oncontextmenu="event.preventDefault();return false" `
+       + `onclick="lpTap(event,'${k}')"`;
 }
 
 /* ---------- hisse kart (portfoyum) ---------- */
@@ -545,8 +572,10 @@ function richCard(s) {
     </div>`;
 }
 
-/* ---------- takip listesi satiri (ince ayirici) ---------- */
-function wlRow(s) {
+/* ---------- takip listesi / arama sonucu satiri (ince ayirici) ----------
+   ctx: 'watch' (takip listesi -> Cikar) veya 'search' (arama -> Ekle) */
+function wlRow(s, ctx) {
+  ctx = ctx || "watch";
   const k = reg(s);
   const mtag = s.market !== "bist"
     ? `<span class="mtag ${s.market}">${s.market === "abd" ? "ABD" : "KRP"}</span>` : "";
@@ -558,7 +587,7 @@ function wlRow(s) {
        </div>
        ${s.etiket ? `<span class="badge ${s.renk}">${s.etiket}</span>` : ""}`;
   return `
-    <div class="wl-row" ${lpAttr(k, 'watch')}>
+    <div class="wl-row" ${lpAttr(k, ctx)}>
       <div><div class="name">${esc(s.isim)}${mtag}</div>
         <div class="tick">${esc(s.ticker)}</div></div>
       <div class="wl-r">${right}</div>
@@ -608,7 +637,7 @@ async function loadAna() {
         <button class="addbtn" onclick="openSearch()" aria-label="Takibe ekle">+</button>
       </div>`;
     html += d.takip.length
-      ? `<div class="wl">${d.takip.map(wlRow).join("")}</div>`
+      ? `<div class="wl">${d.takip.map(s => wlRow(s, "watch")).join("")}</div>`
       : empty("Takip listen boş. Eklemek için + butonuna dokun.");
 
     el.innerHTML = html;
@@ -645,16 +674,18 @@ function doSearch(q) {
       const list = await (await fetch(
         `/api/search?market=${CUR_MARKET}&q=` + encodeURIComponent(q))).json();
       res.innerHTML = list.length
-        ? `<div class="wl">${list.map(wlRow).join("")}</div>`
+        ? `<div class="wl">${list.map(s => wlRow(s, "search")).join("")}</div>`
         : `<div class="sm-hint">"${esc(q)}" için sonuç yok.</div>`;
     } catch (e) { res.innerHTML = `<div class="sm-hint">Arama yapılamadı.</div>`; }
   }, 280);
 }
 
 /* ---------- AKSIYON MENUSU (uzun basinca) ---------- */
+let menuOpenedAt = 0;
 function openMenu(k, ctx) {
   const s = STOCK_INDEX[k];
   if (!s) return;
+  menuOpenedAt = Date.now();
   let btns = "";
   if (ctx === "watch") {
     btns += `<button class="danger" onclick="actRemove('${k}')"><span class="mi">🗑️</span>Takipten Çıkar</button>`;
@@ -671,6 +702,11 @@ function openMenu(k, ctx) {
 function closeMenu() {
   document.getElementById("menu-scrim").classList.remove("open");
   document.getElementById("menu").classList.remove("open");
+}
+/* scrim'e dokununca kapat — ama acilistan hemen sonraki hayalet tikla(ma)yi yut */
+function menuScrimClose() {
+  if (Date.now() - menuOpenedAt < 400) return;
+  closeMenu();
 }
 async function actAdd(k) {
   const s = STOCK_INDEX[k]; closeMenu();
@@ -696,7 +732,7 @@ async function actRemove(k) {
     if (document.getElementById("page-ana").classList.contains("active")) loadAna();
   } catch (e) { toast("Çıkarılamadı"); }
 }
-function actAnalyze(k) { closeMenu(); openSheet(k); }
+function actAnalyze(k) { closeMenu(); closeSearch(); openSheet(k); }
 
 /* ---------- DETAY PANELI ---------- */
 function bar(k, v) {
