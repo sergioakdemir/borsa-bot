@@ -337,6 +337,7 @@ def _stock_card(rec: dict) -> dict:
         "puan_detay": _puan_detay(rec, sig),
         "son_haber": _son_haber(rec),
         "firsat_neden": _firsat_neden(rec),
+        "analist": rec.get("analist"),
         "has_data": True,
     }
     card["aciklama"] = _aciklama(card)
@@ -355,7 +356,7 @@ def _minimal_card(ticker: str) -> dict:
         "trend": None, "fiyat_konumu": None, "hacim": None,
         "yorum": "", "ozet": "", "aciklama": "", "gozlemler": [],
         "puan_detay": {}, "son_haber": None, "firsat_neden": "",
-        "has_data": False,
+        "analist": None, "has_data": False,
     }
 
 

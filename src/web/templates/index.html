@@ -919,6 +919,25 @@ function openSheet(k) {
             ${unpriced ? `<span class="tag warn">FİYATLANMADI</span>` : ""}
           </div></div>`;
     }
+    let analist = "";
+    if (s.analist && s.analist.available) {
+      const a = s.analist;
+      const kons = a.konsensus || "—";
+      const kc = kons === "AL" ? "pos" : (kons === "SAT" ? "neg" : "flat");
+      analist = `<div class="block-title">Analist Konsensüsü</div>
+        <div class="news">
+          <div class="sheet-row">
+            <span>${a.analist_sayisi ?? "—"} kurum · <b class="${kc}">${kons}</b></span>
+            <span>Ort. hedef <b>${fmt(a.ortalama_hedef)} ₺</b>
+              <span class="${signCls(a.potansiyel)}">${pct(a.potansiyel)}</span></span>
+          </div>
+          <div class="card-foot" style="margin-top:11px">
+            <span class="pos">AL <b>${a.al_sayisi ?? 0}</b></span><span class="sep">·</span>
+            <span class="flat">TUT <b>${a.tut_sayisi ?? 0}</b></span><span class="sep">·</span>
+            <span class="neg">SAT <b>${a.sat_sayisi ?? 0}</b></span>
+          </div>
+        </div>`;
+    }
     body = `
       <div class="sheet-row">
         <div><h3>${esc(s.isim)}</h3><div class="sub">${esc(s.ticker)} · ${money(s.fiyat, s.para_birimi)}
@@ -930,6 +949,7 @@ function openSheet(k) {
       <button class="explain-btn" id="explain-btn" onclick="toggleExplain()">
         💡 <span>Bana açıkla</span></button>
       <div class="explain-body" id="explain-body" style="display:none">${esc(s.aciklama)}</div>
+      ${analist}
       <div class="block-title">Puan Detayı</div>
       ${bar("Şirket sağlığı", pd.sirket_sagligi ?? 0)}
       ${bar("Fiyat", pd.fiyat ?? 0)}
