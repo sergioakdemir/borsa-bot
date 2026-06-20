@@ -74,6 +74,12 @@ _SEARCH_TTL = 60.0  # saniye
 _OPPORTUNITY_MIN = 8  # firsat bolgesine girmek icin gereken puan
 _VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
 
+# Portfoy ticker -> bigpara fiyat kaynagi (yfinance'de olmayan/yanlis gelen
+# enstrumanlar icin). KAP_PROXY_URL uzerinden cekilir. Deger = bigpara URL slug'i.
+_BIGPARA_SOURCES = {
+    "GMSTR.F": "gmstrf-finans-portfoy-gumus-byf-detay",
+}
+
 
 # ----------------------------------------------------------------------------
 # BIST sirket adlari (ticker -> tam unvan). Yerel; disariya cikmaz.
@@ -540,6 +546,43 @@ def _yf_symbol(ticker: str, para_birimi: str = "TL") -> str:
     return f"{base}.IS" if base else t
 
 
+def _bigpara_price(slug: str) -> dict:
+    """bigpara.hurriyet.com.tr hisse detay sayfasindan {fiyat, gunluk} ceker.
+
+    KAP_PROXY_URL (TR cikisli proxy) uzerinden curl_cffi ile istenir; kisa TTL
+    onbellekli. yfinance'de bulunmayan BYF/fonlar icin yedek fiyat kaynagi.
+    """
+    ck = "bp:" + slug
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    proxy = os.environ.get("KAP_PROXY_URL")
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    url = f"https://bigpara.hurriyet.com.tr/borsa/hisse-fiyatlari/{slug}/"
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, impersonate="chrome", proxies=proxies, timeout=20)
+        if r.status_code != 200:
+            return {}
+        html = r.text
+    except Exception:
+        return {}
+    pairs = dict(re.findall(
+        r'<span class="name">([^<]+)</span>\s*<span class="value"[^>]*>([^<]+)</span>',
+        html))
+    out = {}
+    fiyat = _num(pairs.get("Son İşlem Fiyatı") or pairs.get("Satış"))
+    if fiyat is not None:
+        out["fiyat"] = fiyat
+    g = (pairs.get("Günlük Değişim %") or "").replace("%", "").replace("&#x2B;", "+")
+    gunluk = _num(g)
+    if gunluk is not None:
+        out["gunluk"] = gunluk
+    if out:
+        _cache_set(ck, out)
+    return out
+
+
 def search_crypto(q: str) -> list[dict]:
     """Kripto paralar: CoinGecko arama + toplu fiyat/24s degisim."""
     q = (q or "").strip()
@@ -690,11 +733,11 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             rows = [dict(r) for r in c.execute(
                 "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
 
-    # Guncel fiyat = CANLI yfinance (dogru sembolle). Bayat snapshot degil.
-    # GMSTR.F -> GMSTR.IS, TUPRS -> TUPRS.IS, USD hisseleri kendi koduyla.
+    # Guncel fiyat = CANLI kaynak. Once ozel kaynak (bigpara), sonra yfinance,
+    # son care bayat snapshot. GMSTR.F -> bigpara; TUPRS -> TUPRS.IS; USD kendi koduyla.
     sym_of = {r["id"]: _yf_symbol(r["ticker"], r.get("para_birimi"))
-              for r in rows}
-    live = _yf_prices(list(sym_of.values())) if rows else {}
+              for r in rows if (r["ticker"] or "").upper() not in _BIGPARA_SOURCES}
+    live = _yf_prices(list(sym_of.values())) if sym_of else {}
 
     for r in rows:
         raw = (r["ticker"] or "").upper()
@@ -705,12 +748,17 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         alis = r["alim_fiyati"] or 0.0
         rec = comm.get(tkr, {}) or {}
         sig = rec.get("kullanilan_on_sinyal", {}) or {}
-        lp = live.get(sym_of.get(r["id"]), {}) or {}
-        # canli fiyat -> yoksa snapshot son_kapanis -> yoksa None
-        guncel = lp.get("fiyat")
+
+        # fiyat kaynagi onceligi: bigpara -> yfinance -> snapshot
+        guncel = gunluk = None
+        if raw in _BIGPARA_SOURCES:
+            bp = _bigpara_price(_BIGPARA_SOURCES[raw])
+            guncel, gunluk = bp.get("fiyat"), bp.get("gunluk")
+        else:
+            lp = live.get(sym_of.get(r["id"]), {}) or {}
+            guncel, gunluk = lp.get("fiyat"), lp.get("gunluk")
         if guncel is None:
             guncel = sig.get("son_kapanis")
-        gunluk = lp.get("gunluk")
         if gunluk is None:
             gunluk = sig.get("gunluk_degisim_%")
         etiket, renk = _classify(rec.get("final_decision"))
