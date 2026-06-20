@@ -52,7 +52,11 @@ SYSTEM = (
     "- Etki dolayli veya belirsizse yonu 'etkisiz/belirsiz' say ve karari teknik "
     "veriye dayandir.\n"
     "Gerekcede ilgili haberin yonunu ACIKCA belirt (orn. 'Hurmuz anlasmasi THY icin "
-    "olumlu: yakit/guzergah riski azaliyor')."
+    "olumlu: yakit/guzergah riski azaliyor').\n\n"
+    "ANALIST KONSENSUSU: Veride 'analist_konsensus' varsa dikkate al (kac kurum, "
+    "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
+    "konsensus puani destekler; senin teknik gorusunle celisiyorsa nedenini kisaca "
+    "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de."
 )
 
 
@@ -270,12 +274,27 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
                 "reason": "Piyasa verisi yok - yorum yapilmadi."}
 
     news = gather_news(ticker, news_src=news_src, rss_src=rss_src)
+    # Analist konsensusu (hedeffiyat + borsaveyatirim)
+    try:
+        from src.news.analyst_source import get_analyst_consensus
+        analist = get_analyst_consensus(ticker)
+    except Exception:
+        analist = {"available": False}
+
     payload = {
         "ticker": ticker,
         "piyasa": sig,
         "kap_bildirimleri_30g": news["bildirimler"],
         "haberler_son": news["haberler"],
     }
+    if analist.get("available"):
+        payload["analist_konsensus"] = {
+            "analist_sayisi": analist.get("analist_sayisi"),
+            "ortalama_hedef": analist.get("ortalama_hedef"),
+            "potansiyel_%": analist.get("potansiyel"),
+            "al": analist.get("al_sayisi"), "tut": analist.get("tut_sayisi"),
+            "sat": analist.get("sat_sayisi"), "konsensus": analist.get("konsensus"),
+        }
     if context:
         payload["piyasa_baglami"] = context
     v = _ai_verdict(ticker, payload, client=client)
@@ -317,6 +336,7 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         "haber_sayisi": len(news["haberler"]),
         "haberler": news["haberler"],
         "kullanilan_on_sinyal": sig,
+        "analist": analist if analist.get("available") else None,
     }
 
 
