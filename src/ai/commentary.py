@@ -56,7 +56,12 @@ SYSTEM = (
     "ANALIST KONSENSUSU: Veride 'analist_konsensus' varsa dikkate al (kac kurum, "
     "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
     "konsensus puani destekler; senin teknik gorusunle celisiyorsa nedenini kisaca "
-    "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de."
+    "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de.\n\n"
+    "TEMEL VERILER: Veride 'temel_veriler' varsa sirketin mali sagligini da yorumla "
+    "(F/K, PD/DD, ROE, kar marji, borc/ozsermaye, gelir buyumesi, FAVOK marji). "
+    "Yuksek F/K/PD/DD pahalilik, dusuk ve pozitif degerler ucuzluk/saglam karlilik "
+    "isaret edebilir; yuksek borc/ozsermaye riski artirir; gelir buyumesi ve marjlar "
+    "olumlu sinyaldir. Sade dille (jargon yok) acikla; sayilari girdiden birebir al."
 )
 
 
@@ -282,6 +287,12 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         analist = get_analyst_consensus(ticker)
     except Exception:
         analist = {"available": False}
+    # Temel (bilanco) veriler (yfinance .info)
+    try:
+        from src.news.fundamental_source import get_fundamentals
+        temel = get_fundamentals(ticker)
+    except Exception:
+        temel = {"available": False}
 
     payload = {
         "ticker": ticker,
@@ -289,6 +300,10 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         "kap_bildirimleri_30g": news["bildirimler"],
         "haberler_son": news["haberler"],
     }
+    if temel.get("available"):
+        payload["temel_veriler"] = {k: temel[k] for k in (
+            "fk", "pddd", "roe_%", "kar_marji_%", "borc_ozsermaye",
+            "gelir_buyume_%", "favok_marji_%") if temel.get(k) is not None}
     if analist.get("available"):
         payload["analist_konsensus"] = {
             "analist_sayisi": analist.get("analist_sayisi"),
@@ -339,6 +354,7 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         "haberler": news["haberler"],
         "kullanilan_on_sinyal": sig,
         "analist": analist if analist.get("available") else None,
+        "temel": temel if temel.get("available") else None,
     }
 
 
