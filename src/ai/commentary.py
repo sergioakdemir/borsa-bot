@@ -143,9 +143,13 @@ def market_data(ticker: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # 2+3) KAP bildirimleri (30 gun) + filtreden gecmis haberler (7 gun)
 # ---------------------------------------------------------------------------
-def gather_news(ticker: str, news_src=None) -> dict:
-    """KAP 30 gunluk bildirimler + son 7 gunluk taze haberler."""
-    from src.news.service import get_news_source, filtered_news
+def gather_news(ticker: str, news_src=None, rss_src=None) -> dict:
+    """KAP 30g bildirimler + RSS (24s) + son 7 gun haberleri tek listede birlestirir.
+
+    Tum kaynaklar mevcut filtreden gecer: tazelik (YENI/GUNCEL/ESKI = kademe 0-1-2)
+    ve fiyatlanma (FIYATLANDI/FIYATLANMADI/VERI_YOK).
+    """
+    from src.news.service import get_news_source
     from src.news.freshness import check_news_freshness
     from src.news.priced_in import check_priced_in
 
@@ -155,26 +159,58 @@ def gather_news(ticker: str, news_src=None) -> dict:
     now = datetime.now(_TZ)
     cutoff7 = now - timedelta(days=7)
 
-    bildirimler = []
-    haberler = []
+    # KAP (30 gun) + RSS (24 saat, hisseye gore filtrelenmis)
+    items = []
     try:
-        items = news_src.get_news(ticker, limit=20)
+        items += news_src.get_news(ticker, limit=20)
     except Exception:
-        items = []
+        pass
+    if rss_src is not None:
+        try:
+            items += rss_src.get_news(ticker, limit=10)
+        except Exception:
+            pass
 
+    bildirimler, haberler, seen = [], [], set()
     for it in items:
+        key = (it.title or "").strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
         fr = check_news_freshness(it.published_at, now=now)
-        pi = check_priced_in(it)
+        try:
+            pi_status = check_priced_in(it).status
+        except Exception:
+            pi_status = "VERI_YOK"
         rec = {
             "baslik": it.title,
             "tarih": it.published_at.strftime("%Y-%m-%d %H:%M"),
+            "kaynak": it.source,
             "tazelik": fr.status.value,
-            "fiyatlanma": pi.status,
+            "fiyatlanma": pi_status,
         }
-        bildirimler.append(rec)                      # 30 gun (kaynak limiti)
+        bildirimler.append(rec)
         if it.published_at >= cutoff7:
-            haberler.append(rec)                     # son 7 gun (tazelik etiketi korunur)
+            haberler.append(rec)
     return {"bildirimler": bildirimler, "haberler": haberler}
+
+
+def market_context(rss_src=None) -> dict:
+    """Hisseden bagimsiz genel piyasa baglami: son ekonomi basliklari + EVDS makro."""
+    from src.news.macro import get_macro
+
+    gundem = []
+    if rss_src is not None:
+        try:
+            for e in rss_src._all_entries()[:6]:
+                gundem.append(f"[{e['kaynak']}] {e['baslik']}")
+        except Exception:
+            pass
+    try:
+        makro = get_macro()
+    except Exception:
+        makro = {"available": False}
+    return {"piyasa_gundemi": gundem, "makro": makro}
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +245,8 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
 _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
 
 
-def analyze_stock(ticker: str, news_src=None, client=None) -> dict:
+def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
+                  context=None) -> dict:
     """Tek hisse icin tam zincir. Web uyumlu kayit dondurur (veri yoksa skipped)."""
     ticker = ticker.upper().replace(".IS", "")
     sig = market_data(ticker)
@@ -217,13 +254,15 @@ def analyze_stock(ticker: str, news_src=None, client=None) -> dict:
         return {"ticker": ticker, "skipped": True,
                 "reason": "Piyasa verisi yok - yorum yapilmadi."}
 
-    news = gather_news(ticker, news_src=news_src)
+    news = gather_news(ticker, news_src=news_src, rss_src=rss_src)
     payload = {
         "ticker": ticker,
         "piyasa": sig,
         "kap_bildirimleri_30g": news["bildirimler"],
-        "haberler_7g": news["haberler"],
+        "haberler_son": news["haberler"],
     }
+    if context:
+        payload["piyasa_baglami"] = context
     v = _ai_verdict(ticker, payload, client=client)
 
     # Risk ajani: AL + risk>=9 -> VETO
@@ -278,14 +317,22 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dic
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY yok - AI yorumu uretilemez.")
 
+    from src.news.rss_source import RSSNewsSource
+
     news_src, is_sample = get_news_source(verbose=verbose)
+    rss_src = RSSNewsSource()                       # Bloomberg HT + Investing + Mynet
+    context = market_context(rss_src=rss_src)        # genel piyasa baglami (1 kez)
+    if verbose:
+        print(f"  [rss] 24s haber: {rss_src.recent_count()} | "
+              f"makro: {context['makro'].get('available')}")
     client = anthropic.Anthropic()
     today = datetime.now(_TZ).date().isoformat()
 
     results = []
     for t in tickers:
         try:
-            r = analyze_stock(t, news_src=news_src, client=client)
+            r = analyze_stock(t, news_src=news_src, rss_src=rss_src,
+                              client=client, context=context)
         except Exception as e:
             if verbose:
                 print(f"  [{t}] HATA: {type(e).__name__}: {str(e)[:100]}")
