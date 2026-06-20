@@ -113,7 +113,13 @@ def poll_once():
         offset = max(offset, uid)
         msg = u.get("message") or u.get("edited_message") or {}
         chat = (msg.get("chat") or {}).get("id")
-        reply = handle_command(msg.get("text", ""))
+        text = msg.get("text", "")
+        # Gelen her mesajin chat_id + gondereni loglanir (kesfedilebilirlik icin).
+        frm = msg.get("from") or {}
+        ad = f"{frm.get('first_name', '')} {frm.get('last_name', '') or ''}".strip()
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] gelen: chat_id={chat} "
+              f"ad={ad!r} user=@{frm.get('username')} text={text!r}")
+        reply = handle_command(text)
         if reply and chat:
             telegram.send_message(reply, chat_id=chat)
             handled += 1

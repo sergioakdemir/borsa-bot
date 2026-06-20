@@ -31,7 +31,9 @@
     "KORDS",
     "TTKOM"
   ],
-  "kisisel": [],
+  "kisisel": [
+    "ASELS"
+  ],
   "hareketli_esik": 3.0,
   "kisisel_diger": []
 }
