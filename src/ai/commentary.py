@@ -82,7 +82,16 @@ SYSTEM = (
     "tek basina belirleyici yapma.\n\n"
     "KENDI KARAR GECMISIN: Veride 'karar_gecmisi_uyari' varsa, bu hissede gecmis "
     "kararlarinin isabetini gosterir. Gecmiste sik yanildiysan ayni yonde israr etme; "
-    "daha temkinli ol ve eminligini buna gore ayarla."
+    "daha temkinli ol ve eminligini buna gore ayarla.\n\n"
+    "YABANCI YATIRIMCI: Veride 'piyasa_baglami.yabanci_yatirimci' varsa (haftalik net "
+    "alim/satim, yabanci payi, yon) dikkate al. Yabanci NET ALICI ise piyasaya guven "
+    "isareti (destekleyici), NET SATICI ise baski/cikis isareti (temkinli). Bunu genel "
+    "yon ve hisse verisiyle birlikte degerlendir, tek basina belirleyici yapma.\n\n"
+    "TARIHSEL SENARYO: Veride 'tarihsel_senaryo' varsa, bu hissenin BENZER makro "
+    "kosullarda (faiz/TL/petrol) gecmiste hangi yonde ve hangi olasilikla hareket "
+    "ettigini gosterir. Bunu bir egilim/taban olasilik olarak kullan; guncel veri "
+    "bu egilimi destekliyorsa eminligi artir, celisiyorsa nedenini belirt. Olasiliklari "
+    "kesin gercek gibi sunma ('gecmiste cogunlukla ... egilimindeydi' de)."
 )
 
 # --- Sektor bazli statik notlar (hangi faktorler kritik) ---
@@ -369,7 +378,13 @@ def market_context(rss_src=None, overview=None) -> dict:
             overview = get_market_overview()
         except Exception:
             overview = {"available": False}
-    return {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview}
+    try:
+        from src.news.foreign_investor import get_foreign_flow
+        yabanci = get_foreign_flow()
+    except Exception:
+        yabanci = {"available": False}
+    return {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview,
+            "yabanci_yatirimci": yabanci}
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +504,17 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         sektor_notu = SEKTOR_NOTLARI.get(ticker)
         if sektor_notu:
             payload["sektor_notu"] = sektor_notu
+        # Tarihsel senaryo (makro kosullarla eslestirilmis) - yalniz BIST
+        try:
+            from src.ai.scenarios import get_scenario_context
+            _ctx = context or {}
+            sen = get_scenario_context(
+                ticker, macro_data=_ctx.get("makro"),
+                overview=_ctx.get("genel_piyasa"))
+            if sen.get("available"):
+                payload["tarihsel_senaryo"] = sen.get("metin")
+        except Exception:
+            pass
     # Kendi karar gecmisi uyarisi (ogrenme)
     if learning_note:
         payload["karar_gecmisi_uyari"] = learning_note

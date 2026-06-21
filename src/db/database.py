@@ -64,6 +64,34 @@ CREATE TABLE IF NOT EXISTS decisions (
     sonuc     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_ticker_tarih ON decisions(ticker, tarih);
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    karar           TEXT NOT NULL,
+    fiyat           REAL NOT NULL,
+    adet_sanal      REAL NOT NULL,
+    tarih           TEXT NOT NULL,
+    kapanis_fiyati  REAL,
+    kz_yuzde        REAL,
+    durum           TEXT NOT NULL DEFAULT 'acik',
+    kapanis_tarihi  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_paper_ticker_durum ON paper_trades(ticker, durum);
+CREATE TABLE IF NOT EXISTS haber_etki (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker           TEXT NOT NULL,
+    haber_id         TEXT,
+    haber_tarihi     TEXT,
+    fiyat_haber_ani  REAL,
+    fiyat_30dk       REAL,
+    fiyat_2saat      REAL,
+    fiyat_1gun       REAL,
+    etki_yuzde_1gun  REAL,
+    haber_kategori   TEXT,
+    baslik           TEXT,
+    olusturma        TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_haber_etki_hid ON haber_etki(haber_id);
 """
 
 
@@ -247,6 +275,110 @@ def recent_decisions_for(ticker, limit: int = 10) -> list[dict]:
         return [dict(r) for r in c.execute(
             "SELECT * FROM decisions WHERE ticker=? ORDER BY id DESC LIMIT ?",
             (str(ticker).upper().replace(".IS", ""), limit))]
+
+
+# ---- paper trading (sanal islem) ----
+def open_paper_trade(ticker, karar, fiyat, adet_sanal, tarih=None) -> int:
+    """Sanal bir AL pozisyonu acar (durum='acik')."""
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO paper_trades (ticker, karar, fiyat, adet_sanal, tarih, durum)
+               VALUES (?, ?, ?, ?, ?, 'acik')""",
+            (str(ticker).upper().replace(".IS", ""), karar, fiyat, adet_sanal, tarih))
+        return cur.lastrowid
+
+
+def get_open_paper_trade(ticker):
+    """Hisseye ait acik sanal pozisyon (varsa) - en yenisi."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT * FROM paper_trades WHERE ticker=? AND durum='acik' "
+            "ORDER BY id DESC LIMIT 1",
+            (str(ticker).upper().replace(".IS", ""),)).fetchone()
+        return dict(r) if r else None
+
+
+def list_paper_trades(durum=None, limit: int = 500) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        if durum:
+            q = "SELECT * FROM paper_trades WHERE durum=? ORDER BY id DESC LIMIT ?"
+            return [dict(r) for r in c.execute(q, (durum, limit))]
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+def update_paper_running(trade_id, kz_yuzde) -> None:
+    """Acik pozisyonun guncel (kagit) kar/zarar yuzdesini gunceller."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE paper_trades SET kz_yuzde=? WHERE id=?", (kz_yuzde, trade_id))
+
+
+def close_paper_trade(trade_id, kapanis_fiyati, kz_yuzde, tarih=None) -> None:
+    """Sanal pozisyonu kapatir (durum='kapali')."""
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        c.execute(
+            "UPDATE paper_trades SET kapanis_fiyati=?, kz_yuzde=?, durum='kapali', "
+            "kapanis_tarihi=? WHERE id=?",
+            (kapanis_fiyati, kz_yuzde, tarih, trade_id))
+
+
+# ---- haber etki (haber-fiyat korelasyonu) ----
+def record_haber_etki(ticker, haber_id, haber_tarihi, fiyat_haber_ani,
+                      haber_kategori=None, baslik=None) -> int | None:
+    """Yeni KAP bildirimi tespitinde o anki fiyati kaydeder. Ayni haber_id varsa
+    tekrar eklemez (None doner)."""
+    init_db()
+    with get_conn() as c:
+        try:
+            cur = c.execute(
+                """INSERT INTO haber_etki
+                     (ticker, haber_id, haber_tarihi, fiyat_haber_ani,
+                      haber_kategori, baslik, olusturma)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (str(ticker).upper().replace(".IS", ""), haber_id, haber_tarihi,
+                 fiyat_haber_ani, haber_kategori, baslik, _now()))
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def haber_etki_eksikler(limit: int = 200) -> list[dict]:
+    """30dk/2saat/1gun fiyatlarindan en az biri bos olan kayitlar."""
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM haber_etki WHERE fiyat_30dk IS NULL OR fiyat_2saat IS NULL "
+            "OR fiyat_1gun IS NULL ORDER BY id LIMIT ?", (limit,))]
+
+
+def update_haber_etki(row_id, **alanlar) -> None:
+    """haber_etki satirinin verilen alanlarini gunceller."""
+    if not alanlar:
+        return
+    izin = {"fiyat_30dk", "fiyat_2saat", "fiyat_1gun", "etki_yuzde_1gun",
+            "haber_kategori"}
+    setler = {k: v for k, v in alanlar.items() if k in izin}
+    if not setler:
+        return
+    init_db()
+    with get_conn() as c:
+        cols = ", ".join(f"{k}=?" for k in setler)
+        c.execute(f"UPDATE haber_etki SET {cols} WHERE id=?",
+                  (*setler.values(), row_id))
+
+
+def list_haber_etki(limit: int = 500) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM haber_etki ORDER BY id DESC LIMIT ?", (limit,))]
 
 
 if __name__ == "__main__":

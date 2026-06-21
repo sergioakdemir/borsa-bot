@@ -1043,6 +1043,103 @@ def _tarih_kisa(iso: str) -> str:
         return iso or ""
 
 
+def get_paper_trading() -> dict:
+    """Paper trading (sanal islem) ozeti + islem detaylari.
+
+    Bot gercek piyasada sanal olarak yaptigi AL/SAT islemlerinin kar/zararini gosterir.
+    """
+    try:
+        from src.portfolio import paper
+        ozet = paper.summary()
+    except Exception:
+        ozet = {}
+    satirlar = []
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM paper_trades ORDER BY id DESC LIMIT 100")]
+    except sqlite3.Error:
+        rows = []
+    for r in rows:
+        tkr = (r.get("ticker") or "").upper()
+        durum = r.get("durum")
+        kz = r.get("kz_yuzde")
+        satirlar.append({
+            "id": r.get("id"),
+            "ticker": tkr,
+            "isim": company_name(tkr),
+            "karar": r.get("karar"),
+            "fiyat": r.get("fiyat"),
+            "adet": r.get("adet_sanal"),
+            "tarih": r.get("tarih"),
+            "kapanis_fiyati": r.get("kapanis_fiyati"),
+            "kz_yuzde": kz,
+            "durum": durum,
+            "durum_tr": "Açık" if durum == "acik" else "Kapandı",
+        })
+
+    # Kullanici dostu ozet cumlesi
+    n = ozet.get("kapali_sayisi") or 0
+    toplam = ozet.get("toplam_kz_tl")
+    if (ozet.get("islem_sayisi") or 0) == 0:
+        mesaj = "Bot henüz sanal işlem yapmadı."
+    else:
+        yon = "kazandı" if (toplam or 0) >= 0 else "kaybetti"
+        mesaj = (f"Bot gerçek piyasada sanal olarak {ozet.get('islem_sayisi')} işlem yaptı "
+                 f"({ozet.get('acik_sayisi')} açık, {n} kapandı); "
+                 f"toplam {abs(toplam or 0):.0f} TL {yon}.")
+        if ozet.get("basari_orani_%") is not None:
+            mesaj += f" Kapanan işlemlerde başarı oranı %{ozet['basari_orani_%']:g}."
+    return {"ozet": ozet, "satirlar": satirlar, "mesaj": mesaj}
+
+
+def get_haber_etki() -> dict:
+    """KAP bildirim tipinin ortalama fiyat etkisi (1 gun) + son kayitlar."""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM haber_etki ORDER BY id DESC LIMIT 300")]
+    except sqlite3.Error:
+        rows = []
+
+    grup = {}
+    for r in rows:
+        kat = r.get("haber_kategori") or "Diğer"
+        etki = r.get("etki_yuzde_1gun")
+        g = grup.setdefault(kat, {"kategori": kat, "adet": 0, "etkili": 0, "toplam": 0.0})
+        g["adet"] += 1
+        if isinstance(etki, (int, float)):
+            g["etkili"] += 1
+            g["toplam"] += etki
+    kategoriler = []
+    for g in grup.values():
+        ort = round(g["toplam"] / g["etkili"], 2) if g["etkili"] else None
+        kategoriler.append({"kategori": g["kategori"], "adet": g["adet"],
+                            "olculen": g["etkili"], "ort_etki_yuzde": ort})
+    kategoriler.sort(key=lambda k: (k["ort_etki_yuzde"] is not None,
+                                    abs(k["ort_etki_yuzde"] or 0)), reverse=True)
+
+    en = next((k for k in kategoriler if k["ort_etki_yuzde"] is not None), None)
+    if en:
+        yon = "yükseliş" if en["ort_etki_yuzde"] >= 0 else "düşüş"
+        mesaj = (f"{en['kategori']} bildirimleri 1 günde ortalama "
+                 f"%{en['ort_etki_yuzde']:+g} {yon} etkisi yaptı "
+                 f"({en['olculen']} ölçüm).")
+    else:
+        mesaj = "Henüz ölçülmüş haber etkisi yok; KAP bildirimleri biriktikçe dolacak."
+
+    satirlar = [{
+        "ticker": (r.get("ticker") or "").upper(),
+        "baslik": r.get("baslik"),
+        "kategori": r.get("haber_kategori"),
+        "tarih": (r.get("haber_tarihi") or "")[:16].replace("T", " "),
+        "etki_yuzde_1gun": r.get("etki_yuzde_1gun"),
+    } for r in rows[:20]]
+    return {"kategoriler": kategoriler, "satirlar": satirlar, "mesaj": mesaj}
+
+
 def get_karne() -> dict:
     """Defter mantigi: her hisse icin 'karar -> sonuc' satiri.
 
@@ -1673,14 +1770,43 @@ def ask_bot(soru: str, kullanici=None) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
     comm = _commentary_by_ticker()
-    owned = set(_owned_by_user(kullanici))
+    # Derin portfoy baglami: alis/adet/guncel/kar-zarar/sure + bot karari+gerekce
     baglam = []
-    for t in sorted(owned):
-        r = comm.get(t)
-        if r and not r.get("skipped"):
-            baglam.append({"hisse": t, "karar": r.get("final_decision"),
-                           "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
-                           "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
+    bugun = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    try:
+        port = get_portfolio(kullanici)
+        pozisyonlar = port.get("pozisyonlar", [])
+    except Exception:
+        pozisyonlar = []
+    for p in pozisyonlar:
+        t = (p.get("ticker") or "").upper()
+        r = comm.get(t, {}) or {}
+        # ne kadar suredir tutuluyor (gun)
+        tutma_gun = None
+        try:
+            alim = (p.get("tarih") or "").split("T")[0]
+            if alim:
+                tutma_gun = (bugun - datetime.fromisoformat(alim).date()).days
+        except (ValueError, TypeError):
+            tutma_gun = None
+        kz = p.get("kz")
+        kz_y = p.get("kz_yuzde")
+        baglam.append({
+            "hisse": t,
+            "alis_fiyati": p.get("alis"),
+            "adet": p.get("adet"),
+            "guncel_fiyat": p.get("guncel"),
+            "para_birimi": p.get("para_birimi"),
+            "kar_zarar_tl": round(kz, 2) if isinstance(kz, (int, float)) else None,
+            "kar_zarar_yuzde": round(kz_y, 2) if isinstance(kz_y, (int, float)) else None,
+            "durum": ("zararda" if isinstance(kz, (int, float)) and kz < 0
+                      else "karda" if isinstance(kz, (int, float)) and kz > 0 else "başabaş"),
+            "tutma_gun": tutma_gun,
+            "bot_karari": r.get("final_decision"),
+            "bot_puan": r.get("score"),
+            "bot_risk": (r.get("risk") or {}).get("score"),
+            "bot_gerekce": _ilk_cumleler(r.get("gerekce", ""), 2),
+        })
     # tum izlenen hisseler (sahip olunmayan hisse sorulari icin kisa baglam)
     piyasa = []
     for t, r in comm.items():
@@ -1704,7 +1830,17 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                     "(kullanicinin portfoyu + makro) dayandir; baglamda yoksa 'elimde bu "
                     "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir. "
                     "Markdown, tablo, baslik veya yildiz KULLANMA; kisa, duz cumlelerle "
-                    "sohbet eder gibi yanitla (en fazla birkac cumle)."),
+                    "sohbet eder gibi yanitla (en fazla birkac cumle).\n\n"
+                    "KISISEL PORTFOY: 'Portfoyum' alaninda her hisse icin alis fiyati, "
+                    "adet, guncel fiyat, kar/zarar (TL ve %), kac gundur tutuldugu "
+                    "(tutma_gun) ve botun o hisseye dair son karari (bot_karari) + "
+                    "gerekcesi (bot_gerekce) verilir. Bir hisse hakkinda soruldugunda HEM "
+                    "botun genel analizini HEM kullanicinin kisisel durumunu (maliyeti, "
+                    "kar/zarari, ne kadar suredir tuttugu) birlestirerek cevap ver. "
+                    "Ornek: 'X'i Y'den almissin, su an Z'de, W TL zararda/karda ve N gundur "
+                    "tutuyorsun' diyerek baglami kur. ZARARDA olan hisseler icin oneri "
+                    "verirken maliyeti goz onunde bulundur (zarari realize etmek mi, "
+                    "ortalama dusurmek mi, beklemek mi)."),
             messages=[{"role": "user", "content":
                        f"Portfoyum: {json.dumps(baglam, ensure_ascii=False)}\n"
                        f"Izlenen hisseler: {json.dumps(piyasa, ensure_ascii=False)}\n"
@@ -1780,6 +1916,16 @@ def api_portfolio():
 @app.route("/api/karne")
 def api_karne():
     return jsonify(get_karne())
+
+
+@app.route("/api/paper-trading")
+def api_paper_trading():
+    return jsonify(get_paper_trading())
+
+
+@app.route("/api/haber-etki")
+def api_haber_etki():
+    return jsonify(get_haber_etki())
 
 
 @app.route("/api/alerts")

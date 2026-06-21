@@ -566,14 +566,41 @@ function backtestHTML(bt){
         <div class="chg ${signCls(o["ort_strateji_getiri_%"])}">${pct(o["ort_strateji_getiri_%"])} ort.</div></div></div>
       <div class="pline">${o.islem} işlem · AL ${d.AL||0} · TUT ${d.TUT||0} · SAT ${d.SAT||0}</div></div>`}).join("");
   return h}
+function paperHTML(p){
+  if(!p||!p.ozet||!(p.ozet.islem_sayisi))return"";
+  const o=p.ozet;
+  let h=`<div class="sec-title">📊 Paper Trading</div>
+    <div class="card"><div class="tick" style="line-height:1.5;margin-bottom:10px">${esc(p.mesaj||"")}</div>
+      <div class="row"><span class="muted">Toplam sanal k/z</span><b class="${signCls(o.toplam_kz_tl)}">${(o.toplam_kz_tl>0?"+":"")+fmt(o.toplam_kz_tl,0)} TL</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">İşlem (açık/kapandı)</span><b>${o.islem_sayisi} (${o.acik_sayisi}/${o.kapali_sayisi})</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Başarı oranı</span><b>${o["basari_orani_%"]==null?"—":"%"+o["basari_orani_%"]}</b></div></div>`;
+  const son=(p.satirlar||[]).slice(0,8);
+  h+=son.map(t=>`<div class="card" style="padding:13px 15px"><div class="row">
+      <div class="name">${esc(t.ticker)} <span class="chip ${t.durum==='acik'?'gray':(t.kz_yuzde>=0?'green':'red')}">${esc(t.durum_tr)}</span></div>
+      <div style="text-align:right"><div class="chg ${signCls(t.kz_yuzde)}">${t.kz_yuzde==null?"—":pct(t.kz_yuzde)}</div></div></div>
+      <div class="pline">${esc(t.karar)} @ ${t.fiyat} · ${Number(t.adet).toFixed(2)} adet · ${esc(t.tarih)}${t.kapanis_fiyati?` → ${t.kapanis_fiyati}`:""}</div></div>`).join("");
+  return h}
+function haberEtkiHTML(he){
+  if(!he||!he.kategoriler||!he.kategoriler.length)return"";
+  const olculen=he.kategoriler.filter(k=>k.ort_etki_yuzde!=null);
+  if(!olculen.length)return"";
+  let h=`<div class="sec-title">📰 Haber Etkisi</div>
+    <div class="card"><div class="tick" style="line-height:1.5;margin-bottom:6px">${esc(he.mesaj||"")}</div>`;
+  h+=olculen.map(k=>`<div class="row" style="margin-top:8px"><span class="muted">${esc(k.kategori)} <span style="opacity:.6">(${k.olculen})</span></span><b class="${signCls(k.ort_etki_yuzde)}">${pct(k.ort_etki_yuzde)}</b></div>`).join("");
+  h+=`</div>`;
+  return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [dr,btr]=await Promise.all([
+  try{const [dr,btr,pr,her]=await Promise.all([
         fetch("/api/decisions").then(r=>r.json()).catch(()=>({})),
-        fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false}))]);
+        fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
+        fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
+        fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({}))]);
     const rows=dr.satirlar||[];DEC_INDEX={};
     let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
       <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
     h+=backtestHTML(btr);
+    h+=paperHTML(pr);
+    h+=haberEtkiHTML(her);
     h+=`<div class="sec-title">Geçmiş Kararlar</div>`;
     h+=rows.length?rows.map(r=>{DEC_INDEX[r.id]=r;const mk=r.durum==="dogru"?"✓":r.durum==="yanlis"?"✕":"•";
       const sc=r.durum==="dogru"?"green":r.durum==="yanlis"?"red":"gray";

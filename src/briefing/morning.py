@@ -146,6 +146,15 @@ def build_message(results, sel, now, overview=None):
                      f"<i>({' · '.join(detay)})</i>")
         lines.append(f"<i>{_esc(overview.get('brifing_notu'))}</i>")
 
+    # Yabanci yatirimci akisi (varsa)
+    try:
+        from src.news.foreign_investor import briefing_line
+        yb = briefing_line()
+        if yb:
+            lines.append(yb)
+    except Exception:
+        pass
+
     # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
     cand = [r for r in valid if r["final_decision"] != "VETO"]
     cand.sort(key=lambda r: (r["final_decision"] == "AL", r.get("score") or 0), reverse=True)
@@ -218,6 +227,15 @@ def main():
         learning = {}
 
     results = evaluate_all(sel["targets"], overview=overview, learning=learning)
+
+    # 4) Paper trading: AL -> sanal alim ac, SAT -> kapat
+    try:
+        from src.portfolio import paper
+        pt = paper.record_from_results(results, verbose=True)
+        print(f"  paper trading: {pt['acilan']} acildi, {pt['kapanan']} kapandi")
+    except Exception as e:
+        print(f"  paper trading atlandi: {type(e).__name__}: {str(e)[:80]}")
+
     msg = build_message(results, sel, now, overview=overview)
     sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)
     ok = [c for c, s in sonuc.items() if s == "ok"]

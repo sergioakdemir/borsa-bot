@@ -92,8 +92,23 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
         if not taze:
             continue
 
-        # fiyat henuz oynamamis mi? (bugun islemde + |degisim| < move_limit)
+        # fiyat (o anki son kapanis) - haber_etki kaydi + fiyatlanma kontrolu icin
         info = intraday_change(ticker, today=now.date())
+        fiyat_ani = info["last_close"] if info else None
+
+        # HABER ETKISI: her yeni KAP bildirimi icin o anki fiyati kaydet (dedup: haber_id)
+        if fiyat_ani is not None:
+            from src.ops.update_haber_etki import kategori_of
+            for it in taze:
+                did = it.disclosure_id or (it.title or "")[:60]
+                db.record_haber_etki(
+                    ticker, haber_id=did,
+                    haber_tarihi=it.published_at.isoformat(),
+                    fiyat_haber_ani=fiyat_ani,
+                    haber_kategori=kategori_of(it.title),
+                    baslik=it.title)
+
+        # fiyat henuz oynamamis mi? (bugun islemde + |degisim| < move_limit)
         if not info or not info["is_today"]:
             continue
         if abs(info["change"]) >= move_limit:
