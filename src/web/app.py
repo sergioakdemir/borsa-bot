@@ -1669,7 +1669,22 @@ def get_today(kullanici=None) -> dict:
               "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
     tarih_str = f"Bugün · {now.day} {_AYLAR[now.month]}"
 
-    hisseler = [_mini_view(r) for r in recs]
+    # "Hisselerimde durum": kullanicinin TUM pozisyonlari (AI yorumu olmayanlar dahil).
+    # get_portfolio canli fiyat + (varsa) AI analizini birlestirir.
+    try:
+        pozisyonlar = get_portfolio(kullanici).get("pozisyonlar", [])
+    except Exception:
+        pozisyonlar = []
+    hisseler = [{
+        "ticker": p.get("ticker"), "isim": p.get("isim"),
+        "market": p.get("market", "bist"), "para_birimi": p.get("para_birimi", "₺"),
+        "fiyat": p.get("guncel"), "gunluk": p.get("gunluk"),
+        "etiket": p.get("karar"), "renk": p.get("karar_renk", "gray"),
+        "cardText": p.get("cardText", ""), "actionText": p.get("actionText", ""),
+        "statusPhrase": p.get("statusPhrase", ""), "statusColor": p.get("statusColor", "gray"),
+        "risk_renk": p.get("risk_renk", "gray"), "skor": None,
+        "kz": p.get("kz"), "kz_yuzde": p.get("kz_yuzde"),
+    } for p in pozisyonlar]
     sat_n = sum(1 for h in hisseler if h["etiket"] in ("SAT", "AZALT"))
     risk_n = sum(1 for h in hisseler if h["risk_renk"] == "red")
     koru_n = sum(1 for h in hisseler if h["etiket"] in ("TUT", "BEKLE", "AL"))
@@ -1707,10 +1722,18 @@ def get_today(kullanici=None) -> dict:
                  and (r.get("score") or 0) >= _OPPORTUNITY_MIN]
     firsatlar.sort(key=lambda c: c.get("skor") or 0, reverse=True)
 
+    # AI yorumu /api/overview ile asenkron gelir; bu aninda gosterilen fallback.
+    if recs:
+        yorum = _overview_fallback(recs)
+    elif hisseler:
+        yorum = (f"Portföyünde {len(hisseler)} hisse var. Güncel fiyatlar yüklendi; "
+                 "detaylı yorum için kartlara dokun.")
+    else:
+        yorum = _overview_fallback(recs)
     return {
         "selamlama": f"{selam}{(' ' + ad) if ad else ''}",
         "tarih": tarih_str,
-        "portfoy_yorum": _cap(_overview_fallback(recs), 280),   # AI yorumu /api/overview ile asenkron
+        "portfoy_yorum": _cap(yorum, 280),
         "etiketler": etiketler,
         "hisseler": hisseler,
         "onemli_haber": haber,
