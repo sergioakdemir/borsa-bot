@@ -1997,16 +1997,37 @@ _PROFIL_GORUNUM = {
     "portfoy_buyuklugu": ("Portföy büyüklüğü", "tl"),
     "aylik_birikim": ("Aylık birikim", "tl"),
     "ek_sermaye_mumkun": ("Ek sermaye mümkün", "bool"),
-    "tecrube_seviyesi": ("Tecrübe", "text"),
-    "risk_toleransi": ("Risk toleransı", "text"),
-    "panik_egilimi": ("Panik eğilimi", "text"),
-    "yatirim_vadesi": ("Yatırım vadesi", "text"),
-    "nakit_ihtiyaci": ("Nakit ihtiyacı", "text"),
+    "tecrube_seviyesi": ("Tecrübe", "enum"),
+    "risk_toleransi": ("Risk toleransı", "enum"),
+    "panik_egilimi": ("Panik eğilimi", "enum"),
+    "yatirim_vadesi": ("Yatırım vadesi", "enum"),
+    "nakit_ihtiyaci": ("Nakit ihtiyacı", "enum"),
     "nakit_ihtiyac_tarihi": ("Nakit ihtiyaç tarihi", "text"),
-    "ana_hedef": ("Ana hedef", "text"),
+    "ana_hedef": ("Ana hedef", "enum"),
     "kayip_toleransi_yuzde": ("Kayıp toleransı", "pct"),
-    "ogrenme_seviyesi": ("Öğrenme seviyesi", "text"),
+    "dusus_tepkisi_10": ("%10 düşüşte", "enum"),
+    "dusus_tepkisi_20": ("%20 düşüşte", "enum"),
+    "sektor_tercihi": ("Takip ettiği sektörler", "text"),
+    "gunluk_takip_saat": ("Günlük takip", "saat"),
+    "ana_korku": ("En büyük korkusu", "enum"),
+    "onceki_basari": ("Geçmiş deneyim", "text"),
+    "risk_tercihi": ("Risk/ödül tercihi", "enum"),
+    "ogrenme_seviyesi": ("Öğrenme seviyesi", "enum"),
     "aciklama_ister": ("Açıklama ister", "bool"),
+}
+# enum ham deger -> kullaniciya gosterilecek Turkce etiket
+_PROFIL_DEGER_ETIKET = {
+    "yeni": "Yeni", "orta": "Orta", "tecrubeli": "Tecrübeli",
+    "dusuk": "Düşük", "yuksek": "Yüksek",
+    "1ay": "1 ay", "3ay": "3 ay", "6ay": "6 ay", "1yil": "1 yıl",
+    "3yil": "3 yıl+", "uzun": "Uzun vade",
+    "hizli_kazanc": "Hızlı kazanç", "korunma": "Korunma",
+    "uzun_vadeli_buyume": "Uzun vadeli büyüme",
+    "bekler": "Bekler", "satar": "Satar", "alir": "Alır (ekler)",
+    "kayip": "Kayıp", "firsat_kacirma": "Fırsat kaçırmak", "belirsizlik": "Belirsizlik",
+    "az_kazanc_az_risk": "Az kazanç, az risk",
+    "cok_kazanc_cok_risk": "Çok kazanç, çok risk", "dengeli": "Dengeli",
+    "baslangic": "Başlangıç", "ileri": "İleri",
 }
 _HAFIZA_KATEGORI = {"oneri": "Öneriler", "karar": "Kararlar",
                     "sohbet": "Sohbetler", "eylem": "Öğrendikleri"}
@@ -2033,6 +2054,13 @@ def _profil_deger(anahtar, ham):
             return str(ham)
     if tip == "bool":
         return "Evet" if ham in (1, True, "1", "true") else "Hayır"
+    if tip == "saat":
+        try:
+            return f"{float(ham):g} saat/gün"
+        except (ValueError, TypeError):
+            return str(ham)
+    if tip == "enum":
+        return _PROFIL_DEGER_ETIKET.get(str(ham), str(ham))
     return str(ham)
 
 
@@ -2057,7 +2085,7 @@ def get_profile_view(kullanici) -> dict:
         "guven_skoru": skor,
         "alanlar": alanlar,
         "eksik_alanlar": p.get("eksik_alanlar") or [],
-        "onboarding_done": skor >= 75,
+        "onboarding_done": skor >= 85,
         "guncelleme": p.get("guncelleme_tarihi"),
     }
 
@@ -2106,7 +2134,7 @@ def onboarding_step(kullanici, messages) -> dict:
         return {"ok": False, "reply": f"Hata: {type(e).__name__}"}
     skor = (profile or {}).get("profil_guven_skoru") or 0
     eksik = (profile or {}).get("eksik_alanlar") or []
-    done = skor >= 75
+    done = skor >= 85
     if done:
         try:
             db.add_memory(uid, "eylem",

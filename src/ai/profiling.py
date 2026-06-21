@@ -17,15 +17,24 @@ MODEL = "claude-sonnet-4-6"
 ONBOARDING_SYSTEM = (
     "Sen 25 yillik tecrubeli bir Turk borsa uzmanisin. Kullaniciyi bir yatirimci "
     "olarak gercekten anlamak istiyorsun. Dogal, samimi ve sicak konus; anket/form "
-    "gibi degil, gercek bir sohbet gibi. Jargon (RSI/MACD) kullanma.\n"
-    "Sirayla sunlari ogren (her seferinde tek-iki soru, sohbetin akisina gore): "
-    "portfoy buyuklugu, aylik birikim, risk toleransi, yatirim vadesi, nakit ihtiyaci, "
-    "panik egilimi (dususte ne yaparsin), tecrube seviyesi, ana hedef, kayip toleransi. "
-    "Kullanici cevap verdikce dogal gecislerle ilerle, verdigi bilgiyi kisa onayla. "
-    "Eksik alan kalirsa ilerleyen mesajlarda dogal sekilde tekrar sor. Kullanici "
-    "bilmiyorum derse zorlamadan gec. Kisa, sohbet tonunda yaz (markdown/yildiz yok). "
-    "Yeterince bilgi toplandiysa kibarca 'seni artik daha iyi taniyorum' diyerek "
-    "ozetleyip bitir."
+    "gibi DEGIL, gercek bir sohbet gibi. Jargon (RSI/MACD) kullanma. Her seferinde "
+    "tek-iki soru sor, kullanici cevap verince kisa onayla ve dogal bir gecisle "
+    "devam et. Bir cevaptan birden fazla bilgi cikarsa tekrar sorma.\n"
+    "Sohbet boyunca (sirayla degil, akisa gore) sunlarin HEPSINI ogrenmeye calis:\n"
+    "- Portfoy buyuklugu\n- Aylik birikim kapasitesi\n- Ek sermaye koyabilir mi\n"
+    "- Borsada kac yildir var (tecrube)\n- Daha once buyuk zarar yasadi mi, ne hissetti\n"
+    "- %10 dususte ne yapar (bekler/satar/alir)\n- %20 dususte ne yapar\n"
+    "- Kisa vade mi uzun vade mi (1ay/3ay/6ay/1yil/3yil+)\n"
+    "- Yakin vadede nakit ihtiyaci var mi\n"
+    "- Ana hedef: hizli kazanc / korunma / uzun vadeli buyume\n"
+    "- Hangi sektorleri takip ediyor\n- Gunde kac saat borsayla ilgileniyor\n"
+    "- En buyuk korkusu (kayip / firsat kacirmak / belirsizlik)\n"
+    "- Daha once basarili bir yatirim yapti mi, ne hissetti\n"
+    "- Risk/odul tercihi: az kazanc az risk mi, cok kazanc cok risk mi\n"
+    "Duygusal sorularda (zarar/basari deneyimi, korku) empatik ol, yargilamadan dinle. "
+    "Kullanici bilmiyorum derse zorlamadan gec. Eksik kalan konulari ilerleyen "
+    "mesajlarda dogal sekilde tekrar sor. Kisa, sohbet tonunda yaz (markdown/yildiz "
+    "yok). Yeterince taniyinca kibarca 'seni artik daha iyi taniyorum' deyip ozetle."
 )
 
 _EXTRACT_SYSTEM = (
@@ -36,17 +45,24 @@ _EXTRACT_SYSTEM = (
     '{\n'
     '  "portfoy_buyuklugu": number|null,        // TL toplam portfoy\n'
     '  "aylik_birikim": number|null,            // TL aylik eklenebilen\n'
-    '  "ek_sermaye_mumkun": true|false|null,\n'
-    '  "tecrube_seviyesi": "yeni"|"orta"|"tecrubeli"|null,\n'
+    '  "ek_sermaye_mumkun": true|false|null,    // ek para koyabilir mi\n'
+    '  "tecrube_seviyesi": "yeni"|"orta"|"tecrubeli"|null,  // borsada kac yil\n'
     '  "risk_toleransi": "dusuk"|"orta"|"yuksek"|null,\n'
-    '  "panik_egilimi": "dusuk"|"orta"|"yuksek"|null,   // dususte panikleme egilimi\n'
-    '  "yatirim_vadesi": "1ay"|"3ay"|"6ay"|"1yil"|"uzun"|null,\n'
-    '  "nakit_ihtiyaci": "dusuk"|"orta"|"yuksek"|null,\n'
-    '  "nakit_ihtiyac_tarihi": string|null,     // varsa yaklasik tarih/aciklama\n'
-    '  "ana_hedef": string|null,                // kisa: emeklilik, ev, kisa vade kar...\n'
+    '  "panik_egilimi": "dusuk"|"orta"|"yuksek"|null,   // dususte panikleme\n'
+    '  "yatirim_vadesi": "1ay"|"3ay"|"6ay"|"1yil"|"3yil"|"uzun"|null,\n'
+    '  "nakit_ihtiyaci": "dusuk"|"orta"|"yuksek"|null,  // yakin vadede nakit\n'
+    '  "nakit_ihtiyac_tarihi": string|null,\n'
+    '  "ana_hedef": "hizli_kazanc"|"korunma"|"uzun_vadeli_buyume"|null,\n'
     '  "kayip_toleransi_yuzde": number|null,     // kabul edebilecegi max % kayip\n'
+    '  "dusus_tepkisi_10": "bekler"|"satar"|"alir"|null,   // %10 dususte ne yapar\n'
+    '  "dusus_tepkisi_20": "bekler"|"satar"|"alir"|null,   // %20 dususte ne yapar\n'
+    '  "sektor_tercihi": string|null,           // takip ettigi sektorler (virgullu)\n'
+    '  "gunluk_takip_saat": number|null,        // gunde kac saat borsayla ilgilenir\n'
+    '  "ana_korku": "kayip"|"firsat_kacirma"|"belirsizlik"|null,\n'
+    '  "onceki_basari": string|null,            // basarili/zararli deneyimi + hissi (kisa)\n'
+    '  "risk_tercihi": "az_kazanc_az_risk"|"cok_kazanc_cok_risk"|"dengeli"|null,\n'
     '  "ogrenme_seviyesi": "baslangic"|"orta"|"ileri"|null,\n'
-    '  "aciklama_ister": true|false|null         // detayli aciklama ister mi\n'
+    '  "aciklama_ister": true|false|null\n'
     '}'
 )
 
@@ -54,13 +70,19 @@ _ENUM = {
     "tecrube_seviyesi": {"yeni", "orta", "tecrubeli"},
     "risk_toleransi": {"dusuk", "orta", "yuksek"},
     "panik_egilimi": {"dusuk", "orta", "yuksek"},
-    "yatirim_vadesi": {"1ay", "3ay", "6ay", "1yil", "uzun"},
+    "yatirim_vadesi": {"1ay", "3ay", "6ay", "1yil", "3yil", "uzun"},
     "nakit_ihtiyaci": {"dusuk", "orta", "yuksek"},
     "ogrenme_seviyesi": {"baslangic", "orta", "ileri"},
+    "ana_hedef": {"hizli_kazanc", "korunma", "uzun_vadeli_buyume"},
+    "dusus_tepkisi_10": {"bekler", "satar", "alir"},
+    "dusus_tepkisi_20": {"bekler", "satar", "alir"},
+    "ana_korku": {"kayip", "firsat_kacirma", "belirsizlik"},
+    "risk_tercihi": {"az_kazanc_az_risk", "cok_kazanc_cok_risk", "dengeli"},
 }
-_FLOAT = {"portfoy_buyuklugu", "aylik_birikim", "kayip_toleransi_yuzde"}
+_FLOAT = {"portfoy_buyuklugu", "aylik_birikim", "kayip_toleransi_yuzde",
+          "gunluk_takip_saat"}
 _BOOL = {"ek_sermaye_mumkun", "aciklama_ister"}
-_STR = {"nakit_ihtiyac_tarihi", "ana_hedef"}
+_STR = {"nakit_ihtiyac_tarihi", "sektor_tercihi", "onceki_basari"}
 
 
 def _load_dotenv():

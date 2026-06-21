@@ -108,6 +108,13 @@ CREATE TABLE IF NOT EXISTS kullanici_profil (
     kayip_toleransi_yuzde REAL,
     ogrenme_seviyesi    TEXT,
     aciklama_ister      INTEGER,
+    dusus_tepkisi_10    TEXT,
+    dusus_tepkisi_20    TEXT,
+    sektor_tercihi      TEXT,
+    gunluk_takip_saat   REAL,
+    ana_korku           TEXT,
+    onceki_basari       TEXT,
+    risk_tercihi        TEXT,
     profil_guven_skoru  INTEGER DEFAULT 0,
     eksik_alanlar       TEXT,
     notlar              TEXT,
@@ -140,23 +147,33 @@ CREATE TABLE IF NOT EXISTS model_portfoy (
 CREATE INDEX IF NOT EXISTS ix_model_ticker_durum ON model_portfoy(ticker, durum);
 """
 
-# Profil "cekirdek" alanlari - guven skoru bu alanlarin doluluk oranindan hesaplanir
+# Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
 _PROFIL_CEKIRDEK = (
-    "portfoy_buyuklugu", "aylik_birikim", "risk_toleransi", "yatirim_vadesi",
-    "nakit_ihtiyaci", "panik_egilimi", "tecrube_seviyesi", "ana_hedef",
-    "kayip_toleransi_yuzde",
+    "portfoy_buyuklugu", "aylik_birikim", "ek_sermaye_mumkun", "tecrube_seviyesi",
+    "risk_toleransi", "panik_egilimi", "yatirim_vadesi", "nakit_ihtiyaci",
+    "ana_hedef", "kayip_toleransi_yuzde", "dusus_tepkisi_10", "dusus_tepkisi_20",
+    "sektor_tercihi", "gunluk_takip_saat", "ana_korku", "onceki_basari",
+    "risk_tercihi",
 )
 # Eksik alan -> kullaniciya gosterilecek Turkce etiket
 _PROFIL_ETIKET = {
     "portfoy_buyuklugu": "portföy büyüklüğü",
     "aylik_birikim": "aylık birikim",
+    "ek_sermaye_mumkun": "ek sermaye koyabilir misin",
+    "tecrube_seviyesi": "tecrübe seviyesi (kaç yıldır borsada)",
     "risk_toleransi": "risk toleransı",
+    "panik_egilimi": "panik eğilimi",
     "yatirim_vadesi": "yatırım vadesi",
-    "nakit_ihtiyaci": "nakit ihtiyacı",
-    "panik_egilimi": "panik eğilimi (düşüşte ne yaparsın)",
-    "tecrube_seviyesi": "tecrübe seviyesi",
-    "ana_hedef": "ana yatırım hedefi",
+    "nakit_ihtiyaci": "yakın vadede nakit ihtiyacı",
+    "ana_hedef": "ana hedef (hızlı kazanç / korunma / büyüme)",
     "kayip_toleransi_yuzde": "kayıp toleransı (%)",
+    "dusus_tepkisi_10": "%10 düşüşte ne yaparsın",
+    "dusus_tepkisi_20": "%20 düşüşte ne yaparsın",
+    "sektor_tercihi": "hangi sektörleri takip ediyorsun",
+    "gunluk_takip_saat": "günde kaç saat borsayla ilgileniyorsun",
+    "ana_korku": "en büyük korkun (kayıp / fırsat kaçırmak / belirsizlik)",
+    "onceki_basari": "daha önce başarılı bir yatırım deneyimin",
+    "risk_tercihi": "risk/ödül tercihi (az-az / çok-çok)",
 }
 
 
@@ -179,6 +196,17 @@ def _migrate(c) -> None:
     cols_p = {r["name"] for r in c.execute("PRAGMA table_info(portfoy)")}
     if "para_birimi" not in cols_p:
         c.execute("ALTER TABLE portfoy ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    # kullanici_profil: derin onboarding alanlari (varsa atlanir)
+    tbls = {r["name"] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "kullanici_profil" in tbls:
+        cols_pr = {r["name"] for r in c.execute("PRAGMA table_info(kullanici_profil)")}
+        for col, tip in (("dusus_tepkisi_10", "TEXT"), ("dusus_tepkisi_20", "TEXT"),
+                         ("sektor_tercihi", "TEXT"), ("gunluk_takip_saat", "REAL"),
+                         ("ana_korku", "TEXT"), ("onceki_basari", "TEXT"),
+                         ("risk_tercihi", "TEXT")):
+            if col not in cols_pr:
+                c.execute(f"ALTER TABLE kullanici_profil ADD COLUMN {col} {tip}")
 
 
 def init_db() -> None:
@@ -481,7 +509,8 @@ _PROFIL_KOLONLAR = (
     "portfoy_buyuklugu", "aylik_birikim", "ek_sermaye_mumkun", "tecrube_seviyesi",
     "risk_toleransi", "panik_egilimi", "yatirim_vadesi", "nakit_ihtiyaci",
     "nakit_ihtiyac_tarihi", "ana_hedef", "kayip_toleransi_yuzde", "ogrenme_seviyesi",
-    "aciklama_ister", "notlar",
+    "aciklama_ister", "dusus_tepkisi_10", "dusus_tepkisi_20", "sektor_tercihi",
+    "gunluk_takip_saat", "ana_korku", "onceki_basari", "risk_tercihi", "notlar",
 )
 
 

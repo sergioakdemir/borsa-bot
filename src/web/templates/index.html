@@ -777,7 +777,7 @@ function onbRender(){document.getElementById("onb-chat").innerHTML=ONB_MSGS.map(
 function onbScore(s){const v=Math.max(0,Math.min(100,s||0));
   document.getElementById("onb-bar").style.width=v+"%";
   document.getElementById("onb-pct").textContent="Botun seni tanıma oranı: %"+v;
-  document.getElementById("onb-finish").style.display=v>=75?"block":"none"}
+  document.getElementById("onb-finish").style.display=v>=85?"block":"none"}
 function openOnboarding(p){ONB_MSGS=[];document.getElementById("onb").classList.add("open");
   onbScore((p&&p.guven_skoru)||0);
   ONB_MSGS=[{rol:"bot",metin:"Merhaba "+(USERS[CUR_USER]?.ad||"")+"! Sana daha isabetli yorumlar verebilmem için seni biraz tanımak istiyorum. Borsadaki toplam portföyün aşağı yukarı ne kadar?"}];
