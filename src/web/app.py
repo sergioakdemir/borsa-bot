@@ -1833,22 +1833,61 @@ def api_stock(ticker):
     return jsonify(get_stock_detail(ticker, request.args.get("market", "bist")))
 
 
-_PERIODS = {"1A": 30, "2A": 60, "3A": 90, "6A": 180, "1Y": 365, "5Y": 1825}
+# periyot -> (yf periyot/gun, interval). 5m = intraday (1G/1H), 1d = gunluk kapanis.
+_PERIODS = {
+    "1G": ("1d", "5m"), "1H": ("5d", "5m"),
+    "1A": (30, "1d"), "3A": (90, "1d"), "6A": (180, "1d"),
+    "1Y": (365, "1d"), "5Y": (1825, "1d"),
+}
+
+
+def _intraday_series(ticker: str, market: str, yf_period: str) -> list[dict]:
+    """5 dakikalik intraday kapanis serisi (1G/1H). Nokta: t=ISO datetime, c=kapanis."""
+    import yfinance as yf
+    t = (ticker or "").upper().replace(".IS", "")
+    symbol = t if market in ("abd", "kripto") else f"{t}.IS"
+    try:
+        df = yf.Ticker(symbol).history(period=yf_period, interval="5m")
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    out = []
+    for ix, c in df["Close"].items():
+        try:
+            cv = float(c)
+        except (TypeError, ValueError):
+            continue
+        if cv != cv:                       # NaN
+            continue
+        try:
+            ts = ix.isoformat()
+        except Exception:
+            ts = str(ix)
+        out.append({"t": ts, "c": round(cv, 2)})
+    return out
 
 
 @app.route("/api/series/<ticker>")
 def api_series(ticker):
-    """Zaman filtreli fiyat serisi (1A/2A/3A/6A/1Y/5Y). SVG icin <=180 noktaya seyreltir."""
+    """Zaman filtreli fiyat serisi. 1G/1H intraday (5dk), digerleri gunluk.
+    SVG icin <=180 noktaya seyreltir (son nokta korunur)."""
     market = request.args.get("market", "bist")
     period = (request.args.get("period") or "1A").upper()
-    gun = _PERIODS.get(period, 30)
-    ps = _price_series(ticker, market, gun)
-    seri = ps["seri"]
-    if len(seri) > 180:                       # uzun periyotlarda seyrelt (son nokta korunur)
+    cfg = _PERIODS.get(period) or _PERIODS["1A"]
+    intraday = cfg[1] == "5m"
+    if intraday:
+        seri = _intraday_series(ticker, market, cfg[0])
+    else:
+        seri = _price_series(ticker, market, cfg[0])["seri"]
+    if len(seri) > 180:                       # seyrelt (son nokta korunur)
         step = len(seri) // 180 + 1
         seri = seri[::step] + ([seri[-1]] if (len(seri) - 1) % step else [])
-    return jsonify({"period": period, "grafik": seri,
-                    "dusuk": ps["dusuk"], "yuksek": ps["yuksek"], "son": ps["son"]})
+    cs = [p["c"] for p in seri]
+    return jsonify({"period": period, "intraday": intraday, "grafik": seri,
+                    "dusuk": round(min(cs), 2) if cs else None,
+                    "yuksek": round(max(cs), 2) if cs else None,
+                    "son": cs[-1] if cs else None})
 
 
 @app.route("/api/ask", methods=["POST"])

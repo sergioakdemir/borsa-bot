@@ -234,19 +234,29 @@
   .quote{font-size:14.5px;line-height:1.55;color:#D9DEE7}
   .anbox{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px}
 
-  /* ---- zaman filtreli grafik ---- */
-  .periods{display:flex;gap:6px;margin:12px 0 2px}
+  /* ---- zaman filtreli grafik (Midas tarzi) ---- */
+  .chart-read{display:flex;align-items:baseline;gap:9px;min-height:23px;margin:12px 0 2px}
+  .cr-price{font-size:17px;font-weight:700}
+  .cr-date{font-size:12px;color:var(--muted2);font-weight:600}
+  .periods{display:flex;gap:5px;margin:8px 0 2px}
   .periods button{flex:1;background:var(--card);border:1px solid var(--border);color:var(--muted);
-    border-radius:11px;padding:8px 0;font-size:12.5px;font-weight:650;min-height:38px}
+    border-radius:10px;padding:8px 0;font-size:12px;font-weight:650;min-height:36px}
   .periods button.active{border-color:rgba(52,211,153,.4);color:var(--green);background:var(--green-bg)}
-  #chart{margin-top:8px;min-height:122px;transition:opacity .18s var(--ease)}
+  #chart{margin-top:8px;transition:opacity .18s var(--ease)}
+  .chart-plot{position:relative;height:120px;touch-action:none}
+  .chart-svg{display:block}
   .chart-svg .grid{stroke:rgba(255,255,255,.06);stroke-width:1}
   .chart-svg .area{opacity:0;animation:areain .4s var(--ease) forwards}
   .chart-svg .line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
   .chart-svg .line.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .55s var(--ease) forwards}
   @keyframes draw{to{stroke-dashoffset:0}}
   @keyframes areain{to{opacity:1}}
-  .chart-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted2);margin-top:4px}
+  .cross-line{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.4);
+    display:none;pointer-events:none;transform:translateX(-.5px)}
+  .cross-dot{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--green);
+    border:2px solid #06080D;display:none;pointer-events:none;transform:translate(-50%,-50%);
+    box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+  .chart-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--muted2);margin-top:6px}
 
   /* ---- bottom sheet (menu / portfoy ekle) ---- */
   .sheet{position:fixed;left:0;right:0;bottom:0;z-index:55;background:var(--card);
@@ -622,13 +632,24 @@ function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;const link=a.url?`<a c
     ${a.ham_baslik?`<div class="sec-title">Kaynak haber</div><div class="quote" style="font-size:13px;color:var(--muted)">${esc(a.ham_baslik)}</div>`:""}
     <div class="anbox" style="margin-top:16px"><div class="row"><span class="muted">Kaynak: <b style="color:#fff">${esc(a.kaynak||"—")}</b></span><span class="muted">${esc(a.tarih||"")}</span></div>${link?`<div style="margin-top:10px">${link}</div>`:""}</div>`)}
 
-/* ============ HISSE DETAY ============ */
-const PERIODS=["1A","2A","3A","6A","1Y","5Y"];
-function chartSVG(pts,bcur){
-  if(!pts||pts.length<2)return`<div class="muted" style="padding:36px 0;text-align:center;font-size:13px">Grafik verisi yok</div>`;
-  const cs=pts.map(p=>p.c);const mn=Math.min(...cs),mx=Math.max(...cs);
-  const W=320,H=120,pad=8,n=cs.length;
-  const x=i=>(i/(n-1))*W,y=c=>mx===mn?H/2:pad+(1-(c-mn)/(mx-mn))*(H-2*pad);
+/* ============ HISSE DETAY · grafik (Midas tarzi) ============ */
+const PERIODS=["1G","1H","1A","3A","6A","1Y","5Y"];
+const AY=["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"];
+let CHART={pts:[],bcur:"₺",period:"1A",mn:0,mx:0};
+let crossActive=false;
+function fmtT(t,period){
+  let d;
+  if(typeof t==="string"&&t.length<=10){const p=t.split("-");d=new Date(+p[0],(+p[1]||1)-1,+p[2]||1)}
+  else d=new Date(t);
+  const hh=String(d.getHours()).padStart(2,"0"),mm=String(d.getMinutes()).padStart(2,"0");
+  if(period==="1G")return `${hh}:${mm}`;
+  if(period==="1H")return `${d.getDate()} ${AY[d.getMonth()]} ${hh}:${mm}`;
+  if(period==="1Y"||period==="5Y")return `${AY[d.getMonth()]} ${d.getFullYear()}`;
+  return `${d.getDate()} ${AY[d.getMonth()]}`;
+}
+function chartSVGonly(pts,mn,mx){
+  const cs=pts.map(p=>p.c);const W=320,H=120,pad=8,n=cs.length;
+  const x=i=>n<2?W/2:(i/(n-1))*W,y=c=>mx===mn?H/2:pad+(1-(c-mn)/(mx-mn))*(H-2*pad);
   const line=cs.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ");
   const area=`M0 ${H} `+cs.map((c,i)=>`L${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ")+` L${W} ${H} Z`;
   const grid=[0.25,0.5,0.75].map(f=>{const yy=(pad+f*(H-2*pad)).toFixed(1);return`<line class="grid" x1="0" y1="${yy}" x2="${W}" y2="${yy}"/>`}).join("");
@@ -636,17 +657,42 @@ function chartSVG(pts,bcur){
   return`<svg class="chart-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
     <defs><linearGradient id="garea" x1="0" x2="0" y1="0" y2="1">
       <stop offset="0" stop-color="${col}" stop-opacity="0.20"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-    ${grid}<path class="area" d="${area}" fill="url(#garea)"/><path class="line draw" pathLength="1" d="${line}" style="stroke:${col}"/></svg>
-    <div class="chart-meta"><span>En düşük ${money(mn,bcur)}</span><span>En yüksek ${money(mx,bcur)}</span></div>`}
+    ${grid}<path class="area" d="${area}" fill="url(#garea)"/><path class="line draw" pathLength="1" d="${line}" style="stroke:${col}"/></svg>`}
+function setChart(pts,bcur,period){const cs=(pts||[]).map(p=>p.c);
+  CHART={pts:pts||[],bcur,period,mn:cs.length?Math.min(...cs):0,mx:cs.length?Math.max(...cs):0}}
+function readoutHTML(p){return p?`<span class="cr-price">${money(p.c,CHART.bcur)}</span><span class="cr-date">${fmtT(p.t,CHART.period)}</span>`:""}
+function updateReadoutDefault(){const r=document.getElementById("chart-read");
+  if(r)r.innerHTML=CHART.pts.length?readoutHTML(CHART.pts[CHART.pts.length-1]):""}
+function buildChartInner(pts,bcur,period){setChart(pts,bcur,period);
+  if(!pts||pts.length<2)return`<div class="muted" style="padding:40px 0;text-align:center;font-size:13px">Grafik verisi yok</div>`;
+  return`<div class="chart-plot" id="chart-plot"
+      onpointerdown="crossMove(event)" onpointermove="crossMove(event)"
+      onpointerup="crossHide()" onpointerleave="crossHide()" onpointercancel="crossHide()">
+      ${chartSVGonly(pts,CHART.mn,CHART.mx)}
+      <div class="cross-line" id="cross-line"></div><div class="cross-dot" id="cross-dot"></div></div>
+    <div class="chart-meta"><span>En düşük ${money(CHART.mn,bcur)}</span><span>En yüksek ${money(CHART.mx,bcur)}</span></div>`}
+function crossMove(e){const pl=document.getElementById("chart-plot");if(!pl||!CHART.pts.length)return;
+  crossActive=true;const rect=pl.getBoundingClientRect();
+  let ratio=(e.clientX-rect.left)/rect.width;ratio=Math.max(0,Math.min(1,ratio));
+  const n=CHART.pts.length,idx=Math.round(ratio*(n-1)),p=CHART.pts[idx];
+  const xPx=(n<2?0.5:idx/(n-1))*rect.width;
+  const H=120,pad=8;const yU=CHART.mx===CHART.mn?H/2:pad+(1-(p.c-CHART.mn)/(CHART.mx-CHART.mn))*(H-2*pad);
+  const yPx=yU/H*rect.height;
+  const ln=document.getElementById("cross-line"),dt=document.getElementById("cross-dot");
+  ln.style.left=xPx+"px";ln.style.display="block";dt.style.left=xPx+"px";dt.style.top=yPx+"px";dt.style.display="block";
+  const r=document.getElementById("chart-read");if(r)r.innerHTML=readoutHTML(p)}
+function crossHide(){crossActive=false;const ln=document.getElementById("cross-line"),dt=document.getElementById("cross-dot");
+  if(ln)ln.style.display="none";if(dt)dt.style.display="none";updateReadoutDefault()}
 async function loadSeries(ticker,market,period,btn){
   document.querySelectorAll("#chartbox .periods button").forEach(b=>b.classList.remove("active"));btn.classList.add("active");
   const c=document.getElementById("chart");c.style.opacity=".35";const bcur=btn.dataset.bcur||"₺";
   try{const d=await(await fetch(`/api/series/${encodeURIComponent(ticker)}?market=${market}&period=${period}`)).json();
-    c.innerHTML=chartSVG(d.grafik,bcur);c.style.opacity="1";
-  }catch(e){c.style.opacity="1";c.innerHTML=`<div class="muted" style="padding:36px 0;text-align:center;font-size:13px">Grafik yüklenemedi</div>`}}
-function chartBox(ticker,market,grafik,bcur){
-  return`<div id="chartbox"><div class="periods">${PERIODS.map(p=>`<button class="${p==='1A'?'active':''}" data-bcur="${bcur}" onclick="loadSeries('${ticker}','${market}','${p}',this)">${p}</button>`).join("")}</div>
-    <div id="chart">${chartSVG(grafik,bcur)}</div></div>`}
+    c.innerHTML=buildChartInner(d.grafik,bcur,period);c.style.opacity="1";updateReadoutDefault();
+  }catch(e){c.style.opacity="1";c.innerHTML=`<div class="muted" style="padding:40px 0;text-align:center;font-size:13px">Grafik yüklenemedi</div>`}}
+function chartBox(ticker,market,grafik,bcur){const def="1A";
+  return`<div id="chartbox"><div class="chart-read" id="chart-read"></div>
+    <div class="periods">${PERIODS.map(p=>`<button class="${p===def?'active':''}" data-bcur="${bcur}" onclick="loadSeries('${ticker}','${market}','${p}',this)">${p}</button>`).join("")}</div>
+    <div id="chart">${buildChartInner(grafik,bcur,def)}</div></div>`}
 async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;const market=s?(s.market||"bist"):"bist";
   ovShow(`<div class="spin">Yükleniyor…</div>`);
   try{const d=await(await fetch(`/api/stock/${encodeURIComponent(ticker)}?market=${market}`)).json();const lv=d.seviyeler||{};const an=d.analist;
@@ -665,7 +711,7 @@ async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;con
         <span>Ort. hedef <b>${fmt(an.ortalama_hedef)} ₺</b> <span class="${signCls(an.potansiyel)}">${pct(an.potansiyel)}</span></span></div>
       <div class="row" style="margin-top:11px;font-size:12.5px"><span class="c-green">AL ${an.al_sayisi}</span><span class="c-amber">TUT ${an.tut_sayisi}</span><span class="c-red">SAT ${an.sat_sayisi}</span></div></div>`;
     if(d.haberler&&d.haberler.length)h+=`<div class="sec-title">Haber etkisi</div>`+d.haberler.map(n=>`<div class="news sm">${newsVisual(n,true)}<div class="body" style="padding:11px 13px"><div class="title" style="font-size:13.5px">${esc(n.baslik)}</div><div class="meta"><span class="chip">${esc(n.kategori)}</span>${n.url?`<a class="kaplink" href="${esc(n.url)}" target="_blank">Kaynak →</a>`:""}</div></div></div>`).join("");
-    document.getElementById("ov-body").innerHTML=h;
+    document.getElementById("ov-body").innerHTML=h;updateReadoutDefault();
   }catch(e){document.getElementById("ov-body").innerHTML=empty("Detay yüklenemedi")}}
 function ovShow(html){document.getElementById("ov-body").innerHTML=html;document.getElementById("ov-scrim").classList.add("open");document.getElementById("overlay").classList.add("open")}
 function closeStock(){document.getElementById("ov-scrim").classList.remove("open");document.getElementById("overlay").classList.remove("open")}
