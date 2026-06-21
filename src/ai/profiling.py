@@ -12,7 +12,10 @@ import json
 import os
 from pathlib import Path
 
-MODEL = "claude-sonnet-4-6"
+# Onboarding sohbeti hizli/ucuz model (Haiku); profil cikarimi dogruluk icin Sonnet.
+ONBOARDING_MODEL = "claude-haiku-4-5-20251001"
+EXTRACT_MODEL = "claude-sonnet-4-6"
+MODEL = EXTRACT_MODEL          # geriye donuk uyumluluk
 
 ONBOARDING_SYSTEM = (
     "Sen 25 yillik tecrubeli bir Turk borsa uzmanisin. Kullaniciyi bir yatirimci "
@@ -137,7 +140,7 @@ def onboarding_reply(messages, profile=None, client=None) -> str:
             system += ("\n\nKullanici hakkinda zaten bildiklerin (tekrar sorma, "
                        f"eksikleri sor): {json.dumps(bilinen, ensure_ascii=False)}")
     resp = client.messages.create(
-        model=MODEL, max_tokens=400, system=system, messages=msgs)
+        model=ONBOARDING_MODEL, max_tokens=400, system=system, messages=msgs)
     return "".join(getattr(b, "text", "") for b in resp.content
                    if getattr(b, "type", "") == "text").strip()
 
@@ -175,7 +178,7 @@ def extract_profile_from_chat(kullanici_id, messages, client=None) -> dict:
         return db.get_profile(kullanici_id) or {}
     try:
         resp = client.messages.create(
-            model=MODEL, max_tokens=500, system=_EXTRACT_SYSTEM,
+            model=EXTRACT_MODEL, max_tokens=500, system=_EXTRACT_SYSTEM,
             messages=[{"role": "user", "content": f"Sohbet:\n{transcript}"}])
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text").strip()

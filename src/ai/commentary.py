@@ -419,23 +419,47 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
 _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
 
 
-def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
-                  context=None, market: str = "bist", learning_note=None) -> dict:
-    """Tek hisse icin tam zincir. Web uyumlu kayit dondurur (veri yoksa skipped).
+# Verdict pydantic semasinin Batch API icin acik JSON-schema karsiligi
+# (batch'te messages.parse yok; output_config.format ile dogrulanir).
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "karar": {"type": "string", "enum": ["AL", "TUT", "SAT"]},
+        "puan": {"type": "integer"},
+        "risk": {"type": "integer"},
+        "eminlik": {"type": "string", "enum": ["Düşük", "Orta", "Yüksek"]},
+        "gerekce": {"type": "string"},
+        "neden_simdi": {"type": "string"},
+        "fiyatlanmis_mi": {"type": "boolean"},
+    },
+    "required": ["karar", "puan", "risk", "eminlik", "gerekce", "neden_simdi",
+                 "fiyatlanmis_mi"],
+    "additionalProperties": False,
+}
 
-    market='bist' (varsayilan) veya 'us'/'abd'. ABD'de KAP/Turkce haber, analist
-    konsensusu (hedeffiyat.com.tr) ve sektor korelasyon tablosu uygulanmaz;
-    piyasa verisi + yfinance temel oranlari + makro baglam kullanilir.
+
+def _user_prompt(ticker: str, payload: dict) -> str:
+    return (f"{ticker} hissesini degerlendir. Yalnizca asagidaki veriyi kullan, "
+            "veri uydurma:\n\n" + json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
+                     market: str = "bist", learning_note=None):
+    """Bir hisse icin AI cagrisi oncesi TUM veriyi toplar ve payload kurar.
+
+    Doner: (kill_kaydi | None, payload | None, ctx | None). Kill durumunda
+    (kayit, None, None); aksi halde (None, payload, ctx).
     """
     ticker = ticker.upper().replace(".IS", "")
     is_us = market in ("us", "abd")
     sig = market_data(ticker, market=market)
     # --- KILL SWITCH: fiyat verisi yok / bayat ise AI cagrilmaz ---
     if sig is None:
-        return _kill_kaydi(ticker, market, "fiyat verisi hiç gelmiyor")
+        return _kill_kaydi(ticker, market, "fiyat verisi hiç gelmiyor"), None, None
     if sig.get("bayat"):
-        return _kill_kaydi(ticker, market,
-                           f"fiyat verisi 24 saatten eski (son veri {sig.get('son_bar_tarihi')})")
+        return (_kill_kaydi(ticker, market,
+                f"fiyat verisi 24 saatten eski (son veri {sig.get('son_bar_tarihi')})"),
+                None, None)
 
     news = gather_news(ticker, news_src=news_src, rss_src=rss_src, market=market)
     # Analist konsensusu (hedeffiyat + borsaveyatirim) - yalniz BIST
@@ -518,7 +542,23 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
     # Kendi karar gecmisi uyarisi (ogrenme)
     if learning_note:
         payload["karar_gecmisi_uyari"] = learning_note
-    v = _ai_verdict(ticker, payload, client=client)
+
+    ctx = {"ticker": ticker, "is_us": is_us, "sig": sig, "news": news,
+           "analist": analist, "temel": temel, "hacim_anom": hacim_anom,
+           "sektor": sektor}
+    return None, payload, ctx
+
+
+def _finalize_record(ctx: dict, v: "Verdict") -> dict:
+    """AI verdict'ini (tek-cagri veya batch) web uyumlu kayda donusturur."""
+    ticker = ctx["ticker"]
+    is_us = ctx["is_us"]
+    sig = ctx["sig"]
+    news = ctx["news"]
+    analist = ctx["analist"]
+    temel = ctx["temel"]
+    hacim_anom = ctx["hacim_anom"]
+    sektor = ctx["sektor"]
 
     # Risk ajani: AL + risk>=9 -> VETO
     vetoed = (v.karar == "AL" and v.risk >= 9)
@@ -566,9 +606,175 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
     }
 
 
+def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
+                  context=None, market: str = "bist", learning_note=None) -> dict:
+    """Tek hisse icin tam zincir (tek AI cagrisi). Web uyumlu kayit dondurur.
+
+    market='bist' (varsayilan) veya 'us'/'abd'. ABD'de KAP/Turkce haber, analist
+    konsensusu ve sektor korelasyon tablosu uygulanmaz.
+    """
+    kill, payload, ctx = _prepare_payload(
+        ticker, news_src=news_src, rss_src=rss_src, context=context,
+        market=market, learning_note=learning_note)
+    if kill is not None:
+        return kill
+    v = _ai_verdict(ctx["ticker"], payload, client=client)
+    return _finalize_record(ctx, v)
+
+
 # ---------------------------------------------------------------------------
 # Zinciri calistir + kaydet + decisions tablosu
 # ---------------------------------------------------------------------------
+def _persist(results, save: bool, verbose: bool):
+    """Sonuclari decisions tablosuna yazar + ai_commentary.json'a kaydeder."""
+    from src.db import database as db
+    today = datetime.now(_TZ).date().isoformat()
+    for r in results:
+        try:
+            if r.get("kill_switch"):
+                db.record_decision(
+                    ticker=r["ticker"], karar="KILL_SWITCH", puan=None, risk=None,
+                    eminlik=None, gerekce=r.get("mesaj"), tarih=today)
+            elif not r.get("skipped"):
+                db.record_decision(
+                    ticker=r["ticker"], karar=r["final_decision"],
+                    puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
+                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today)
+        except Exception as e:
+            if verbose:
+                print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")
+    if save:
+        OUT_PATH.parent.mkdir(exist_ok=True)
+        OUT_PATH.write_text(json.dumps(results, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        if verbose:
+            print(f"\nKaydedildi: {OUT_PATH} ({len(results)} kayit)")
+
+
+def _verbose_satir(t, r):
+    if r.get("kill_switch"):
+        return f"  {t:7} KILL_SWITCH ({r.get('reason')})"
+    if r.get("skipped"):
+        return f"  {t:7} ATLANDI ({r.get('reason')})"
+    return (f"  {t:7} {r['final_decision']:5} puan {r['score']}/10 "
+            f"risk {r['risk']['score']}/10 {r['eminlik']} haber={r['haber_sayisi']}")
+
+
+def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
+              overview=None, learning=None, poll_interval: int = 30,
+              max_wait: int = 1800) -> list[dict]:
+    """Sabah brifingi icin TOPLU (Batch API) calistirma. Tum hisse verilerini
+    hazirlar, AI yorumlarini TEK batch isteginde gonderir (%50 daha ucuz),
+    batch bitene kadar polling yapar (varsayilan 30 dk, 30 sn'de bir) ve
+    sonuclari run() ile AYNI formatta dondurur."""
+    from src.news.service import get_news_source
+    from src.news.rss_source import RSSNewsSource
+    import anthropic
+    import time
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request
+
+    _load_dotenv()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY yok - AI yorumu uretilemez.")
+
+    news_src, is_sample = get_news_source(verbose=verbose)
+    rss_src = RSSNewsSource()
+    context = market_context(rss_src=rss_src, overview=overview)
+    learning = learning or {}
+    if verbose:
+        gp = context.get("genel_piyasa") or {}
+        print(f"  [batch] 24s haber: {rss_src.recent_count()} | "
+              f"makro: {context['makro'].get('available')} | "
+              f"piyasa: {gp.get('yon')}")
+
+    # 1) Her hisse icin veriyi hazirla (AI cagrisi yok)
+    order = []                 # [(cid, t)]
+    final = {}                 # cid -> kayit (kill/skip dahil)
+    ctxs = {}                  # cid -> ctx (AI bekleyenler)
+    requests = []
+    for i, raw in enumerate(tickers):
+        t, _, mk = str(raw).partition(":")
+        t = t.strip()
+        market = (mk.strip().lower() or "bist")
+        cid = f"{i}-{t.upper().replace('.IS', '')}"
+        order.append((cid, t))
+        try:
+            kill, payload, ctx = _prepare_payload(
+                t, news_src=news_src, rss_src=rss_src, context=context,
+                market=market, learning_note=learning.get(t.upper().replace(".IS", "")))
+        except Exception as e:
+            final[cid] = {"ticker": t.upper(), "skipped": True,
+                          "reason": f"Hata: {type(e).__name__}"}
+            if verbose:
+                print(f"  [{t}] hazirlik HATA: {type(e).__name__}: {str(e)[:80]}")
+            continue
+        if kill is not None:
+            final[cid] = kill
+            continue
+        ctxs[cid] = ctx
+        requests.append(Request(
+            custom_id=cid,
+            params=MessageCreateParamsNonStreaming(
+                model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM,
+                messages=[{"role": "user", "content": _user_prompt(ctx["ticker"], payload)}],
+                output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}},
+            )))
+
+    # 2) Batch gonder + polling
+    if requests:
+        client = anthropic.Anthropic()
+        batch = client.messages.batches.create(requests=requests)
+        if verbose:
+            print(f"  [batch] {len(requests)} istek gonderildi (id={batch.id}); bekleniyor...")
+        waited = 0
+        status = batch.processing_status
+        while status != "ended":
+            if waited >= max_wait:
+                if verbose:
+                    print(f"  [batch] {max_wait}s doldu, durum={status}; bekleyenler atlanacak.")
+                break
+            time.sleep(poll_interval)
+            waited += poll_interval
+            status = client.messages.batches.retrieve(batch.id).processing_status
+            if verbose:
+                print(f"  [batch] {waited}s · durum={status}")
+
+        # 3) Sonuclari topla (sira garantisi yok -> custom_id ile esle)
+        if status == "ended":
+            for res in client.messages.batches.results(batch.id):
+                cid = res.custom_id
+                ctx = ctxs.get(cid)
+                if ctx is None:
+                    continue
+                if res.result.type == "succeeded":
+                    try:
+                        msg = res.result.message
+                        text = next((b.text for b in msg.content if b.type == "text"), "")
+                        v = Verdict(**json.loads(text))
+                        final[cid] = _finalize_record(ctx, v)
+                    except Exception as e:
+                        final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                                      "reason": f"Batch parse: {type(e).__name__}"}
+                else:
+                    final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                                  "reason": f"Batch {res.result.type}"}
+
+    # Hala sonuc gelmeyenler (timeout vb.) -> skipped
+    for cid, ctx in ctxs.items():
+        if cid not in final:
+            final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                          "reason": "Batch sonuc gelmedi (timeout)"}
+
+    # 4) Orijinal sirada birlestir + kaydet
+    results = [final[cid] for cid, _ in order if cid in final]
+    if verbose:
+        for cid, t in order:
+            r = final.get(cid)
+            if r:
+                print(_verbose_satir(t, r))
+    _persist(results, save=save, verbose=verbose)
+    return results
 def run(tickers: list[str], save: bool = True, verbose: bool = True,
         overview=None, learning=None) -> list[dict]:
     from src.news.service import get_news_source

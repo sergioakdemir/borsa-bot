@@ -104,8 +104,16 @@ def evaluate_all(targets, overview=None, learning=None):
     from src.ai import commentary
     if not targets:
         return []
-    return commentary.run(targets, save=True, verbose=True,
-                          overview=overview, learning=learning)
+    # Batch API: %50 daha ucuz; sabah brifinginde gecikme kabul edilebilir.
+    # Batch basarisiz olursa tek-tek calistirmaya geri don.
+    try:
+        return commentary.run_batch(targets, save=True, verbose=True,
+                                    overview=overview, learning=learning)
+    except Exception as e:
+        print(f"  [batch] basarisiz ({type(e).__name__}: {str(e)[:80]}); "
+              "tek-tek calistiriliyor")
+        return commentary.run(targets, save=True, verbose=True,
+                              overview=overview, learning=learning)
 
 
 def build_message(results, sel, now, overview=None):
