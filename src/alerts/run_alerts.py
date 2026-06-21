@@ -50,6 +50,88 @@ def unpriced_fresh_news(ticker, news_src=None):
     return None
 
 
+def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
+    """GUN ICI KAP TARAMASI (cron: hafta ici 10-18 her 15 dk).
+
+    Tum watchlist hisselerinin KAP bildirimlerini tarar. Son `window_min` dakika
+    icinde YENI bir bildirim cikmis VE fiyat henuz %`move_limit`'ten az oynamissa
+    'FIYATLANMAMIS HABER' olarak aninda Telegram'a gonderir (firsat penceresi).
+
+    Spam onleme: her bildirim (disclosure_id) gun icinde bir kez gonderilir.
+    """
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis - KAP taramasi atlandi.")
+        return 0
+
+    from src.news.service import get_news_source
+    news_src, is_sample = get_news_source(verbose=False)
+    if is_sample:
+        # Canli KAP yoksa zaman damgalari anlamli degil; yanlis 'taze' uyari uretmeyiz.
+        print(f"[{now:%Y-%m-%d %H:%M}] KAP canli degil (ornek kaynak) - tarama atlandi.")
+        return 0
+
+    today = now.date().isoformat()
+    hits = []
+    checked = 0
+    for ticker in load_watchlist():
+        try:
+            items = news_src.get_news(ticker, limit=20)
+        except Exception:
+            continue
+        checked += 1
+        # son window_min dakika icindeki bildirimler
+        taze = []
+        for it in items:
+            pub = it.published_at
+            if pub is None:
+                continue
+            yas_dk = (now - pub).total_seconds() / 60.0
+            if 0 <= yas_dk <= window_min:
+                taze.append(it)
+        if not taze:
+            continue
+
+        # fiyat henuz oynamamis mi? (bugun islemde + |degisim| < move_limit)
+        info = intraday_change(ticker, today=now.date())
+        if not info or not info["is_today"]:
+            continue
+        if abs(info["change"]) >= move_limit:
+            continue   # haber zaten fiyatlanmaya baslamis
+
+        gonderilmis = set(db.alert_levels_today(ticker, today))
+        for it in taze:
+            did = it.disclosure_id or (it.title or "")[:40]
+            tok = f"KAPHIZLI:{did}"
+            if tok in gonderilmis:
+                continue
+            db.record_alert(ticker, today, tok, info["change"])
+            gonderilmis.add(tok)
+            hits.append({"ticker": ticker, "change": info["change"], "item": it})
+
+    if not hits:
+        print(f"[{now:%Y-%m-%d %H:%M}] Fiyatlanmamis yeni KAP haberi yok "
+              f"({checked} hisse tarandi).")
+        return 0
+
+    lines = [f"<b>\U0001F4F0 FIYATLANMAMIS HABER</b> — {now:%Y-%m-%d %H:%M}",
+             "<i>Son 30 dk'da KAP bildirimi cikti, fiyat henuz oynamadi (firsat penceresi)</i>",
+             ""]
+    for h in hits:
+        it = h["item"]
+        url = getattr(it, "url", None)
+        baslik = it.title or "(baslik yok)"
+        if url:
+            baslik = f'<a href="{url}">{baslik}</a>'
+        lines.append(f"⚡ <b>{h['ticker']}</b> ({h['change']:+}%): {baslik} "
+                     f"<i>[{it.published_at:%H:%M}]</i>")
+    sonuc = telegram.broadcast("\n".join(lines))
+    ok = [c for c, s in sonuc.items() if s == "ok"]
+    print(f"[{now:%Y-%m-%d %H:%M}] {len(hits)} fiyatlanmamis KAP haberi -> "
+          f"{len(ok)}/{len(sonuc)} aliciya gonderildi.")
+    return 0
+
+
 def build_message(price_alerts, news_alerts, vol_alerts, now):
     acil = [a for a in price_alerts if a["seviye"] == "ACIL"]
     izle = [a for a in price_alerts if a["seviye"] == "IZLE"]
@@ -146,4 +228,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # 'kap' argumani: gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "kap":
+        sys.exit(scan_kap_unpriced())
     sys.exit(main())

@@ -70,8 +70,72 @@ SYSTEM = (
     "gostergeyle (petrol, dolar, faiz, celik/demir) ve hangi yonde (pozitif/ters) "
     "iliskili oldugunu dikkate al. Piyasa baglamindaki makro veriyle (USD/TRY, faiz) "
     "birlestir: orn. faizle ters iliskili bankada faiz yuksekse bu olumsuzdur; petrolle "
-    "ters havayolu icin petrol artisi olumsuzdur. Iliskiyi sade dille gerekceye yansit."
+    "ters havayolu icin petrol artisi olumsuzdur. Iliskiyi sade dille gerekceye yansit.\n\n"
+    "SEKTOR NOTU: Veride 'sektor_notu' varsa, o sektorde kritik olan faktorleri "
+    "(orn. bankada faiz marji/kredi buyumesi/NPL; havacilikta yakit/yolcu/kur) "
+    "degerlendirmenin merkezine al. Bu faktorlerden veride ipucu varsa gerekcede "
+    "ona deginerek karar ver.\n\n"
+    "GENEL PIYASA YONU: Veride 'piyasa_baglami.genel_piyasa' varsa (BIST-100 yonu, "
+    "haftalik degisim, yukselen/dusen sayisi, USD/TRY) dikkate al. Piyasa DUSUYORSA "
+    "AL kararinda daha secici ve temkinli ol, eminligi abartma; piyasa YUKSELIYORSA "
+    "firsatlari daha cesur degerlendir. Genel yonu hissenin kendi verisiyle dengele, "
+    "tek basina belirleyici yapma.\n\n"
+    "KENDI KARAR GECMISIN: Veride 'karar_gecmisi_uyari' varsa, bu hissede gecmis "
+    "kararlarinin isabetini gosterir. Gecmiste sik yanildiysan ayni yonde israr etme; "
+    "daha temkinli ol ve eminligini buna gore ayarla."
 )
+
+# --- Sektor bazli statik notlar (hangi faktorler kritik) ---
+SEKTOR_NOTLARI = {
+    # Havacilik
+    "THYAO": "Havacılıkta yakıt maliyeti, yolcu trafiği ve kur riski kritiktir",
+    "PGSUS": "Havacılıkta yakıt maliyeti, yolcu trafiği ve kur riski kritiktir",
+    "TAVHL": "Havacılıkta yakıt maliyeti, yolcu trafiği ve kur riski kritiktir",
+    # Bankacilik
+    "GARAN": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    "AKBNK": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    "ISCTR": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    "YKBNK": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    "HALKB": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    "VAKBN": "Bankacılıkta faiz marjı, kredi büyümesi ve NPL oranı kritiktir",
+    # Savunma / teknoloji ihracati
+    "ASELS": "Savunmada döviz geliri ve ihracat sözleşmeleri kritiktir",
+    "AGHOL": "Savunmada döviz geliri ve ihracat sözleşmeleri kritiktir",
+    # Rafineri / gaz
+    "TUPRS": "Rafineride ham petrol-ürün makası ve dolar kuru kritiktir",
+    "AYGAZ": "Rafineride ham petrol-ürün makası ve dolar kuru kritiktir",
+    # Demir-celik
+    "EREGL": "Çelikte global fiyat ve enerji maliyeti kritiktir",
+    "KRDMD": "Çelikte global fiyat ve enerji maliyeti kritiktir",
+    "KORDS": "Çelikte global fiyat ve enerji maliyeti kritiktir",
+    # GYO / insaat
+    "EKGYO": "Gayrimenkulde faiz, konut talebi ve maliyet enflasyonu kritiktir",
+    # Otomotiv
+    "TOASO": "Otomotivde iç talep, ihracat ve kur/maliyet dengesi kritiktir",
+    "FROTO": "Otomotivde iç talep, ihracat ve kur/maliyet dengesi kritiktir",
+    # Cam / sanayi
+    "SISE": "Cam sanayinde enerji maliyeti, ihracat ve kapasite kullanımı kritiktir",
+    # Petrokimya
+    "PETKM": "Petrokimyada ürün-nafta makası ve dolar kuru kritiktir",
+    # Perakende / gida
+    "BIMAS": "Perakendede enflasyon, ciro büyümesi ve mağaza trafiği kritiktir",
+    "MGROS": "Perakendede enflasyon, ciro büyümesi ve mağaza trafiği kritiktir",
+    "ULKER": "Gıdada girdi maliyeti, fiyatlama gücü ve ihracat kritiktir",
+    "CCOLA": "İçecekte hacim büyümesi, döviz geliri ve girdi maliyeti kritiktir",
+    # Dayanikli tuketim
+    "ARCLK": "Beyaz eşyada iç talep, ihracat ve kur/maliyet dengesi kritiktir",
+    # Telekom
+    "TCELL": "Telekomda abone büyümesi, ARPU ve enflasyona endeksli fiyatlama kritiktir",
+    "TTKOM": "Telekomda abone büyümesi, ARPU ve enflasyona endeksli fiyatlama kritiktir",
+    # Holding
+    "KCHOL": "Holdingde iştiraklerin (enerji, otomotiv, finans) toplam performansı kritiktir",
+    "SAHOL": "Holdingde iştiraklerin (banka, enerji, sanayi) toplam performansı kritiktir",
+    "DOHOL": "Holdingde iştiraklerin (enerji, otomotiv, medya) toplam performansı kritiktir",
+    # Altin madencilik
+    "KOZAL": "Altın madenciliğinde ons altın fiyatı, üretim ve dolar kuru kritiktir",
+    # Taahhut / insaat
+    "ENKAI": "Taahhütte yurt dışı projeler, döviz geliri ve enerji yatırımları kritiktir",
+}
 
 
 def _load_dotenv():
@@ -279,8 +343,13 @@ def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") 
     return {"bildirimler": bildirimler, "haberler": haberler}
 
 
-def market_context(rss_src=None) -> dict:
-    """Hisseden bagimsiz genel piyasa baglami: son ekonomi basliklari + EVDS makro."""
+def market_context(rss_src=None, overview=None) -> dict:
+    """Hisseden bagimsiz genel piyasa baglami: son ekonomi basliklari + EVDS makro
+    + genel piyasa yonu (BIST-100/USD-TRY/breadth).
+
+    overview: onceden hesaplanmis get_market_overview ciktisi (brifing breadth'i
+    tekrar cekmemek icin gecirilebilir); None ise burada hesaplanir.
+    """
     from src.news.macro import get_macro
 
     gundem = []
@@ -294,7 +363,13 @@ def market_context(rss_src=None) -> dict:
         makro = get_macro()
     except Exception:
         makro = {"available": False}
-    return {"piyasa_gundemi": gundem, "makro": makro}
+    if overview is None:
+        try:
+            from src.news.market_overview import get_market_overview
+            overview = get_market_overview()
+        except Exception:
+            overview = {"available": False}
+    return {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview}
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +405,7 @@ _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
 
 
 def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
-                  context=None, market: str = "bist") -> dict:
+                  context=None, market: str = "bist", learning_note=None) -> dict:
     """Tek hisse icin tam zincir. Web uyumlu kayit dondurur (veri yoksa skipped).
 
     market='bist' (varsayilan) veya 'us'/'abd'. ABD'de KAP/Turkce haber, analist
@@ -409,6 +484,14 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
         }
     if context:
         payload["piyasa_baglami"] = context
+    # Sektor notu (statik): hangi faktorler kritik - yalniz BIST
+    if not is_us:
+        sektor_notu = SEKTOR_NOTLARI.get(ticker)
+        if sektor_notu:
+            payload["sektor_notu"] = sektor_notu
+    # Kendi karar gecmisi uyarisi (ogrenme)
+    if learning_note:
+        payload["karar_gecmisi_uyari"] = learning_note
     v = _ai_verdict(ticker, payload, client=client)
 
     # Risk ajani: AL + risk>=9 -> VETO
@@ -460,7 +543,8 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
 # ---------------------------------------------------------------------------
 # Zinciri calistir + kaydet + decisions tablosu
 # ---------------------------------------------------------------------------
-def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dict]:
+def run(tickers: list[str], save: bool = True, verbose: bool = True,
+        overview=None, learning=None) -> list[dict]:
     from src.news.service import get_news_source
     from src.db import database as db
     import anthropic
@@ -473,10 +557,14 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dic
 
     news_src, is_sample = get_news_source(verbose=verbose)
     rss_src = RSSNewsSource()                       # Bloomberg HT + Investing + Mynet
-    context = market_context(rss_src=rss_src)        # genel piyasa baglami (1 kez)
+    # genel piyasa baglami (1 kez); brifing onceden hesaplamissa onu kullan
+    context = market_context(rss_src=rss_src, overview=overview)
+    learning = learning or {}
     if verbose:
+        gp = context.get("genel_piyasa") or {}
         print(f"  [rss] 24s haber: {rss_src.recent_count()} | "
-              f"makro: {context['makro'].get('available')}")
+              f"makro: {context['makro'].get('available')} | "
+              f"piyasa: {gp.get('yon')} (BIST %{gp.get('bist100_gunluk_%')})")
     client = anthropic.Anthropic()
     today = datetime.now(_TZ).date().isoformat()
 
@@ -488,7 +576,8 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dic
         market = (mk.strip().lower() or "bist")
         try:
             r = analyze_stock(t, news_src=news_src, rss_src=rss_src,
-                              client=client, context=context, market=market)
+                              client=client, context=context, market=market,
+                              learning_note=learning.get(t.upper().replace(".IS", "")))
         except Exception as e:
             if verbose:
                 print(f"  [{t}] HATA: {type(e).__name__}: {str(e)[:100]}")

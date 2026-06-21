@@ -94,19 +94,21 @@ def select_targets():
             "changes": changes, "threshold": threshold, "taranan": len(index)}
 
 
-def evaluate_all(targets):
+def evaluate_all(targets, overview=None, learning=None):
     """Her hedef hisse icin TAM analiz zincirini calistirir (commentary.py).
 
     Zincir: yfinance + KAP(30g) + haber(7g) -> Claude -> karar/puan/risk/...
     ai_commentary.json'a yazar ve her karari decisions tablosuna kaydeder.
+    overview/learning: brifingden gecirilen genel piyasa baglami + karar ogrenimi.
     """
     from src.ai import commentary
     if not targets:
         return []
-    return commentary.run(targets, save=True, verbose=True)
+    return commentary.run(targets, save=True, verbose=True,
+                          overview=overview, learning=learning)
 
 
-def build_message(results, sel, now):
+def build_message(results, sel, now, overview=None):
     """Kisa ozet + en iyi firsat + hisse basina tek satir."""
     personal = set(sel["personal"])
     valid = [r for r in results if not r.get("skipped")]
@@ -126,6 +128,23 @@ def build_message(results, sel, now):
     lines.append(f"<b>Ozet:</b> {ozet}")
     lines.append(f"<i>Kisisel {len(sel['personal'])} · Hareketli {len(sel['movers'])} "
                  f"(≥%{sel['threshold']:g}) · taranan {sel['taranan']}</i>")
+
+    # Genel piyasa yonu (BIST-100 / breadth / USD-TRY)
+    if overview and overview.get("available"):
+        yon_emoji = {"YUKSELIYOR": "\U0001F4C8", "DUSUYOR": "\U0001F4C9",
+                     "YATAY": "➡️"}.get(overview.get("yon"), "📊")
+        g = overview.get("bist100_gunluk_%")
+        h = overview.get("bist100_haftalik_%")
+        detay = []
+        if g is not None:
+            detay.append(f"bugün %{g:+g}")
+        if h is not None:
+            detay.append(f"hafta %{h:+g}")
+        detay.append(f"{overview.get('yukselen')}↑/{overview.get('dusen')}↓")
+        lines.append("")
+        lines.append(f"{yon_emoji} <b>Piyasa: {_esc(overview.get('yon'))}</b> "
+                     f"<i>({' · '.join(detay)})</i>")
+        lines.append(f"<i>{_esc(overview.get('brifing_notu'))}</i>")
 
     # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
     cand = [r for r in valid if r["final_decision"] != "VETO"]
@@ -165,13 +184,41 @@ def main():
         print(f"[{now:%Y-%m-%d %H:%M}] ANTHROPIC_API_KEY yok. Brifing atlandi.")
         return 1
 
+    # 1) Karar sonuclarini doldur (ogrenme) - brifingden ONCE
+    try:
+        from src.ops import update_decisions
+        guncellenen = update_decisions.run(verbose=False)
+        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi: {guncellenen} sonuc guncellendi.")
+    except Exception as e:
+        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi: {type(e).__name__}: {str(e)[:80]}")
+
     print(f"[{now:%Y-%m-%d %H:%M}] Hedef secimi (kisisel + hareketli)...")
     sel = select_targets()
     print(f"  taranan={sel['taranan']} kisisel={len(sel['personal'])} "
           f"hareketli={len(sel['movers'])} -> AI hedefi: {sel['targets']}")
 
-    results = evaluate_all(sel["targets"])
-    msg = build_message(results, sel, now)
+    # 2) Genel piyasa baglami (breadth icin sel['changes'] tekrar kullanilir)
+    try:
+        from src.news.market_overview import get_market_overview
+        overview = get_market_overview(changes=sel.get("changes"))
+        print(f"  piyasa yonu: {overview.get('yon')} | BIST gunluk "
+              f"%{overview.get('bist100_gunluk_%')} haftalik %{overview.get('bist100_haftalik_%')}")
+    except Exception as e:
+        print(f"  piyasa baglami alinamadi: {type(e).__name__}: {str(e)[:80]}")
+        overview = None
+
+    # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
+    try:
+        from src.ai.learning import build_learning_notes
+        learning = build_learning_notes(sel["targets"])
+        if learning:
+            print(f"  karar gecmisi notu: {list(learning.keys())}")
+    except Exception as e:
+        print(f"  karar gecmisi notu alinamadi: {type(e).__name__}")
+        learning = {}
+
+    results = evaluate_all(sel["targets"], overview=overview, learning=learning)
+    msg = build_message(results, sel, now, overview=overview)
     sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)
     ok = [c for c, s in sonuc.items() if s == "ok"]
     print(f"[{now:%Y-%m-%d %H:%M}] Telegram broadcast: {len(ok)}/{len(sonuc)} alici "

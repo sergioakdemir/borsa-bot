@@ -240,6 +240,15 @@ def set_decision_outcome(decision_id, sonuc) -> None:
         c.execute("UPDATE decisions SET sonuc=? WHERE id=?", (sonuc, decision_id))
 
 
+def recent_decisions_for(ticker, limit: int = 10) -> list[dict]:
+    """Bir hissenin en son N kararini (sonuc dahil) dondurur."""
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM decisions WHERE ticker=? ORDER BY id DESC LIMIT ?",
+            (str(ticker).upper().replace(".IS", ""), limit))]
+
+
 if __name__ == "__main__":
     seed_default_sources()
     seed_users()
