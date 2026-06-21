@@ -1803,6 +1803,22 @@ def api_decisions():
     return jsonify(get_decisions())
 
 
+@app.route("/api/backtest")
+def api_backtest():
+    """Aylik backtest sonuclari (data/backtest_results.json). Yoksa bos doner."""
+    p = DATA / "backtest_results.json"
+    if not p.exists():
+        return jsonify({"var": False})
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return jsonify({"var": True, "genel": d.get("genel", {}),
+                        "hisse_bazli": d.get("hisse_bazli", {}),
+                        "aciklama": d.get("aciklama", ""),
+                        "uretim_tarihi": d.get("uretim_tarihi", "")})
+    except Exception:
+        return jsonify({"var": False})
+
+
 @app.route("/api/watchlist/add", methods=["POST"])
 def api_watchlist_add():
     d = request.get_json(silent=True) or {}

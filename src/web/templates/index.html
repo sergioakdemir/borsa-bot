@@ -540,7 +540,7 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
         <div class="grid"><div><div class="lbl">Yatırım</div><b>${money(o.maliyet)}</b></div>
           <div><div class="lbl">Toplam K/Z</div><b class="${signCls(o.kz)}">${money(o.kz)}</b></div></div>
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;
-    const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">Geçmiş Kararlar →</button>`;
+    const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">Karne · Backtest →</button>`;
     if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.")+karne;fillOverview();return}
     const gr={bist:"BIST Hisselerim",abd:"ABD Hisselerim",kripto:"Kripto Varlıklarım"};
     ["bist","abd","kripto"].forEach(m=>{const ps=d.pozisyonlar.filter(p=>p.market===m);
@@ -548,9 +548,33 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
     el.innerHTML=h+karne;fillOverview();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
 let DEC_INDEX={};
+function backtestHTML(bt){
+  if(!bt||!bt.var)return"";
+  const g=bt.genel||{};const sr=g["basari_orani_%"],yr=g["yonlu_basari_%"],ag=g["ort_strateji_getiri_%"];
+  let h=`<div class="sec-title">Backtest · BIST-5 (2024–2026)</div>
+    <div class="card"><div class="row"><span class="muted">Genel başarı</span><b>%${sr??"—"}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Yönlü (AL/SAT) başarı</span><b>%${yr??"—"}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Ort. strateji getiri (aylık)</span><b class="${signCls(ag)}">${pct(ag)}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">İşlem sayısı</span><b>${g.islem??"—"}</b></div>
+      ${bt.aciklama?`<div class="tick" style="margin-top:11px;line-height:1.5">${esc(bt.aciklama)}</div>`:""}</div>`;
+  const tk=bt.hisse_bazli||{};
+  h+=Object.entries(tk).map(([s,o])=>{if(!o.islem)return"";
+    const d=o.karar_dagilimi||{};
+    return`<div class="card" style="padding:13px 15px"><div class="row">
+      <div class="name">${esc(s.replace(".IS",""))}</div>
+      <div style="text-align:right"><div style="font-size:13px">başarı %${o["basari_orani_%"]??"—"}</div>
+        <div class="chg ${signCls(o["ort_strateji_getiri_%"])}">${pct(o["ort_strateji_getiri_%"])} ort.</div></div></div>
+      <div class="pline">${o.islem} işlem · AL ${d.AL||0} · TUT ${d.TUT||0} · SAT ${d.SAT||0}</div></div>`}).join("");
+  return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const d=await(await fetch("/api/decisions")).json();const rows=d.satirlar||[];DEC_INDEX={};
-    let h=`<h2 style="font-size:21px;font-weight:700">Geçmiş Kararlar</h2><div class="tick" style="margin-bottom:14px">Botun verdiği kararlar ve sonuçları</div>`;
+  try{const [dr,btr]=await Promise.all([
+        fetch("/api/decisions").then(r=>r.json()).catch(()=>({})),
+        fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false}))]);
+    const rows=dr.satirlar||[];DEC_INDEX={};
+    let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
+      <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
+    h+=backtestHTML(btr);
+    h+=`<div class="sec-title">Geçmiş Kararlar</div>`;
     h+=rows.length?rows.map(r=>{DEC_INDEX[r.id]=r;const mk=r.durum==="dogru"?"✓":r.durum==="yanlis"?"✕":"•";
       const sc=r.durum==="dogru"?"green":r.durum==="yanlis"?"red":"gray";
       return`<div class="card" onclick="openDecision(${r.id})"><div class="row"><div class="name">${esc(r.ticker)} ${pill(r.karar_label,r.renk)}</div>
