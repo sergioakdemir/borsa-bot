@@ -1841,17 +1841,17 @@ _PERIODS = {
 }
 
 
-def _intraday_series(ticker: str, market: str, yf_period: str) -> list[dict]:
-    """5 dakikalik intraday kapanis serisi (1G/1H). Nokta: t=ISO datetime, c=kapanis."""
+def _intraday_series(ticker: str, market: str, yf_period: str) -> dict:
+    """5 dakikalik intraday seri (1G/1H). {seri:[{t,c}], acilis: ilk barin acilisi}."""
     import yfinance as yf
     t = (ticker or "").upper().replace(".IS", "")
     symbol = t if market in ("abd", "kripto") else f"{t}.IS"
     try:
         df = yf.Ticker(symbol).history(period=yf_period, interval="5m")
     except Exception:
-        return []
+        return {"seri": [], "acilis": None}
     if df is None or df.empty:
-        return []
+        return {"seri": [], "acilis": None}
     out = []
     for ix, c in df["Close"].items():
         try:
@@ -1865,7 +1865,12 @@ def _intraday_series(ticker: str, market: str, yf_period: str) -> list[dict]:
         except Exception:
             ts = str(ix)
         out.append({"t": ts, "c": round(cv, 2)})
-    return out
+    acilis = None
+    try:
+        acilis = round(float(df["Open"].iloc[0]), 2)
+    except Exception:
+        acilis = out[0]["c"] if out else None
+    return {"seri": out, "acilis": acilis}
 
 
 @app.route("/api/series/<ticker>")
@@ -1876,8 +1881,10 @@ def api_series(ticker):
     period = (request.args.get("period") or "1A").upper()
     cfg = _PERIODS.get(period) or _PERIODS["1A"]
     intraday = cfg[1] == "5m"
+    acilis = None
     if intraday:
-        seri = _intraday_series(ticker, market, cfg[0])
+        r = _intraday_series(ticker, market, cfg[0])
+        seri, acilis = r["seri"], r["acilis"]
     else:
         seri = _price_series(ticker, market, cfg[0])["seri"]
     if len(seri) > 180:                       # seyrelt (son nokta korunur)
@@ -1885,6 +1892,7 @@ def api_series(ticker):
         seri = seri[::step] + ([seri[-1]] if (len(seri) - 1) % step else [])
     cs = [p["c"] for p in seri]
     return jsonify({"period": period, "intraday": intraday, "grafik": seri,
+                    "acilis": acilis,           # sadece intraday'de (1G/1H) dolu
                     "dusuk": round(min(cs), 2) if cs else None,
                     "yuksek": round(max(cs), 2) if cs else None,
                     "son": cs[-1] if cs else None})

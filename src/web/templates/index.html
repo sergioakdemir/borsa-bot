@@ -237,7 +237,10 @@
   /* ---- zaman filtreli grafik (Midas tarzi) ---- */
   .chart-read{display:flex;align-items:baseline;gap:9px;min-height:23px;margin:12px 0 2px}
   .cr-price{font-size:17px;font-weight:700}
-  .cr-date{font-size:12px;color:var(--muted2);font-weight:600}
+  .cr-chg{font-size:13.5px;font-weight:700}
+  .cr-chg.pos{color:var(--green)} .cr-chg.neg{color:var(--red)}
+  .cr-date{font-size:12px;color:var(--muted2);font-weight:600;margin-left:auto}
+  .chart-svg .ref{stroke:rgba(255,255,255,.32);stroke-width:1;stroke-dasharray:4 4}
   .periods{display:flex;gap:5px;margin:8px 0 2px}
   .periods button{flex:1;background:var(--card);border:1px solid var(--border);color:var(--muted);
     border-radius:10px;padding:8px 0;font-size:12px;font-weight:650;min-height:36px}
@@ -647,28 +650,36 @@ function fmtT(t,period){
   if(period==="1Y"||period==="5Y")return `${AY[d.getMonth()]} ${d.getFullYear()}`;
   return `${d.getDate()} ${AY[d.getMonth()]}`;
 }
-function chartSVGonly(pts,mn,mx){
+function chartSVGonly(pts,mn,mx,acilis){
   const cs=pts.map(p=>p.c);const W=320,H=120,pad=8,n=cs.length;
   const x=i=>n<2?W/2:(i/(n-1))*W,y=c=>mx===mn?H/2:pad+(1-(c-mn)/(mx-mn))*(H-2*pad);
   const line=cs.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ");
   const area=`M0 ${H} `+cs.map((c,i)=>`L${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ")+` L${W} ${H} Z`;
   const grid=[0.25,0.5,0.75].map(f=>{const yy=(pad+f*(H-2*pad)).toFixed(1);return`<line class="grid" x1="0" y1="${yy}" x2="${W}" y2="${yy}"/>`}).join("");
-  const up=cs[cs.length-1]>=cs[0];const col=up?"#34D399":"#F87171";
+  // intraday: renk ve alan acilisa gore (fiyat acilisin ustundeyse yesil)
+  const up=acilis!=null?(cs[cs.length-1]>=acilis):(cs[cs.length-1]>=cs[0]);const col=up?"#34D399":"#F87171";
+  const ref=acilis!=null?`<line class="ref" x1="0" y1="${y(acilis).toFixed(1)}" x2="${W}" y2="${y(acilis).toFixed(1)}"/>`:"";
   return`<svg class="chart-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
     <defs><linearGradient id="garea" x1="0" x2="0" y1="0" y2="1">
       <stop offset="0" stop-color="${col}" stop-opacity="0.20"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-    ${grid}<path class="area" d="${area}" fill="url(#garea)"/><path class="line draw" pathLength="1" d="${line}" style="stroke:${col}"/></svg>`}
-function setChart(pts,bcur,period){const cs=(pts||[]).map(p=>p.c);
-  CHART={pts:pts||[],bcur,period,mn:cs.length?Math.min(...cs):0,mx:cs.length?Math.max(...cs):0}}
-function readoutHTML(p){return p?`<span class="cr-price">${money(p.c,CHART.bcur)}</span><span class="cr-date">${fmtT(p.t,CHART.period)}</span>`:""}
+    ${grid}${ref}<path class="area" d="${area}" fill="url(#garea)"/><path class="line draw" pathLength="1" d="${line}" style="stroke:${col}"/></svg>`}
+function setChart(pts,bcur,period,acilis){const cs=(pts||[]).map(p=>p.c);
+  let mn=cs.length?Math.min(...cs):0,mx=cs.length?Math.max(...cs):0;
+  if(acilis!=null){mn=Math.min(mn,acilis);mx=Math.max(mx,acilis)}      // ref cizgisi gorunur kalsin
+  CHART={pts:pts||[],bcur,period,mn,mx,acilis:(acilis==null?null:acilis)}}
+function chgStr(c){const v=(CHART.acilis?(c-CHART.acilis)/CHART.acilis*100:0);
+  return{cls:v>=0?"pos":"neg",txt:(v>0?"+":v<0?"-":"")+"%"+fmt(Math.abs(v))}}
+function readoutHTML(p){if(!p)return"";
+  let mid="";if(CHART.acilis!=null){const g=chgStr(p.c);mid=`<span class="cr-chg ${g.cls}">${g.txt}</span>`}
+  return`<span class="cr-price">${money(p.c,CHART.bcur)}</span>${mid}<span class="cr-date">${fmtT(p.t,CHART.period)}</span>`}
 function updateReadoutDefault(){const r=document.getElementById("chart-read");
   if(r)r.innerHTML=CHART.pts.length?readoutHTML(CHART.pts[CHART.pts.length-1]):""}
-function buildChartInner(pts,bcur,period){setChart(pts,bcur,period);
+function buildChartInner(pts,bcur,period,acilis){setChart(pts,bcur,period,acilis);
   if(!pts||pts.length<2)return`<div class="muted" style="padding:40px 0;text-align:center;font-size:13px">Grafik verisi yok</div>`;
   return`<div class="chart-plot" id="chart-plot"
       onpointerdown="crossMove(event)" onpointermove="crossMove(event)"
       onpointerup="crossHide()" onpointerleave="crossHide()" onpointercancel="crossHide()">
-      ${chartSVGonly(pts,CHART.mn,CHART.mx)}
+      ${chartSVGonly(pts,CHART.mn,CHART.mx,CHART.acilis)}
       <div class="cross-line" id="cross-line"></div><div class="cross-dot" id="cross-dot"></div></div>
     <div class="chart-meta"><span>En düşük ${money(CHART.mn,bcur)}</span><span>En yüksek ${money(CHART.mx,bcur)}</span></div>`}
 function crossMove(e){const pl=document.getElementById("chart-plot");if(!pl||!CHART.pts.length)return;
@@ -687,7 +698,7 @@ async function loadSeries(ticker,market,period,btn){
   document.querySelectorAll("#chartbox .periods button").forEach(b=>b.classList.remove("active"));btn.classList.add("active");
   const c=document.getElementById("chart");c.style.opacity=".35";const bcur=btn.dataset.bcur||"₺";
   try{const d=await(await fetch(`/api/series/${encodeURIComponent(ticker)}?market=${market}&period=${period}`)).json();
-    c.innerHTML=buildChartInner(d.grafik,bcur,period);c.style.opacity="1";updateReadoutDefault();
+    c.innerHTML=buildChartInner(d.grafik,bcur,period,d.acilis);c.style.opacity="1";updateReadoutDefault();
   }catch(e){c.style.opacity="1";c.innerHTML=`<div class="muted" style="padding:40px 0;text-align:center;font-size:13px">Grafik yüklenemedi</div>`}}
 function chartBox(ticker,market,grafik,bcur){const def="1A";
   return`<div id="chartbox"><div class="chart-read" id="chart-read"></div>
