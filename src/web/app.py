@@ -536,6 +536,27 @@ def _yf_prices(symbols: list[str]) -> dict:
     return out
 
 
+def _usdtry() -> float | None:
+    """Guncel USD/TRY kuru (makro -> yfinance yedek). Portfoy toplamini TL'ye cevirir."""
+    ck = "usdtry"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    rate = None
+    try:
+        from src.news.macro import get_macro
+        r = get_macro().get("usdtry")
+        rate = float(r) if r else None
+    except Exception:
+        rate = None
+    if not rate:
+        px = _yf_prices(["USDTRY=X"]).get("USDTRY=X", {})
+        rate = px.get("fiyat")
+    if rate:
+        _cache_set(ck, rate)
+    return rate
+
+
 def _yf_symbol(ticker: str, para_birimi: str = "TL") -> str:
     """Portfoy ticker'ini dogru yfinance sembolune cevirir.
 
@@ -758,6 +779,9 @@ def get_portfolio(kullanici: str | None = None) -> dict:
               for r in rows if (r["ticker"] or "").upper() not in _BIGPARA_SOURCES}
     live = _yf_prices(list(sym_of.values())) if sym_of else {}
 
+    # Toplamlar TL bazinda: USD pozisyonlari guncel kurla cevrilir (kart'ta yine $)
+    usdtry = _usdtry()
+
     for r in rows:
         raw = (r["ticker"] or "").upper()
         birim_kod = (r.get("para_birimi") or "TL").upper()
@@ -782,16 +806,18 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             gunluk = sig.get("gunluk_degisim_%")
         etiket, renk = _classify(rec.get("final_decision"))
         maliyet = adet * alis
-        toplam_maliyet += maliyet
+        # TL'ye cevrim katsayisi (USD -> TL); kur yoksa 1 (cevrim atlanir)
+        fx = (usdtry or 1.0) if birim_kod == "USD" else 1.0
+        toplam_maliyet += maliyet * fx
 
         kz = kz_yuzde = None
         if guncel is not None:
             deger = adet * guncel
-            toplam_deger += deger
-            kz = deger - maliyet
+            toplam_deger += deger * fx
+            kz = deger - maliyet            # kart icin native para biriminde
             kz_yuzde = (kz / maliyet * 100) if maliyet else None
         else:
-            toplam_deger += maliyet
+            toplam_deger += maliyet * fx
 
         birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
         market = "abd" if birim == "$" else "bist"
