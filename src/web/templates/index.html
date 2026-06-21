@@ -193,12 +193,17 @@
   .chat{display:flex;flex-direction:column;gap:10px}
   .bubble{max-width:86%;padding:12px 14px;border-radius:18px;font-size:14.5px;line-height:1.5;white-space:pre-line}
   .bubble.user{align-self:flex-end;background:var(--green2);color:#04150a;font-weight:550;border-bottom-right-radius:6px}
-  .bubble.bot{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:6px}
+  .bubble.bot{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:6px;padding-bottom:8px}
   .bubble.typing{color:var(--muted)}
+  .bubble-wrap{display:contents}
+  .copy-btn{align-self:flex-start;background:var(--card2);border:1px solid var(--border);color:var(--muted2);
+    border-radius:8px;padding:4px 10px;font-size:11.5px;font-weight:600;margin-top:-4px;margin-bottom:4px;min-height:28px}
+  .copy-btn:active{opacity:.7}
   .chat-input{position:fixed;left:0;right:0;z-index:34;display:none;gap:9px;padding:10px 14px;
     bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
     background:rgba(7,10,15,.94);backdrop-filter:blur(18px);border-top:1px solid var(--border)}
   body.kb .chat-input{bottom:var(--kb)}
+  body.kb #page-sor{padding-bottom:calc(var(--kb) + 64px)}
   .chat-input.on{display:flex}
   .chat-input input{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
     border-radius:14px;padding:12px 15px;font-size:16px;outline:none;min-height:46px}
