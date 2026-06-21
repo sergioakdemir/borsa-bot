@@ -101,6 +101,37 @@ def _volume_signal(pct):
     return "yuksek" if pct > 25 else ("dusuk" if pct < -25 else "normal")
 
 
+def _veri_bayat(last_date, now=None) -> bool:
+    """KILL SWITCH: yfinance son bar tarihi 'bayat' mi?
+    24 saatten eski VE son bardan sonra en az bir TAM is gunu gecmisse bayattir
+    (hafta sonu/tatil tek basina bayat saymaz, yanlis kill onlenir)."""
+    now = now or datetime.now(_TZ)
+    try:
+        last_dt = datetime.combine(last_date, datetime.min.time(), tzinfo=_TZ)
+    except Exception:
+        return False
+    if (now - last_dt).total_seconds() / 3600 <= 24:
+        return False
+    d, biz = last_date + timedelta(days=1), 0
+    while d < now.date():
+        if d.weekday() < 5:
+            biz += 1
+        d += timedelta(days=1)
+    return biz >= 1
+
+
+def _kill_kaydi(ticker: str, market: str, neden: str) -> dict:
+    """KILL SWITCH kaydi: AI cagrilmaz, decisions'a KILL_SWITCH yazilir."""
+    return {
+        "ticker": (ticker or "").upper().replace(".IS", ""),
+        "market": "abd" if market in ("us", "abd") else "bist",
+        "skipped": True, "kill_switch": True,
+        "final_decision": "KILL_SWITCH",
+        "mesaj": "Sağlıklı analiz yapılamıyor — " + neden,
+        "reason": neden,
+    }
+
+
 def market_data(ticker: str, market: str = "bist") -> dict | None:
     """yfinance'den ~1 yillik veriyle kompakt teknik ozet uretir. Veri yoksa None."""
     from src.data.factory import get_data_source
@@ -121,6 +152,14 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
     df = df[df["Volume"] > 0]
     if len(df) < 2:
         return None
+
+    # KILL SWITCH icin: son bar tarihi + bayatlik kontrolu
+    try:
+        last_ts = df.index[-1]
+        son_bar = last_ts.date() if hasattr(last_ts, "date") else None
+    except Exception:
+        son_bar = None
+    bayat = _veri_bayat(son_bar) if son_bar else False
 
     closes = [float(x) for x in df["Close"].tolist()]
     highs = [float(x) for x in df["High"].tolist()]
@@ -173,6 +212,8 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "volatilite_%": vol_std,
         "trend": _trend(donem),
         "bar_sayisi": len(closes),
+        "son_bar_tarihi": son_bar.isoformat() if son_bar else None,
+        "bayat": bayat,
     }
 
 
@@ -299,9 +340,12 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
     ticker = ticker.upper().replace(".IS", "")
     is_us = market in ("us", "abd")
     sig = market_data(ticker, market=market)
+    # --- KILL SWITCH: fiyat verisi yok / bayat ise AI cagrilmaz ---
     if sig is None:
-        return {"ticker": ticker, "skipped": True,
-                "reason": "Piyasa verisi yok - yorum yapilmadi."}
+        return _kill_kaydi(ticker, market, "fiyat verisi hiç gelmiyor")
+    if sig.get("bayat"):
+        return _kill_kaydi(ticker, market,
+                           f"fiyat verisi 24 saatten eski (son veri {sig.get('son_bar_tarihi')})")
 
     news = gather_news(ticker, news_src=news_src, rss_src=rss_src, market=market)
     # Analist konsensusu (hedeffiyat + borsaveyatirim) - yalniz BIST
@@ -452,22 +496,28 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True) -> list[dic
                  "reason": f"Hata: {type(e).__name__}"}
         results.append(r)
         if verbose:
-            if r.get("skipped"):
+            if r.get("kill_switch"):
+                print(f"  {t:7} KILL_SWITCH ({r.get('reason')})")
+            elif r.get("skipped"):
                 print(f"  {t:7} ATLANDI ({r.get('reason')})")
             else:
                 print(f"  {t:7} {r['final_decision']:5} puan {r['score']}/10 "
                       f"risk {r['risk']['score']}/10 {r['eminlik']} "
                       f"haber={r['haber_sayisi']}")
         # Karari decisions tablosuna yaz (sonuc=None)
-        if not r.get("skipped"):
-            try:
+        try:
+            if r.get("kill_switch"):
+                db.record_decision(
+                    ticker=r["ticker"], karar="KILL_SWITCH", puan=None, risk=None,
+                    eminlik=None, gerekce=r.get("mesaj"), tarih=today)
+            elif not r.get("skipped"):
                 db.record_decision(
                     ticker=r["ticker"], karar=r["final_decision"],
                     puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
                     eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today)
-            except Exception as e:
-                if verbose:
-                    print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
+        except Exception as e:
+            if verbose:
+                print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
 
     if save:
         OUT_PATH.parent.mkdir(exist_ok=True)
