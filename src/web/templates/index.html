@@ -661,7 +661,7 @@ function fmtT(t,period){
 }
 const GRN="#34D399";
 function chartSVGonly(pts,mn,mx,acilis){
-  const cs=pts.map(p=>p.c);const W=320,H=120,pad=8,volH=24,n=cs.length;
+  const cs=pts.map(p=>p.c);const W=320,H=120,pad=2,volH=24,n=cs.length;
   const x=i=>n<2?W/2:(i/(n-1))*W,y=c=>mx===mn?H/2:pad+(1-(c-mn)/(mx-mn))*(H-2*pad);
   const line=cs.map((c,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ");
   const area=`M0 ${H} `+cs.map((c,i)=>`L${x(i).toFixed(1)} ${y(c).toFixed(1)}`).join(" ")+` L${W} ${H} Z`;
@@ -675,14 +675,19 @@ function chartSVGonly(pts,mn,mx,acilis){
     <defs><linearGradient id="garea" x1="0" x2="0" y1="0" y2="1">
       <stop offset="0" stop-color="${GRN}" stop-opacity="0.22"/><stop offset="1" stop-color="${GRN}" stop-opacity="0"/></linearGradient></defs>
     ${grid}${ref}<path class="area" d="${area}" fill="url(#garea)"/><g class="vol">${vol}</g><path class="line draw" pathLength="1" d="${line}" style="stroke:${GRN}"/></svg>`}
-function yPctOf(c){const H=120,pad=8;return CHART.mx===CHART.mn?H/2:pad+(1-(c-CHART.mn)/(CHART.mx-CHART.mn))*(H-2*pad)}
+function yPctOf(c){const H=120,pad=2;return CHART.mx===CHART.mn?H/2:pad+(1-(c-CHART.mn)/(CHART.mx-CHART.mn))*(H-2*pad)}
 function axisHTML(){if(!CHART.pts.length)return"";const last=CHART.pts[CHART.pts.length-1].c;
   const lab=(c,cls)=>`<span class="ax ${cls||''}" style="top:${yPctOf(c).toFixed(1)}px">${fmt(c)}</span>`;
-  return lab(CHART.mx)+lab(CHART.mn)+lab(last,"cur");}
+  return lab(CHART.hi)+lab(CHART.lo)+lab(last,"cur");}
 function setChart(pts,bcur,period,acilis){const cs=(pts||[]).map(p=>p.c);
-  let mn=cs.length?Math.min(...cs):0,mx=cs.length?Math.max(...cs):0;
-  if(acilis!=null){mn=Math.min(mn,acilis);mx=Math.max(mx,acilis)}      // ref cizgisi gorunur kalsin
-  CHART={pts:pts||[],bcur,period,mn,mx,acilis:(acilis==null?null:acilis)}}
+  if(!cs.length){CHART={pts:[],bcur,period,acilis:null,lo:0,hi:0,mn:0,mx:0};return}
+  const lo=Math.min(...cs),hi=Math.max(...cs);          // gercek veri araligi (eksen etiketleri)
+  let dlo=lo,dhi=hi;
+  if(acilis!=null){dlo=Math.min(dlo,acilis);dhi=Math.max(dhi,acilis)}  // ref cizgisi gorunur kalsin
+  // y-ekseni otomatik sikistirma: %5 deger padi (alt x0.95 / ust x1.05); 0'dan baslamaz
+  let mn=dlo*0.95,mx=dhi*1.05;
+  if(mn===mx){mn=mn*0.95;mx=mx*1.05||1}
+  CHART={pts:pts||[],bcur,period,acilis:(acilis==null?null:acilis),lo,hi,mn,mx}}
 function chgStr(c){const v=(CHART.acilis?(c-CHART.acilis)/CHART.acilis*100:0);
   return{cls:v>=0?"pos":"neg",txt:(v>0?"+":v<0?"-":"")+"%"+fmt(Math.abs(v))}}
 function readoutHTML(p){if(!p)return"";
@@ -698,7 +703,7 @@ function buildChartInner(pts,bcur,period,acilis){setChart(pts,bcur,period,acilis
       ${chartSVGonly(pts,CHART.mn,CHART.mx,CHART.acilis)}
       <div class="cross-line" id="cross-line"></div><div class="cross-dot" id="cross-dot"></div>
       <div class="cross-tip" id="cross-tip"></div>${axisHTML()}</div>
-    <div class="chart-meta"><span>En düşük ${money(CHART.mn,bcur)}</span><span>En yüksek ${money(CHART.mx,bcur)}</span></div>`}
+    <div class="chart-meta"><span>En düşük ${money(CHART.lo,bcur)}</span><span>En yüksek ${money(CHART.hi,bcur)}</span></div>`}
 function crossMove(e){const pl=document.getElementById("chart-plot");if(!pl||!CHART.pts.length)return;
   crossActive=true;const rect=pl.getBoundingClientRect();
   let ratio=(e.clientX-rect.left)/rect.width;ratio=Math.max(0,Math.min(1,ratio));
