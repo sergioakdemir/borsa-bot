@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 
-_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def _load_dotenv():
@@ -74,18 +74,23 @@ def upload(local_path, drive_name=None, verbose: bool = False) -> bool:
         name = drive_name or local_path.name
         media = MediaFileUpload(str(local_path), mimetype="text/plain", resumable=False)
 
-        # Ayni adli dosya klasorde varsa guncelle (yoksa yeni olustur)
+        # Ayni adli dosya klasorde varsa guncelle (yoksa yeni olustur).
+        # supportsAllDrives/includeItemsFromAllDrives: Shared Drive uyumu (servis
+        # hesabinin kendi deposu olmadigindan yedek bir Shared Drive klasorune yazilir).
         q = (f"name = '{name}' and '{folder_id}' in parents and trashed = false")
-        existing = service.files().list(q=q, fields="files(id)", pageSize=1).execute()
+        existing = service.files().list(
+            q=q, fields="files(id)", pageSize=1,
+            supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         files = existing.get("files", [])
         if files:
-            service.files().update(fileId=files[0]["id"], media_body=media).execute()
+            service.files().update(fileId=files[0]["id"], media_body=media,
+                                   supportsAllDrives=True).execute()
             if verbose:
                 print(f"  [drive] guncellendi: {name}")
         else:
             service.files().create(
                 body={"name": name, "parents": [folder_id]},
-                media_body=media, fields="id").execute()
+                media_body=media, fields="id", supportsAllDrives=True).execute()
             if verbose:
                 print(f"  [drive] yuklendi: {name}")
         return True

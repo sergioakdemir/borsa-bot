@@ -25,3 +25,4 @@ logs/
 
 # Uretilen veri ciktilari
 data/*.json
+config/drive_credentials.json
