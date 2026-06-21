@@ -1845,6 +1845,22 @@ def ask_bot(soru: str, kullanici=None) -> dict:
         return {"ok": False, "cevap": "Bir soru yaz."}
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
+
+    # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi ---
+    try:
+        from src.web import code_mode
+        norm = soru.lower()
+        if kullanici and code_mode.has_pending(kullanici) and code_mode.is_approval(soru):
+            return code_mode.apply_pending(kullanici)          # onayli -> uygula
+        if kullanici and ("geri al" in norm or "geri-al" in norm) and \
+                soru.lower().strip() in ("geri al", "geri-al", "geri alın", "geri al onayla"):
+            return code_mode.revert_last(kullanici)
+        if kullanici and code_mode.is_ui_request(soru) and not code_mode.is_approval(soru):
+            import anthropic
+            return code_mode.propose(kullanici, soru, client=anthropic.Anthropic())
+    except Exception as e:
+        return {"ok": False, "cevap": f"Kod modu hatası: {type(e).__name__}"}
+
     comm = _commentary_by_ticker()
     # Derin portfoy baglami: alis/adet/guncel/kar-zarar/sure + bot karari+gerekce
     baglam = []
@@ -1960,7 +1976,13 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                 "etmek / ortalama dusurmek / beklemek).\n"
                 f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
                 "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
-                "daha isabetli yorum yaparim' diye nazikce hatirlat." + davranis_notu),
+                "daha isabetli yorum yaparim' diye nazikce hatirlat.\n\n"
+                "ARAYUZ DEGISIKLIGI: Kullanici arayuz degisikligi isterse (renk, buton, "
+                "baslik, yazi, sekme vb.): 1) Ne yapacagini acikla, 2) Onay bekle, "
+                "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
+                "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
+                "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
+                "sekilde yonetilir.)" + davranis_notu),
             messages=[{"role": "user", "content":
                        f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
                        f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
