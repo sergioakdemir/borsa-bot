@@ -1580,8 +1580,11 @@ def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
     if df is None or df.empty:
         return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
     import pandas as pd
-    seri = [{"t": pd.Timestamp(ix).date().isoformat(), "c": round(float(c), 2)}
-            for ix, c in df["Close"].items()]
+    seri = []
+    for ix, cl, vol in zip(df.index, df["Close"], df["Volume"]):
+        seri.append({"t": pd.Timestamp(ix).date().isoformat(),
+                     "c": round(float(cl), 2),
+                     "v": int(vol) if vol == vol else 0})
     return {"seri": seri,
             "dusuk": round(float(df["Low"].min()), 2),
             "yuksek": round(float(df["High"].max()), 2),
@@ -1853,7 +1856,7 @@ def _intraday_series(ticker: str, market: str, yf_period: str) -> dict:
     if df is None or df.empty:
         return {"seri": [], "acilis": None}
     out = []
-    for ix, c in df["Close"].items():
+    for ix, c, vol in zip(df.index, df["Close"], df["Volume"]):
         try:
             cv = float(c)
         except (TypeError, ValueError):
@@ -1864,7 +1867,8 @@ def _intraday_series(ticker: str, market: str, yf_period: str) -> dict:
             ts = ix.isoformat()
         except Exception:
             ts = str(ix)
-        out.append({"t": ts, "c": round(cv, 2)})
+        out.append({"t": ts, "c": round(cv, 2),
+                    "v": int(vol) if vol == vol else 0})
     acilis = None
     try:
         acilis = round(float(df["Open"].iloc[0]), 2)
