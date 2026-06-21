@@ -1965,6 +1965,24 @@ def api_backtest():
         return jsonify({"var": False})
 
 
+@app.route("/api/backtest-aggressive")
+def api_backtest_aggressive():
+    """Agresif strateji (500K) portfoy backtesti (data/backtest_aggressive.json)."""
+    p = DATA / "backtest_aggressive.json"
+    if not p.exists():
+        return jsonify({"var": False})
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return jsonify({"var": True, "metrikler": d.get("metrikler", {}),
+                        "parametreler": d.get("parametreler", {}),
+                        "buy_hold": d.get("buy_hold", {}),
+                        "islemler": (d.get("islemler") or [])[-15:],
+                        "aciklama": d.get("aciklama", ""),
+                        "uretim_tarihi": d.get("uretim_tarihi", "")})
+    except Exception:
+        return jsonify({"var": False})
+
+
 @app.route("/api/watchlist/add", methods=["POST"])
 def api_watchlist_add():
     d = request.get_json(silent=True) or {}

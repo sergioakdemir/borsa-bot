@@ -589,15 +589,36 @@ function haberEtkiHTML(he){
   h+=olculen.map(k=>`<div class="row" style="margin-top:8px"><span class="muted">${esc(k.kategori)} <span style="opacity:.6">(${k.olculen})</span></span><b class="${signCls(k.ort_etki_yuzde)}">${pct(k.ort_etki_yuzde)}</b></div>`).join("");
   h+=`</div>`;
   return h}
+function aggressiveHTML(a){
+  if(!a||!a.var||!a.metrikler)return"";
+  const m=a.metrikler,p=a.parametreler||{};
+  const fark=m["fark_vs_buyhold_%"];
+  let h=`<div class="sec-title">⚡ Agresif Strateji (500K)</div>
+    <div class="card">
+      <div class="tick" style="line-height:1.5;margin-bottom:10px">500.000 TL sanal sermaye · 50.000 TL/pozisyon · max ${p.max_acik} açık · stop -%${Math.abs(p["stop_loss_%"])} · kâr-al +%${p["take_profit_%"]} (yarısı) · max ${p.max_bekleme_gun} gün. <i>Sadece backtest.</i></div>
+      <div class="row"><span class="muted">Başlangıç → Bitiş</span><b>${fmt(m.baslangic_sermaye_tl,0)} → ${fmt(m.bitis_deger_tl,0)} TL</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Toplam getiri</span><b class="${signCls(m["toplam_getiri_%"])}">${pct(m["toplam_getiri_%"])}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Buy & Hold getiri</span><b class="${signCls(m["buy_hold_getiri_%"])}">${pct(m["buy_hold_getiri_%"])}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Stratejiye karşı fark</span><b class="${signCls(fark)}">${pct(fark)}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Max drawdown</span><b class="neg">${pct(m["max_drawdown_%"])}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">İşlem · başarı</span><b>${m.kapanan_islem} · %${m["basari_orani_%"]??"—"}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Stop-loss · Take-profit</span><b>${m.stop_loss_tetik} · ${m.take_profit_tetik}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Ort. pozisyon süresi</span><b>${m["ort_pozisyon_suresi_gun"]??"—"} gün</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">En iyi hisse</span><b class="pos">${esc((m.en_iyi_hisse||{}).ticker||"—")} ${m.en_iyi_hisse&&m.en_iyi_hisse.kz_tl!=null?"("+(m.en_iyi_hisse.kz_tl>0?"+":"")+fmt(m.en_iyi_hisse.kz_tl,0)+" TL)":""}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">En kötü hisse</span><b class="neg">${esc((m.en_kotu_hisse||{}).ticker||"—")} ${m.en_kotu_hisse&&m.en_kotu_hisse.kz_tl!=null?"("+fmt(m.en_kotu_hisse.kz_tl,0)+" TL)":""}</b></div>
+    </div>`;
+  return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [dr,btr,pr,her]=await Promise.all([
+  try{const [dr,btr,pr,her,agr]=await Promise.all([
         fetch("/api/decisions").then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
         fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
-        fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({}))]);
+        fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({})),
+        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false}))]);
     const rows=dr.satirlar||[];DEC_INDEX={};
     let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
       <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
+    h+=aggressiveHTML(agr);
     h+=backtestHTML(btr);
     h+=paperHTML(pr);
     h+=haberEtkiHTML(her);
