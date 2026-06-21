@@ -303,6 +303,16 @@ def set_telegram_id(ad, telegram_id) -> None:
                   (telegram_id, ad))
 
 
+def update_telegram_id(kullanici_id, telegram_id) -> bool:
+    """Kullanicinin telegram_id'sini id'ye gore gunceller. telegram_id None ise
+    baglantiyi kaldirir. Guncellenen satir varsa True doner."""
+    init_db()
+    with get_conn() as c:
+        cur = c.execute("UPDATE kullanici SET telegram_id=? WHERE id=?",
+                        (telegram_id, kullanici_id))
+        return cur.rowcount > 0
+
+
 def get_user_by_telegram_id(telegram_id):
     init_db()
     with get_conn() as c:

@@ -37,7 +37,12 @@ ONBOARDING_SYSTEM = (
     "Duygusal sorularda (zarar/basari deneyimi, korku) empatik ol, yargilamadan dinle. "
     "Kullanici bilmiyorum derse zorlamadan gec. Eksik kalan konulari ilerleyen "
     "mesajlarda dogal sekilde tekrar sor. Kisa, sohbet tonunda yaz (markdown/yildiz "
-    "yok). Yeterince taniyinca kibarca 'seni artik daha iyi taniyorum' deyip ozetle."
+    "yok). Yeterince taniyinca kibarca 'seni artik daha iyi taniyorum' deyip ozetle.\n\n"
+    "SON ADIM (profili yeterince ogrendikten sonra): kullaniciya Telegram bildirimlerini "
+    "ac diye sor, AYNEN su yonergeyle: 'Son olarak Telegram bildirimlerini acmak ister "
+    "misin? Acmak icin: 1) Telegram'da @usy_borsa_takip_bot'u ac, 2) /start yaz, 3) Bot "
+    "sana bir numara gonderecek, o numarayi buraya yaz. Numara olmadan da devam "
+    "edebilirsin.' Kullanici numarayi yazarsa tesekkur et; yazmazsa zorlamadan bitir."
 )
 
 _EXTRACT_SYSTEM = (
@@ -65,7 +70,8 @@ _EXTRACT_SYSTEM = (
     '  "onceki_basari": string|null,            // basarili/zararli deneyimi + hissi (kisa)\n'
     '  "risk_tercihi": "az_kazanc_az_risk"|"cok_kazanc_cok_risk"|"dengeli"|null,\n'
     '  "ogrenme_seviyesi": "baslangic"|"orta"|"ileri"|null,\n'
-    '  "aciklama_ister": true|false|null\n'
+    '  "aciklama_ister": true|false|null,\n'
+    '  "telegram_id": number|null   // kullanicinin yazdigi 7-15 haneli Telegram numarasi (varsa)\n'
     '}'
 )
 
@@ -145,6 +151,16 @@ def onboarding_reply(messages, profile=None, client=None) -> str:
                    if getattr(b, "type", "") == "text").strip()
 
 
+def _telegram_id(v):
+    """7-15 haneli Telegram numarasini int olarak dondurur (gecersizse None)."""
+    if v is None:
+        return None
+    digits = "".join(ch for ch in str(v) if ch.isdigit())
+    if 7 <= len(digits) <= 15:
+        return int(digits)
+    return None
+
+
 def _coerce(d: dict) -> dict:
     out = {}
     for k, v in (d or {}).items():
@@ -187,7 +203,14 @@ def extract_profile_from_chat(kullanici_id, messages, client=None) -> dict:
     except Exception:
         data = {}
     alanlar = _coerce(data)
+    tid = _telegram_id(data.get("telegram_id"))
     if alanlar:
-        return db.upsert_profile(kullanici_id, **alanlar)
-    return db.get_profile(kullanici_id) or {"kullanici_id": kullanici_id,
-                                            "profil_guven_skoru": 0}
+        profile = db.upsert_profile(kullanici_id, **alanlar)
+    else:
+        profile = db.get_profile(kullanici_id) or {"kullanici_id": kullanici_id,
+                                                   "profil_guven_skoru": 0}
+    # telegram_id'yi DB'ye degil, geri donen profile gecici alan olarak koy;
+    # asil guncellemeyi onboarding_step() update_telegram_id ile yapar.
+    if tid:
+        profile = {**(profile or {}), "telegram_id": tid}
+    return profile

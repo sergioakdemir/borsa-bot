@@ -19,6 +19,8 @@ CRON_TZ=Europe/Istanbul
 40 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_haber_etki >> /root/borsa-bot/logs/haber_etki.log 2>&1
 # Model portfoy guncel k/z: her gece 23:45
 45 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_model_portfoy >> /root/borsa-bot/logs/model_portfoy.log 2>&1
+# Gunluk audit raporu + Google Drive yedegi: her gece 23:50
+50 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.audit_report >> /root/borsa-bot/logs/audit_report.log 2>&1
 # Hetzner haftalik snapshot: Pazar 23:00
 0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
 # Telegram komut yoklayici: her dakika

@@ -822,11 +822,25 @@ function profileHTML(p){
   }else{h+=empty("Henüz profil bilgin yok. 'Beni daha iyi tanı' ile başla.")}
   if(p.eksik_alanlar&&p.eksik_alanlar.length){
     h+=`<div class="card" style="margin-top:12px"><div class="tick" style="line-height:1.5">Daha iyi tavsiye verebilmem için şunları bilmem lazım: <b>${p.eksik_alanlar.map(esc).join(", ")}</b></div></div>`}
+  // Telegram durumu
+  h+=`<div class="card" style="margin-top:12px"><div class="row"><span class="muted">Telegram</span>`+
+     (p.telegram_bagli
+       ? `<b class="pos">✅ Telegram bağlı</b></div></div>`
+       : `<b class="neg">❌ Telegram bağlı değil</b></div>`+
+         `<div class="tick" style="line-height:1.5;margin-top:8px">Bildirimler için <b>@usy_borsa_takip_bot</b>'a <b>/start</b> yaz, gelen numarayı aşağıdan gir.</div></div>`);
   h+=`<div class="prof-btns">
     <button class="prof-btn" onclick="onbStartManual()">Beni daha iyi tanı</button>
     <button class="prof-btn" onclick="profEdit()">Profilimi düzelt</button>
-    <button class="prof-btn" onclick="profRisk()">Risk seviyemi güncelle</button></div>`;
+    <button class="prof-btn" onclick="profRisk()">Risk seviyemi güncelle</button>
+    <button class="prof-btn" onclick="profTelegram()">Telegram ID Güncelle</button></div>`;
   return h}
+async function profTelegram(){const v=prompt("Telegram ID'n (7-15 haneli sayı; @usy_borsa_takip_bot'a /start yazınca gelir):");if(!v)return;
+  const digits=(v.match(/\d/g)||[]).join("");
+  if(digits.length<7||digits.length>15){toast("Geçersiz — 7-15 haneli sayı olmalı");return}
+  try{const r=await fetch("/api/profile/update-telegram",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,telegram_id:digits})});
+    const d=await r.json();
+    if(d.ok){toast("Telegram bağlandı ✅");loaded.ayarlar=false;loadAyarlar()}else{toast(d.hata||"Kaydedilemedi")}
+  }catch(e){toast("Bağlantı hatası")}}
 function onbStartManual(){openOnboarding({guven_skoru:0})}
 async function profRisk(){const v=prompt("Risk toleransın? (dusuk / orta / yuksek)");if(!v)return;
   const rt=v.trim().toLowerCase();if(!["dusuk","orta","yuksek"].includes(rt)){toast("dusuk, orta veya yuksek yaz");return}

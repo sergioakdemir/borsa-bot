@@ -2084,16 +2084,28 @@ def _profil_deger(anahtar, ham):
     return str(ham)
 
 
+def _telegram_of(uid):
+    """kullanici tablosundan telegram_id (yoksa None)."""
+    from src.db import database as db
+    try:
+        return next((u.get("telegram_id") for u in db.list_users()
+                     if u.get("id") == uid), None)
+    except Exception:
+        return None
+
+
 def get_profile_view(kullanici) -> dict:
     from src.db import database as db
     uid = _uid(kullanici)
     if uid is None:
         return {"var": False, "guven_skoru": 0, "alanlar": [], "eksik_alanlar": [],
-                "onboarding_done": False}
+                "onboarding_done": False, "telegram_id": None, "telegram_bagli": False}
+    tg = _telegram_of(uid)
     p = db.get_profile(uid)
     if not p:
         return {"var": False, "kullanici": kullanici, "guven_skoru": 0,
-                "alanlar": [], "eksik_alanlar": [], "onboarding_done": False}
+                "alanlar": [], "eksik_alanlar": [], "onboarding_done": False,
+                "telegram_id": tg, "telegram_bagli": bool(tg)}
     alanlar = []
     for k, (etiket, _t) in _PROFIL_GORUNUM.items():
         dv = _profil_deger(k, p.get(k))
@@ -2107,6 +2119,8 @@ def get_profile_view(kullanici) -> dict:
         "eksik_alanlar": p.get("eksik_alanlar") or [],
         "onboarding_done": skor >= 85,
         "guncelleme": p.get("guncelleme_tarihi"),
+        "telegram_id": tg,
+        "telegram_bagli": bool(tg),
     }
 
 
@@ -2152,6 +2166,15 @@ def onboarding_step(kullanici, messages) -> dict:
         profile = profiling.extract_profile_from_chat(uid, full, client=client)
     except Exception as e:
         return {"ok": False, "reply": f"Hata: {type(e).__name__}"}
+    # Onboarding'de Telegram numarasi yakalandiysa kullanici tablosuna yaz
+    telegram_bagli = False
+    tid = (profile or {}).get("telegram_id")
+    if tid:
+        try:
+            db.update_telegram_id(uid, tid)
+            telegram_bagli = True
+        except Exception:
+            pass
     skor = (profile or {}).get("profil_guven_skoru") or 0
     eksik = (profile or {}).get("eksik_alanlar") or []
     done = skor >= 85
@@ -2162,7 +2185,7 @@ def onboarding_step(kullanici, messages) -> dict:
         except Exception:
             pass
     return {"ok": True, "reply": reply, "guven_skoru": skor,
-            "eksik_alanlar": eksik, "done": done}
+            "eksik_alanlar": eksik, "done": done, "telegram_bagli": telegram_bagli}
 
 
 # ----------------------------------------------------------------------------
@@ -2267,6 +2290,21 @@ def api_profile_update():
                if k in db._PROFIL_KOLONLAR and v is not None}
     p = db.upsert_profile(uid, **alanlar) if alanlar else db.get_profile(uid)
     return jsonify({"ok": True, "guven_skoru": (p or {}).get("profil_guven_skoru", 0)})
+
+
+@app.route("/api/profile/update-telegram", methods=["POST"])
+def api_profile_update_telegram():
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    uid = _uid(d.get("kullanici"))
+    if uid is None:
+        return jsonify({"ok": False, "hata": "kullanici yok"})
+    raw = str(d.get("telegram_id") or "")
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not (7 <= len(digits) <= 15):
+        return jsonify({"ok": False, "hata": "Geçersiz Telegram ID (7-15 hane olmalı)"})
+    db.update_telegram_id(uid, int(digits))
+    return jsonify({"ok": True, "telegram_id": int(digits)})
 
 
 @app.route("/api/memory")
