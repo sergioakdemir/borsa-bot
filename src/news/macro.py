@@ -10,6 +10,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _TZ = ZoneInfo("Europe/Istanbul")
@@ -62,15 +63,48 @@ def _fetch(url, timeout=20):
     return None
 
 
+_HATA_LOG = Path(__file__).resolve().parents[2] / "logs" / "macro_hata.log"
+
+# Sirayla denenecek fiyat selector'lari (ilki kirilirsa digerleri devreye girer)
+_FIYAT_PATTERNS = (
+    r'data-test="instrument-price-last"[^>]*>([^<]+)<',          # birincil (DOM)
+    r'<meta[^>]+itemprop="price"[^>]+content="([\d.,]+)"',        # microdata meta
+    r'"price"\s*:\s*"?([\d.,]+)"?',                               # JSON-LD / state
+    r'"last"\s*:\s*"?([\d.,]+)',                                  # eski state alani
+    r'(?:og:price:amount|twitter:data1)"[^>]+content="([\d.,]+)"',  # meta og/twitter
+)
+
+
+def _log_macro_hata(url, neden):
+    """Sessiz kaybi gorunur kilmak icin macro_hata.log'a yaz."""
+    try:
+        _HATA_LOG.parent.mkdir(exist_ok=True)
+        ts = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        with _HATA_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {neden} :: {url}\n")
+    except Exception:
+        pass
+
+
 def _investing_last(url):
-    """investing.com enstruman sayfasindan 'son fiyat' degerini parse eder."""
+    """investing.com enstruman sayfasindan 'son fiyat'i parse eder.
+
+    Birincil selector kirilirsa sirayla alternatifleri (meta/JSON-LD/og) dener.
+    Sayfa cekilemezse veya hicbir selector tutmazsa logs/macro_hata.log'a yazar."""
     html = _fetch(url)
     if not html:
+        _log_macro_hata(url, "FETCH_BASARISIZ (sayfa cekilemedi)")
         return None
-    m = re.search(r'data-test="instrument-price-last"[^>]*>([^<]+)<', html)
-    if not m:
-        m = re.search(r'"last"\s*:\s*"?([\d.,]+)', html)
-    return _num(m.group(1)) if m else None
+    for i, pat in enumerate(_FIYAT_PATTERNS):
+        m = re.search(pat, html)
+        if m:
+            v = _num(m.group(1))
+            if v is not None:
+                if i > 0:                        # birincil selector kirildi, alternatif tuttu
+                    _log_macro_hata(url, f"BIRINCIL_SELECTOR_KIRIK (alternatif #{i} kullanildi)")
+                return v
+    _log_macro_hata(url, "TUM_SELECTORLAR_BASARISIZ (HTML geldi ama fiyat bulunamadi)")
+    return None
 
 
 def _investing_cpi_yoy(url=None):

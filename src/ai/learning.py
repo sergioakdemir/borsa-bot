@@ -38,7 +38,7 @@ def build_learning_note(ticker: str, limit: int = 10) -> str | None:
         if w is None:
             continue
         karar_sonuc.append((str(r.get("karar") or "").upper(), w))
-    if len(karar_sonuc) < 2:        # anlamli bir egilim icin en az 2 sonuc
+    if len(karar_sonuc) < 1:        # tek degerlendirilmis karar bile yeterli (hizli ogrenme)
         return None
 
     toplam = len(karar_sonuc)

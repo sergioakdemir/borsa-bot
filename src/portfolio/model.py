@@ -12,6 +12,16 @@ BASLANGIC_TL = 100_000.0
 POZ_TL = 50_000.0
 
 
+def _usdtry():
+    """Guncel USD/TRY kuru (makro). Bulunamazsa None."""
+    try:
+        from src.news.macro import get_macro
+        v = get_macro().get("usdtry")
+        return float(v) if v else None
+    except Exception:
+        return None
+
+
 def model_cash() -> float:
     """Sanal nakit = baslangic - tum alim maliyeti + tum kapanis getirisi."""
     from src.db import database as db
@@ -28,32 +38,45 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
     from src.db import database as db
     acilan = kapanan = 0
     cash = model_cash()
+    fx = None                                       # USD/TRY (lazy)
     for r in results or []:
         if r.get("skipped") or r.get("kill_switch"):
             continue
-        if (r.get("market") or "bist") != "bist":
-            continue
+        market = (r.get("market") or "bist").lower()
+        is_us = market in ("us", "abd")
         ticker = (r.get("ticker") or "").upper().replace(".IS", "")
         if not ticker:
             continue
         karar = r.get("final_decision")
         sig = r.get("kullanilan_on_sinyal") or {}
-        fiyat = sig.get("son_kapanis")
-        if not fiyat:
+        fiyat_native = sig.get("son_kapanis")
+        if not fiyat_native:
             continue
+        if is_us:
+            if fx is None:
+                fx = _usdtry()
+            if not fx:
+                if verbose:
+                    print(f"  [model] {ticker} ABD atlandi (USD/TRY kuru yok)")
+                continue
+            kur = fx
+        else:
+            kur = 1.0
+        fiyat = fiyat_native * kur                   # TL bazli
+        para_birimi = "USD" if is_us else "TL"
         acik = db.get_open_model_position(ticker)
 
         if karar == "AL":
             if acik or cash < POZ_TL:
                 continue
-            adet = round(POZ_TL / fiyat, 4)
+            adet = round(POZ_TL / fiyat, 6)
             gerekce = (r.get("gerekce") or "")[:300]
             db.open_model_position(ticker, adet, fiyat, karar_gerekce=gerekce,
-                                   alis_tarihi=tarih)
+                                   alis_tarihi=tarih, para_birimi=para_birimi)
             cash -= adet * fiyat
             acilan += 1
             if verbose:
-                print(f"  [model] AL  {ticker} @ {fiyat} x {adet}")
+                print(f"  [model] AL  {ticker} @ {fiyat:.2f} TL x {adet} ({para_birimi})")
         elif karar in ("SAT", "GUCLU_SAT", "AZALT"):
             if not acik:
                 continue
@@ -65,7 +88,7 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
             cash += adet * fiyat
             kapanan += 1
             if verbose:
-                print(f"  [model] SAT {ticker} @ {fiyat} -> {kz_tl} TL")
+                print(f"  [model] SAT {ticker} @ {fiyat:.2f} TL -> {kz_tl} TL")
     return {"acilan": acilan, "kapanan": kapanan}
 
 

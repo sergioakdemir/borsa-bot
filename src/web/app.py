@@ -1869,7 +1869,7 @@ def ask_bot(soru: str, kullanici=None) -> dict:
         kz_y = p.get("kz_yuzde")
         baglam.append({
             "hisse": t,
-            "alis_fiyati": p.get("alis"),
+            "alim_fiyati": p.get("alis"),
             "adet": p.get("adet"),
             "guncel_fiyat": p.get("guncel"),
             "para_birimi": p.get("para_birimi"),
@@ -1903,9 +1903,12 @@ def ask_bot(soru: str, kullanici=None) -> dict:
     profil_ozet = {}
     if profil:
         profil_ozet = {k: profil.get(k) for k in (
-            "portfoy_buyuklugu", "aylik_birikim", "risk_toleransi", "yatirim_vadesi",
-            "nakit_ihtiyaci", "panik_egilimi", "tecrube_seviyesi", "ana_hedef",
-            "kayip_toleransi_yuzde", "ogrenme_seviyesi") if profil.get(k) is not None}
+            "portfoy_buyuklugu", "aylik_birikim", "ek_sermaye_mumkun", "risk_toleransi",
+            "yatirim_vadesi", "nakit_ihtiyaci", "panik_egilimi", "tecrube_seviyesi",
+            "ana_hedef", "kayip_toleransi_yuzde", "ogrenme_seviyesi",
+            "dusus_tepkisi_10", "dusus_tepkisi_20", "sektor_tercihi",
+            "gunluk_takip_saat", "ana_korku", "onceki_basari", "risk_tercihi")
+            if profil.get(k) is not None}
     hafiza_ozet = []
     if uid:
         for m in db.list_memory(uid, limit=8):
@@ -1914,6 +1917,23 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                   if isinstance(ic, dict) else str(ic))
             hafiza_ozet.append({"tip": m.get("tip"), "tarih": (m.get("tarih") or "")[:10],
                                 "ticker": m.get("ticker"), "ozet": _cap(str(oz or ""), 90)})
+
+    # Davranissal not: dususte tepki + ana korku (varsa) -> AI bunlari kararda kullansin
+    davranis_notu = ""
+    if profil:
+        d10 = _PROFIL_DEGER_ETIKET.get(str(profil.get("dusus_tepkisi_10")),
+                                       profil.get("dusus_tepkisi_10"))
+        d20 = _PROFIL_DEGER_ETIKET.get(str(profil.get("dusus_tepkisi_20")),
+                                       profil.get("dusus_tepkisi_20"))
+        korku = _PROFIL_DEGER_ETIKET.get(str(profil.get("ana_korku")),
+                                         profil.get("ana_korku"))
+        if any([d10, d20, korku]):
+            davranis_notu = (
+                f"\n\nKullanicinin %10 dususte tepkisi: {d10 or 'bilinmiyor'}, "
+                f"%20 dususte tepkisi: {d20 or 'bilinmiyor'}, en buyuk korkusu: "
+                f"{korku or 'bilinmiyor'}. Bu bilgileri kararinda MUTLAKA kullan; "
+                "ornegin panikle satma egilimi varsa dususte sakin kalmasi icin "
+                "yonlendir, korkusunu hafifletecek somut bir plan ver.")
 
     KARAR_TIPLERI = ("AL, SAT, TUT, BEKLE, POZİSYON AZALT, POZİSYON ARTIR, KADEMELİ GİR, "
                      "KADEMELİ ÇIK, STOP BELİRLE, NAKİTTE KAL, İZLEMEYE AL, PANİK SATIŞ "
@@ -1940,7 +1960,7 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                 "etmek / ortalama dusurmek / beklemek).\n"
                 f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
                 "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
-                "daha isabetli yorum yaparim' diye nazikce hatirlat."),
+                "daha isabetli yorum yaparim' diye nazikce hatirlat." + davranis_notu),
             messages=[{"role": "user", "content":
                        f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
                        f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"

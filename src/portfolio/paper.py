@@ -11,48 +11,75 @@ Mantik:
 SERMAYE_TL = 1000.0
 
 
+def _usdtry():
+    """Guncel USD/TRY kuru (makro). Bulunamazsa None."""
+    try:
+        from src.news.macro import get_macro
+        v = get_macro().get("usdtry")
+        return float(v) if v else None
+    except Exception:
+        return None
+
+
 def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
     """Sabah brifingi sonuclarindan sanal islemleri acar/kapatir.
 
-    results: commentary.run ciktisi (kayit listesi).
-    Doner: {acilan, kapanan} sayilari.
+    BIST + ABD destekli. Fiyatlar TL bazinda saklanir; ABD hisselerinde USD fiyat
+    guncel USD/TRY kuruyla TL'ye cevrilir (adet = SERMAYE_TL / (fiyat_usd * kur)).
+    results: commentary.run ciktisi. Doner: {acilan, kapanan}.
     """
     from src.db import database as db
 
     acilan = kapanan = 0
+    fx = None                                       # USD/TRY (lazy)
     for r in results or []:
         if r.get("skipped") or r.get("kill_switch"):
             continue
-        if (r.get("market") or "bist") != "bist":   # sanal sermaye TL bazli
-            continue
+        market = (r.get("market") or "bist").lower()
+        is_us = market in ("us", "abd")
         ticker = (r.get("ticker") or "").upper().replace(".IS", "")
         if not ticker:
             continue
         karar = r.get("final_decision")
         sig = r.get("kullanilan_on_sinyal") or {}
-        fiyat = sig.get("son_kapanis")
-        if not fiyat:
+        fiyat_native = sig.get("son_kapanis")
+        if not fiyat_native:
             continue
+
+        if is_us:
+            if fx is None:
+                fx = _usdtry()
+            if not fx:
+                if verbose:
+                    print(f"  [paper] {ticker} ABD atlandi (USD/TRY kuru yok)")
+                continue
+            kur = fx
+        else:
+            kur = 1.0
+        fiyat_tl = fiyat_native * kur               # TL bazli saklanir
+        para_birimi = "USD" if is_us else "TL"
 
         acik = db.get_open_paper_trade(ticker)
 
         if karar == "AL":
             if acik:                                  # zaten acik pozisyon var
                 continue
-            adet = round(SERMAYE_TL / fiyat, 4)
-            db.open_paper_trade(ticker, karar, fiyat, adet, tarih=tarih)
+            adet = round(SERMAYE_TL / fiyat_tl, 6)
+            db.open_paper_trade(ticker, karar, fiyat_tl, adet, tarih=tarih,
+                                para_birimi=para_birimi)
             acilan += 1
             if verbose:
-                print(f"  [paper] AL  {ticker} @ {fiyat} x {adet} (sanal {SERMAYE_TL:g} TL)")
+                print(f"  [paper] AL  {ticker} @ {fiyat_tl:.2f} TL x {adet} "
+                      f"({para_birimi}{' kur '+str(round(kur,2)) if is_us else ''})")
         elif karar in ("SAT", "GUCLU_SAT", "AZALT"):
             if not acik:
                 continue
             giris = acik["fiyat"] or 0.0
-            kz_yuzde = round((fiyat - giris) / giris * 100, 2) if giris else None
-            db.close_paper_trade(acik["id"], fiyat, kz_yuzde, tarih=tarih)
+            kz_yuzde = round((fiyat_tl - giris) / giris * 100, 2) if giris else None
+            db.close_paper_trade(acik["id"], fiyat_tl, kz_yuzde, tarih=tarih)
             kapanan += 1
             if verbose:
-                print(f"  [paper] SAT {ticker} @ {fiyat} (giris {giris}) -> "
+                print(f"  [paper] SAT {ticker} @ {fiyat_tl:.2f} TL (giris {giris}) -> "
                       f"%{kz_yuzde} k/z")
 
     return {"acilan": acilan, "kapanan": kapanan}

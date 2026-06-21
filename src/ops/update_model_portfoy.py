@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 _TZ = ZoneInfo("Europe/Istanbul")
 
 
-def _son_fiyat(ticker: str):
+def _son_fiyat(ticker: str, para_birimi: str = "TL"):
+    """Guncel kapanis (yerel para). ABD'de '.IS' eklenmez."""
     from src.data.factory import get_data_source
-    from src.markets.bist import BIST
-    symbol = BIST().to_symbol(ticker)
+    is_us = (para_birimi or "TL").upper() == "USD"
+    t = ticker.upper().replace(".IS", "")
+    symbol = t if is_us else f"{t}.IS"
     start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
@@ -25,10 +27,21 @@ def _son_fiyat(ticker: str):
     if df is None or df.empty:
         return None
     if "Volume" in df.columns:
-        df = df[df["Volume"] > 0]
+        f = df[df["Volume"] > 0]
+        if not f.empty:
+            df = f
     if df.empty:
         return None
     return float(df["Close"].iloc[-1])
+
+
+def _usdtry():
+    try:
+        from src.news.macro import get_macro
+        v = get_macro().get("usdtry")
+        return float(v) if v else None
+    except Exception:
+        return None
 
 
 def run(verbose: bool = True) -> int:
@@ -37,19 +50,29 @@ def run(verbose: bool = True) -> int:
     acik = db.list_model_positions(durum="acik")
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] model portfoy acik pozisyon: {len(acik)}")
+    fx = None
     guncellenen = 0
     for p in acik:
-        fiyat = _son_fiyat(p["ticker"])
-        if fiyat is None:
+        pb = (p.get("para_birimi") or "TL").upper()
+        native = _son_fiyat(p["ticker"], pb)
+        if native is None:
             continue
-        giris = p.get("alis_fiyati") or 0.0
+        if pb == "USD":
+            if fx is None:
+                fx = _usdtry()
+            if not fx:
+                continue
+            fiyat_tl = native * fx
+        else:
+            fiyat_tl = native
+        giris = p.get("alis_fiyati") or 0.0          # TL bazli
         adet = p.get("adet") or 0.0
-        kz_tl = round((fiyat - giris) * adet, 2)
-        kz_y = round((fiyat - giris) / giris * 100, 2) if giris else None
-        db.update_model_running(p["id"], fiyat, kz_tl, kz_y)
+        kz_tl = round((fiyat_tl - giris) * adet, 2)
+        kz_y = round((fiyat_tl - giris) / giris * 100, 2) if giris else None
+        db.update_model_running(p["id"], fiyat_tl, kz_tl, kz_y)
         guncellenen += 1
         if verbose:
-            print(f"  {p['ticker']:7} {giris} -> {fiyat} : {kz_tl} TL (%{kz_y})")
+            print(f"  {p['ticker']:7} {giris} -> {fiyat_tl:.2f} TL : {kz_tl} TL (%{kz_y})")
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} pozisyon guncellendi.")
     return guncellenen

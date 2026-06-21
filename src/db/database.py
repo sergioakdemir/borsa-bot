@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     kapanis_fiyati  REAL,
     kz_yuzde        REAL,
     durum           TEXT NOT NULL DEFAULT 'acik',
-    kapanis_tarihi  TEXT
+    kapanis_tarihi  TEXT,
+    para_birimi     TEXT DEFAULT 'TL'
 );
 CREATE INDEX IF NOT EXISTS ix_paper_ticker_durum ON paper_trades(ticker, durum);
 CREATE TABLE IF NOT EXISTS haber_etki (
@@ -142,7 +143,8 @@ CREATE TABLE IF NOT EXISTS model_portfoy (
     durum           TEXT NOT NULL DEFAULT 'acik',
     kapanis_fiyati  REAL,
     kapanis_tarihi  TEXT,
-    karar_gerekce   TEXT
+    karar_gerekce   TEXT,
+    para_birimi     TEXT DEFAULT 'TL'
 );
 CREATE INDEX IF NOT EXISTS ix_model_ticker_durum ON model_portfoy(ticker, durum);
 """
@@ -207,6 +209,12 @@ def _migrate(c) -> None:
                          ("risk_tercihi", "TEXT")):
             if col not in cols_pr:
                 c.execute(f"ALTER TABLE kullanici_profil ADD COLUMN {col} {tip}")
+    # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
+    for tbl in ("paper_trades", "model_portfoy"):
+        if tbl in tbls:
+            cs = {r["name"] for r in c.execute(f"PRAGMA table_info({tbl})")}
+            if "para_birimi" not in cs:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
 
 
 def init_db() -> None:
@@ -371,15 +379,20 @@ def recent_decisions_for(ticker, limit: int = 10) -> list[dict]:
 
 
 # ---- paper trading (sanal islem) ----
-def open_paper_trade(ticker, karar, fiyat, adet_sanal, tarih=None) -> int:
-    """Sanal bir AL pozisyonu acar (durum='acik')."""
+def open_paper_trade(ticker, karar, fiyat, adet_sanal, tarih=None,
+                     para_birimi="TL") -> int:
+    """Sanal bir AL pozisyonu acar (durum='acik'). fiyat TL bazlidir (ABD'de
+    USD fiyat x kur ile TL'ye cevrilmis saklanir); para_birimi yfinance sembolu
+    secimi icin tutulur."""
     init_db()
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
-            """INSERT INTO paper_trades (ticker, karar, fiyat, adet_sanal, tarih, durum)
-               VALUES (?, ?, ?, ?, ?, 'acik')""",
-            (str(ticker).upper().replace(".IS", ""), karar, fiyat, adet_sanal, tarih))
+            """INSERT INTO paper_trades
+                 (ticker, karar, fiyat, adet_sanal, tarih, durum, para_birimi)
+               VALUES (?, ?, ?, ?, ?, 'acik', ?)""",
+            (str(ticker).upper().replace(".IS", ""), karar, fiyat, adet_sanal, tarih,
+             (para_birimi or "TL").upper()))
         return cur.lastrowid
 
 
@@ -601,16 +614,17 @@ def clear_memory(kullanici_id) -> int:
 
 # ---- model portfoy (botun kendi sanal portfoyu) ----
 def open_model_position(ticker, adet, alis_fiyati, karar_gerekce=None,
-                        alis_tarihi=None) -> int:
+                        alis_tarihi=None, para_birimi="TL") -> int:
     init_db()
     alis_tarihi = alis_tarihi or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
             """INSERT INTO model_portfoy
-                 (ticker, adet, alis_fiyati, alis_tarihi, guncel_fiyat, durum, karar_gerekce)
-               VALUES (?, ?, ?, ?, ?, 'acik', ?)""",
+                 (ticker, adet, alis_fiyati, alis_tarihi, guncel_fiyat, durum,
+                  karar_gerekce, para_birimi)
+               VALUES (?, ?, ?, ?, ?, 'acik', ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), adet, alis_fiyati, alis_tarihi,
-             alis_fiyati, karar_gerekce))
+             alis_fiyati, karar_gerekce, (para_birimi or "TL").upper()))
         return cur.lastrowid
 
 

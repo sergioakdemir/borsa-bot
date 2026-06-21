@@ -1,6 +1,6 @@
 """Karar sonuclarini otomatik doldurur (hafiza/ogrenme).
 
-Her gece calisir (cron 23:30). 5 gunden eski ve sonucu HENUZ BOS olan kararlar
+Her gece calisir (cron 23:30). 3 gunden eski ve sonucu HENUZ BOS olan kararlar
 icin, karar gunundeki kapanis ile bugunku kapanis arasindaki yuzde degisimi
 hesaplar ve karara gore 'DOGRU/YANLIS' verir; decisions.sonuc kolonunu gunceller.
 
@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
-KAPANIS_GUN = 5          # bu kadar gun gecmis kararlar degerlendirilir
+KAPANIS_GUN = 3          # bu kadar gun gecmis kararlar degerlendirilir (hizli ogrenme)
 TUT_BANT = 5.0           # TUT icin yatay sayilan +/- yuzde bandi
 
 
