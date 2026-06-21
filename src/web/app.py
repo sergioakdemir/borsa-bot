@@ -1012,6 +1012,13 @@ def portfolio_add(d: dict) -> dict:
         _db.add_position(uid, ticker, adet, fiyat, para_birimi=para_birimi)
     except Exception as e:
         return {"ok": False, "hata": f"Eklenemedi: {type(e).__name__}"}
+    try:
+        _db.add_memory(uid, "eylem",
+                       {"ozet": f"Portföye eklendi: {ticker} {adet:g} @ {fiyat:g} {para_birimi}",
+                        "eylem": "portfoy_ekle", "adet": adet, "fiyat": fiyat},
+                       ticker=ticker)
+    except Exception:
+        pass
     return {"ok": True, "ticker": ticker, "adet": adet,
             "fiyat": fiyat, "para_birimi": para_birimi}
 
@@ -1023,10 +1030,20 @@ def portfolio_remove(d: dict) -> dict:
         return {"ok": False, "hata": "Pozisyon id gerekli."}
     try:
         with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            row = c.execute("SELECT kullanici_id, ticker FROM portfoy WHERE id=?",
+                            (int(pid),)).fetchone()
             cur = c.execute("DELETE FROM portfoy WHERE id=?", (int(pid),))
             c.commit()
     except (sqlite3.Error, ValueError, TypeError) as e:
         return {"ok": False, "hata": f"Silinemedi: {type(e).__name__}"}
+    if row and cur.rowcount > 0 and _db is not None:
+        try:
+            _db.add_memory(row["kullanici_id"], "eylem",
+                           {"ozet": f"Portföyden çıkarıldı: {row['ticker']}",
+                            "eylem": "portfoy_sil"}, ticker=row["ticker"])
+        except Exception:
+            pass
     return {"ok": cur.rowcount > 0, "silinen": cur.rowcount}
 
 
@@ -1041,6 +1058,42 @@ def _tarih_kisa(iso: str) -> str:
         return f"{int(d)} {_AY_TR[int(m)]}"
     except (ValueError, IndexError):
         return iso or ""
+
+
+def get_model_portfoy() -> dict:
+    """Model portfoy (botun 100K sanal portfoyu) - ozet + pozisyonlar + BIST100 kiyasi."""
+    try:
+        from src.portfolio import model
+        s = model.summary()
+    except Exception:
+        return {"var": False}
+
+    def _poz(p, kapali=False):
+        tkr = (p.get("ticker") or "").upper()
+        return {
+            "ticker": tkr, "isim": company_name(tkr),
+            "adet": round(p.get("adet") or 0, 2),
+            "alis_fiyati": p.get("alis_fiyati"),
+            "alis_tarihi": p.get("alis_tarihi"),
+            "guncel_fiyat": p.get("kapanis_fiyati") if kapali else p.get("guncel_fiyat"),
+            "kz_tl": p.get("kz_tl"), "kz_yuzde": p.get("kz_yuzde"),
+            "gerekce": p.get("karar_gerekce"),
+            "kapanis_tarihi": p.get("kapanis_tarihi"),
+        }
+
+    acik = [_poz(p) for p in s.get("acik_pozisyonlar", [])]
+    kapali = [_poz(p, kapali=True) for p in s.get("kapali_pozisyonlar", [])]
+    n = s.get("kapali_sayisi") or 0
+    if (s.get("acik_sayisi") or 0) == 0 and n == 0:
+        mesaj = "Model portföy henüz işlem yapmadı (her sabah AL kararıyla başlar)."
+    else:
+        yon = "kazançta" if (s.get("getiri_tl") or 0) >= 0 else "zararda"
+        mesaj = (f"Bot 100.000 TL sanal sermaye ile {s.get('acik_sayisi')} açık, "
+                 f"{n} kapanan işlem yaptı; toplam %{s.get('getiri_yuzde')} {yon}.")
+        if s.get("bist100_fark_yuzde") is not None:
+            ustun = "üstünde" if s["bist100_fark_yuzde"] >= 0 else "altında"
+            mesaj += f" BIST-100'ün %{abs(s['bist100_fark_yuzde']):g} {ustun}."
+    return {"var": True, "ozet": s, "acik": acik, "kapali": kapali, "mesaj": mesaj}
 
 
 def get_paper_trading() -> dict:
@@ -1820,37 +1873,72 @@ def ask_bot(soru: str, kullanici=None) -> dict:
         makro = get_macro()
     except Exception:
         makro = {}
+    # Kullanici profili + hafiza gecmisi
+    from src.db import database as db
+    uid = _uid(kullanici)
+    profil = db.get_profile(uid) if uid else None
+    profil_ozet = {}
+    if profil:
+        profil_ozet = {k: profil.get(k) for k in (
+            "portfoy_buyuklugu", "aylik_birikim", "risk_toleransi", "yatirim_vadesi",
+            "nakit_ihtiyaci", "panik_egilimi", "tecrube_seviyesi", "ana_hedef",
+            "kayip_toleransi_yuzde", "ogrenme_seviyesi") if profil.get(k) is not None}
+    hafiza_ozet = []
+    if uid:
+        for m in db.list_memory(uid, limit=8):
+            ic = m.get("icerik")
+            oz = (ic.get("ozet") or ic.get("soru") or ic.get("karar")
+                  if isinstance(ic, dict) else str(ic))
+            hafiza_ozet.append({"tip": m.get("tip"), "tarih": (m.get("tarih") or "")[:10],
+                                "ticker": m.get("ticker"), "ozet": _cap(str(oz or ""), 90)})
+
+    KARAR_TIPLERI = ("AL, SAT, TUT, BEKLE, POZİSYON AZALT, POZİSYON ARTIR, KADEMELİ GİR, "
+                     "KADEMELİ ÇIK, STOP BELİRLE, NAKİTTE KAL, İZLEMEYE AL, PANİK SATIŞ "
+                     "YAPMA, MALİYET DÜŞÜRMEYİ DEĞERLENDİR, BU HİSSE SENİN PROFİLİNE UYGUN DEĞİL")
     try:
         import anthropic
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_CHAT_MODEL, max_tokens=600,
-            system=("Sen kullanicinin kisisel borsa asistanisin. Sade, net, sicak Turkce "
-                    "konus; jargon (RSI/MACD) yok. Yanitlarini SADECE verilen baglama "
-                    "(kullanicinin portfoyu + makro) dayandir; baglamda yoksa 'elimde bu "
-                    "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir. "
-                    "Markdown, tablo, baslik veya yildiz KULLANMA; kisa, duz cumlelerle "
-                    "sohbet eder gibi yanitla (en fazla birkac cumle).\n\n"
-                    "KISISEL PORTFOY: 'Portfoyum' alaninda her hisse icin alis fiyati, "
-                    "adet, guncel fiyat, kar/zarar (TL ve %), kac gundur tutuldugu "
-                    "(tutma_gun) ve botun o hisseye dair son karari (bot_karari) + "
-                    "gerekcesi (bot_gerekce) verilir. Bir hisse hakkinda soruldugunda HEM "
-                    "botun genel analizini HEM kullanicinin kisisel durumunu (maliyeti, "
-                    "kar/zarari, ne kadar suredir tuttugu) birlestirerek cevap ver. "
-                    "Ornek: 'X'i Y'den almissin, su an Z'de, W TL zararda/karda ve N gundur "
-                    "tutuyorsun' diyerek baglami kur. ZARARDA olan hisseler icin oneri "
-                    "verirken maliyeti goz onunde bulundur (zarari realize etmek mi, "
-                    "ortalama dusurmek mi, beklemek mi)."),
+            model=_CHAT_MODEL, max_tokens=700,
+            system=(
+                "Sen kullanicinin kisisel 25 yillik borsa asistanisin. Sade, net, sicak "
+                "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
+                "Yanitlarini SADECE verilen baglama dayandir; baglamda yoksa 'elimde bu "
+                "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir.\n\n"
+                "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
+                "kar-zarar/tutma_gun/bot_karari), izlenen hisselerdeki son AI kararlari, "
+                "gecmis sohbet/hafiza ozeti ve makro.\n"
+                "Cevabini kullanicinin PROFILINE gore uyarla (risk toleransi, vade, nakit "
+                "ihtiyaci, panik egilimi, tecrube). Her cevapta sirayla sun: "
+                "1) Genel piyasa gorusu (kisa), 2) Kisiye ozel yorum (profili+portfoyu "
+                "kullanarak), 3) Net aksiyon, 4) Risk seviyesi, 5) Kisa ogretici not. "
+                "Bu basliklari yazma; akici cumlelerle dogal bir paragraf/birkac cumle "
+                "halinde ver. ZARARDA pozisyonlarda maliyeti goz onunde bulundur (realize "
+                "etmek / ortalama dusurmek / beklemek).\n"
+                f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
+                "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
+                "daha isabetli yorum yaparim' diye nazikce hatirlat."),
             messages=[{"role": "user", "content":
-                       f"Portfoyum: {json.dumps(baglam, ensure_ascii=False)}\n"
-                       f"Izlenen hisseler: {json.dumps(piyasa, ensure_ascii=False)}\n"
+                       f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
+                       f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
+                       f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
+                       f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
                        f"Makro: {json.dumps(makro, ensure_ascii=False)}\n\nSoru: {soru}"}],
         )
         cevap = "".join(getattr(b, "text", "") for b in resp.content
                         if getattr(b, "type", "") == "text").strip()
         cevap = re.sub(r"^[#>\-\*\s]*\|.*$", "", cevap, flags=re.M)   # tablo satirlari
         cevap = re.sub(r"[#*`_]+", "", cevap).strip()
-        return {"ok": True, "cevap": cevap or "Yanıt üretemedim."}
+        cevap = cevap or "Yanıt üretemedim."
+        # Sohbeti hafizaya kaydet
+        if uid:
+            try:
+                db.add_memory(uid, "sohbet",
+                              {"soru": soru[:300], "cevap": cevap[:600],
+                               "ozet": _cap(soru, 90)})
+            except Exception:
+                pass
+        return {"ok": True, "cevap": cevap}
     except Exception as e:
         return {"ok": False, "cevap": f"Hata: {type(e).__name__}"}
 
@@ -1877,6 +1965,133 @@ def get_news(limit: int = 20) -> list[dict]:
                         "yorum": _ilk_cumleler(rec.get("gerekce", ""), 1)})
     out.sort(key=lambda n: n.get("fiyatlanma") == "FIYATLANMADI", reverse=True)
     return out[:limit]
+
+
+# ----------------------------------------------------------------------------
+# Profil + hafiza + onboarding
+# ----------------------------------------------------------------------------
+_PROFIL_GORUNUM = {
+    "portfoy_buyuklugu": ("Portföy büyüklüğü", "tl"),
+    "aylik_birikim": ("Aylık birikim", "tl"),
+    "ek_sermaye_mumkun": ("Ek sermaye mümkün", "bool"),
+    "tecrube_seviyesi": ("Tecrübe", "text"),
+    "risk_toleransi": ("Risk toleransı", "text"),
+    "panik_egilimi": ("Panik eğilimi", "text"),
+    "yatirim_vadesi": ("Yatırım vadesi", "text"),
+    "nakit_ihtiyaci": ("Nakit ihtiyacı", "text"),
+    "nakit_ihtiyac_tarihi": ("Nakit ihtiyaç tarihi", "text"),
+    "ana_hedef": ("Ana hedef", "text"),
+    "kayip_toleransi_yuzde": ("Kayıp toleransı", "pct"),
+    "ogrenme_seviyesi": ("Öğrenme seviyesi", "text"),
+    "aciklama_ister": ("Açıklama ister", "bool"),
+}
+_HAFIZA_KATEGORI = {"oneri": "Öneriler", "karar": "Kararlar",
+                    "sohbet": "Sohbetler", "eylem": "Öğrendikleri"}
+
+
+def _uid(kullanici):
+    from src.db import database as db
+    return db.user_id_by_ad(kullanici) if kullanici else None
+
+
+def _profil_deger(anahtar, ham):
+    if ham is None or ham == "":
+        return None
+    _, tip = _PROFIL_GORUNUM.get(anahtar, ("", "text"))
+    if tip == "tl":
+        try:
+            return f"{float(ham):,.0f} TL".replace(",", ".")
+        except (ValueError, TypeError):
+            return str(ham)
+    if tip == "pct":
+        try:
+            return f"%{float(ham):g}"
+        except (ValueError, TypeError):
+            return str(ham)
+    if tip == "bool":
+        return "Evet" if ham in (1, True, "1", "true") else "Hayır"
+    return str(ham)
+
+
+def get_profile_view(kullanici) -> dict:
+    from src.db import database as db
+    uid = _uid(kullanici)
+    if uid is None:
+        return {"var": False, "guven_skoru": 0, "alanlar": [], "eksik_alanlar": [],
+                "onboarding_done": False}
+    p = db.get_profile(uid)
+    if not p:
+        return {"var": False, "kullanici": kullanici, "guven_skoru": 0,
+                "alanlar": [], "eksik_alanlar": [], "onboarding_done": False}
+    alanlar = []
+    for k, (etiket, _t) in _PROFIL_GORUNUM.items():
+        dv = _profil_deger(k, p.get(k))
+        if dv is not None:
+            alanlar.append({"anahtar": k, "etiket": etiket, "deger": dv})
+    skor = p.get("profil_guven_skoru") or 0
+    return {
+        "var": True, "kullanici": kullanici,
+        "guven_skoru": skor,
+        "alanlar": alanlar,
+        "eksik_alanlar": p.get("eksik_alanlar") or [],
+        "onboarding_done": skor >= 75,
+        "guncelleme": p.get("guncelleme_tarihi"),
+    }
+
+
+def get_memory_view(kullanici, tip=None) -> dict:
+    from src.db import database as db
+    uid = _uid(kullanici)
+    if uid is None:
+        return {"kategoriler": {}, "toplam": 0}
+    rows = db.list_memory(uid, tip=tip, limit=300)
+    kategoriler = {ad: [] for ad in _HAFIZA_KATEGORI.values()}
+    for r in rows:
+        ic = r.get("icerik")
+        if isinstance(ic, dict):
+            ozet = (ic.get("ozet") or ic.get("soru") or ic.get("baslik")
+                    or ic.get("karar") or ic.get("mesaj") or json.dumps(ic, ensure_ascii=False))
+        else:
+            ozet = str(ic or "")
+        kat = _HAFIZA_KATEGORI.get(r.get("tip"), "Öğrendikleri")
+        kategoriler.setdefault(kat, []).append({
+            "id": r.get("id"), "tip": r.get("tip"),
+            "tarih": (r.get("tarih") or "")[:16].replace("T", " "),
+            "ticker": r.get("ticker"), "sonuc": r.get("sonuc"),
+            "ozet": _cap(str(ozet), 140), "icerik": ic,
+        })
+    return {"kategoriler": kategoriler, "toplam": len(rows)}
+
+
+def onboarding_step(kullanici, messages) -> dict:
+    from src.db import database as db
+    from src.ai import profiling
+    uid = _uid(kullanici)
+    if uid is None:
+        return {"ok": False, "reply": "Kullanıcı bulunamadı."}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {"ok": False, "reply": "AI anahtarı ayarlı değil."}
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        profile = db.get_profile(uid)
+        reply = profiling.onboarding_reply(messages, profile=profile, client=client)
+        # Yeni reply'i de gecmise ekleyip profil cikar
+        full = list(messages or []) + [{"rol": "bot", "metin": reply}]
+        profile = profiling.extract_profile_from_chat(uid, full, client=client)
+    except Exception as e:
+        return {"ok": False, "reply": f"Hata: {type(e).__name__}"}
+    skor = (profile or {}).get("profil_guven_skoru") or 0
+    eksik = (profile or {}).get("eksik_alanlar") or []
+    done = skor >= 75
+    if done:
+        try:
+            db.add_memory(uid, "eylem",
+                          {"ozet": f"Onboarding tamamlandı (tanıma %{skor})"})
+        except Exception:
+            pass
+    return {"ok": True, "reply": reply, "guven_skoru": skor,
+            "eksik_alanlar": eksik, "done": done}
 
 
 # ----------------------------------------------------------------------------
@@ -1963,6 +2178,52 @@ def api_backtest():
                         "uretim_tarihi": d.get("uretim_tarihi", "")})
     except Exception:
         return jsonify({"var": False})
+
+
+@app.route("/api/profile")
+def api_profile():
+    return jsonify(get_profile_view(request.args.get("kullanici")))
+
+
+@app.route("/api/profile/update", methods=["POST"])
+def api_profile_update():
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    uid = _uid(d.get("kullanici"))
+    if uid is None:
+        return jsonify({"ok": False, "hata": "kullanici yok"})
+    alanlar = {k: v for k, v in d.items()
+               if k in db._PROFIL_KOLONLAR and v is not None}
+    p = db.upsert_profile(uid, **alanlar) if alanlar else db.get_profile(uid)
+    return jsonify({"ok": True, "guven_skoru": (p or {}).get("profil_guven_skoru", 0)})
+
+
+@app.route("/api/memory")
+def api_memory():
+    return jsonify(get_memory_view(request.args.get("kullanici"),
+                                   request.args.get("tip")))
+
+
+@app.route("/api/memory/clear", methods=["POST"])
+def api_memory_clear():
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    uid = _uid(d.get("kullanici"))
+    if uid is None:
+        return jsonify({"ok": False})
+    n = db.clear_memory(uid)
+    return jsonify({"ok": True, "silinen": n})
+
+
+@app.route("/api/onboarding", methods=["POST"])
+def api_onboarding():
+    d = request.get_json(silent=True) or {}
+    return jsonify(onboarding_step(d.get("kullanici"), d.get("messages") or []))
+
+
+@app.route("/api/model-portfoy")
+def api_model_portfoy():
+    return jsonify(get_model_portfoy())
 
 
 @app.route("/api/backtest-aggressive")

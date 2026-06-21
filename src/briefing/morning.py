@@ -184,6 +184,30 @@ def build_message(results, sel, now, overview=None):
     return msg
 
 
+def _record_briefing_memory(results):
+    """Sabah brifingindeki dikkat ceken kararlari (AL/SAT/VETO) her kullanicinin
+    hafizasina 'karar' tipiyle yazar (kime gonderildigi)."""
+    from src.db import database as db
+    notable = [r for r in (results or [])
+               if not r.get("skipped")
+               and r.get("final_decision") in ("AL", "SAT", "GUCLU_SAT", "VETO")]
+    if not notable:
+        return
+    users = [u for u in db.list_users()]
+    bugun = datetime.now(_TZ).date().isoformat()
+    for u in users:
+        for r in notable:
+            tkr = (r.get("ticker") or "").upper()
+            db.add_memory(
+                u["id"], "karar",
+                {"karar": r.get("final_decision"), "puan": r.get("score"),
+                 "risk": (r.get("risk") or {}).get("score"),
+                 "ozet": f"{tkr} {r.get('final_label') or r.get('final_decision')} "
+                         f"({r.get('score')}/10)",
+                 "gerekce": (r.get("gerekce") or "")[:240]},
+                ticker=tkr, tarih=bugun)
+
+
 def main():
     now = datetime.now(_TZ)
     if not telegram.is_configured():
@@ -235,6 +259,20 @@ def main():
         print(f"  paper trading: {pt['acilan']} acildi, {pt['kapanan']} kapandi")
     except Exception as e:
         print(f"  paper trading atlandi: {type(e).__name__}: {str(e)[:80]}")
+
+    # 5) Model portfoy (100K): AL -> 50K alim, SAT -> kapat
+    try:
+        from src.portfolio import model
+        mp = model.record_from_results(results, verbose=True)
+        print(f"  model portfoy: {mp['acilan']} acildi, {mp['kapanan']} kapandi")
+    except Exception as e:
+        print(f"  model portfoy atlandi: {type(e).__name__}: {str(e)[:80]}")
+
+    # 6) Kararlari her kullanicinin hafizasina yaz (kim aldi)
+    try:
+        _record_briefing_memory(results)
+    except Exception as e:
+        print(f"  hafiza kaydi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
     msg = build_message(results, sel, now, overview=overview)
     sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)

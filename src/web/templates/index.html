@@ -318,6 +318,40 @@
   .up-av.y{background:var(--blue);color:#04101f}
   .up-close{width:100%;color:var(--muted);font-size:14px;padding:11px;margin-top:4px}
 
+  /* ---- onboarding ---- */
+  .onb{position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;
+    padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 14px)}
+  .onb.open{display:flex}
+  .onb-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+  .onb-title{font-size:22px;font-weight:700}
+  .onb-sub{font-size:13px;color:var(--muted);margin-top:3px}
+  .onb-skip{color:var(--muted);font-size:13px;padding:8px 12px;border:1px solid var(--border);border-radius:999px}
+  .onb-bar{height:8px;background:var(--card2);border-radius:999px;margin:14px 0 6px;overflow:hidden}
+  .onb-bar-fill{height:100%;width:0;background:var(--green2);border-radius:999px;transition:width .4s ease}
+  .onb-pct{font-size:13px;color:var(--muted);margin-bottom:12px}
+  .onb .chat{flex:1;overflow-y:auto;padding-bottom:10px}
+  .onb-input{display:flex;gap:8px;align-items:center;padding-top:10px}
+  .onb-input input{flex:1;background:var(--card2);border:1px solid var(--border);color:var(--text);
+    border-radius:14px;padding:14px;font-size:15px}
+  .onb-input .send{width:46px;height:46px;border-radius:14px;background:var(--green2);color:#04150a;
+    font-size:18px;display:flex;align-items:center;justify-content:center}
+  .onb-finish{width:100%;background:var(--green2);color:#04150a;border-radius:14px;padding:14px;
+    font-weight:700;font-size:15px;margin-top:10px}
+  .prof-score{text-align:center;padding:22px 16px;background:var(--card);border:1px solid var(--border);border-radius:20px;margin-bottom:14px}
+  .prof-score .big{font-size:46px;font-weight:800;color:var(--green);line-height:1}
+  .prof-ring{font-size:14px;color:var(--muted);margin-top:8px}
+  .prof-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .prof-cell{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px 13px}
+  .prof-cell .k{font-size:12px;color:var(--muted)}
+  .prof-cell .v{font-size:15px;font-weight:650;margin-top:3px}
+  .prof-btns{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+  .prof-btn{flex:1;min-width:46%;background:var(--card2);border:1px solid var(--border);color:var(--text);
+    border-radius:12px;padding:12px;font-size:13.5px;font-weight:600}
+  .mem-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:6px 0 12px}
+  .mem-tabs button{background:var(--card);border:1px solid var(--border);color:var(--muted);
+    border-radius:999px;padding:8px 13px;font-size:13px}
+  .mem-tabs button.active{color:var(--text);border-color:var(--border2)}
+
   /* ---- skeleton / bos / toast ---- */
   .skel{background:linear-gradient(90deg,#0E141C 0%,#16202C 50%,#0E141C 100%);background-size:200% 100%;
     animation:sh 1.2s linear infinite;border-radius:14px}
@@ -352,6 +386,7 @@
   <section id="page-radar" class="page"></section>
   <section id="page-sor" class="page"></section>
   <section id="page-bildirim" class="page"></section>
+  <section id="page-ayarlar" class="page"></section>
 </main>
 
 <div class="chat-input" id="chat-input">
@@ -373,6 +408,8 @@
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg><span>Bota Sor</span></button>
   <button data-tab="bildirim" onclick="showTab('bildirim')">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.5 21a1.7 1.7 0 0 1-3 0"/></svg><span>Bildirimler</span></button>
+  <button data-tab="ayarlar" onclick="showTab('ayarlar')">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Ayarlar</span></button>
 </nav>
 
 <div class="scrim" id="ov-scrim" onclick="closeStock()"></div>
@@ -405,15 +442,35 @@
   <div class="up-sub">Portföyünü ve sana özel yorumları göster</div>
   <button class="up-btn" onclick="setUser('serhat')"><span class="up-av">S</span>Serhat</button>
   <button class="up-btn" onclick="setUser('yigit')"><span class="up-av y">Y</span>Yiğit</button>
+  <button class="up-btn" onclick="setUser('ufuk')"><span class="up-av">U</span>Ufuk</button>
   <button class="up-close" id="up-close" onclick="closeUserPick()" style="display:none">Vazgeç</button>
 </div></div>
+
+<div class="onb" id="onb">
+  <div class="onb-head">
+    <div>
+      <div class="onb-title">Seni tanıyalım</div>
+      <div class="onb-sub" id="onb-sub">Daha isabetli tavsiye için birkaç soru</div>
+    </div>
+    <button class="onb-skip" onclick="onbSkip()">Atla</button>
+  </div>
+  <div class="onb-bar"><div class="onb-bar-fill" id="onb-bar"></div></div>
+  <div class="onb-pct" id="onb-pct">Botun seni tanıma oranı: %0</div>
+  <div class="chat" id="onb-chat"></div>
+  <div class="onb-input">
+    <input id="onb-text" type="text" placeholder="Yaz…" autocomplete="off" enterkeyhint="send"
+           onkeydown="if(event.key==='Enter')onbSend()">
+    <button class="send" onclick="onbSend()">➤</button>
+  </div>
+  <button class="onb-finish" id="onb-finish" onclick="onbFinish()" style="display:none">Tamamla ve uygulamaya geç →</button>
+</div>
 
 <div class="toast" id="toast"></div>
 
 <script>
 const loaded={};
 let CUR_USER=null,curTab="bugun";
-const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"}};
+const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"}};
 let STOCK_INDEX={},ALERT_INDEX=[],RADAR_FILTER="all",RADAR_DATA=null;
 
 /* ---- format ---- */
@@ -452,9 +509,9 @@ function openUserPick(){document.getElementById("up-close").style.display=CUR_US
 function closeUserPick(){if(CUR_USER)document.getElementById("userpick").classList.remove("open")}
 function setUser(k){if(!USERS[k])return;CUR_USER=k;try{localStorage.setItem("bb_user",k)}catch(e){}
   applyChip();document.getElementById("userpick").classList.remove("open");
-  Object.keys(loaded).forEach(t=>loaded[t]=false);load(curTab)}
+  Object.keys(loaded).forEach(t=>loaded[t]=false);load(curTab);checkOnboarding()}
 function initUser(){let u=null;try{u=localStorage.getItem("bb_user")}catch(e){}
-  if(u&&USERS[u]){CUR_USER=u;applyChip()}else openUserPick()}
+  if(u&&USERS[u]){CUR_USER=u;applyChip();checkOnboarding()}else openUserPick()}
 
 /* ---- sekme ---- */
 function showTab(t){curTab=t;try{localStorage.setItem("bb_tab",t)}catch(e){}
@@ -464,7 +521,7 @@ function showTab(t){curTab=t;try{localStorage.setItem("bb_tab",t)}catch(e){}
   document.getElementById("chat-input").classList.toggle("on",t==="sor");
   document.querySelector("main").scrollTop=0;
   if(!loaded[t])load(t)}
-function load(t){loaded[t]=true;({bugun:loadBugun,portfoy:loadPortfoy,radar:loadRadar,sor:loadSor,bildirim:loadBildirim}[t])()}
+function load(t){loaded[t]=true;({bugun:loadBugun,portfoy:loadPortfoy,radar:loadRadar,sor:loadSor,bildirim:loadBildirim,ayarlar:loadAyarlar}[t])()}
 const uq=()=>CUR_USER?("?kullanici="+encodeURIComponent(CUR_USER)):"";
 function skel(n){return('<div class="skel skel-card"></div>').repeat(n||3)}
 
@@ -608,16 +665,39 @@ function aggressiveHTML(a){
       <div class="row" style="margin-top:8px"><span class="muted">En kötü hisse</span><b class="neg">${esc((m.en_kotu_hisse||{}).ticker||"—")} ${m.en_kotu_hisse&&m.en_kotu_hisse.kz_tl!=null?"("+fmt(m.en_kotu_hisse.kz_tl,0)+" TL)":""}</b></div>
     </div>`;
   return h}
+function modelPortfoyHTML(mp){
+  if(!mp||!mp.var||!mp.ozet)return"";
+  const o=mp.ozet;
+  let h=`<div class="sec-title">🤖 Model Portföy (Botun Kendi Portföyü)</div>
+    <div class="card"><div class="tick" style="line-height:1.5;margin-bottom:10px">${esc(mp.mesaj||"")}</div>
+      <div class="row"><span class="muted">Başlangıç → Bugün</span><b>${fmt(o.baslangic_tl,0)} → ${fmt(o.toplam_deger_tl,0)} TL</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Toplam getiri</span><b class="${signCls(o.getiri_yuzde)}">${pct(o.getiri_yuzde)} (${(o.getiri_tl>0?"+":"")+fmt(o.getiri_tl,0)} TL)</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">BIST-100 getiri</span><b class="${signCls(o.bist100_getiri_yuzde)}">${o.bist100_getiri_yuzde==null?"—":pct(o.bist100_getiri_yuzde)}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">BIST-100'e karşı</span><b class="${signCls(o.bist100_fark_yuzde)}">${o.bist100_fark_yuzde==null?"—":pct(o.bist100_fark_yuzde)}</b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Açık · Kapanan</span><b>${o.acik_sayisi} · ${o.kapali_sayisi}</b></div>
+      ${o["basari_orani_%"]!=null?`<div class="row" style="margin-top:8px"><span class="muted">Başarı oranı</span><b>%${o["basari_orani_%"]}</b></div>`:""}
+      ${o.en_iyi?`<div class="row" style="margin-top:8px"><span class="muted">En iyi · En kötü</span><b><span class="pos">${esc(o.en_iyi.ticker||"—")}</span> · <span class="neg">${esc((o.en_kotu||{}).ticker||"—")}</span></b></div>`:""}
+    </div>`;
+  if(mp.acik&&mp.acik.length){
+    h+=mp.acik.map(p=>`<div class="card" style="padding:13px 15px"><div class="row">
+        <div class="name">${esc(p.ticker)} <span class="chip gray">Açık</span></div>
+        <div class="chg ${signCls(p.kz_yuzde)}">${p.kz_yuzde==null?"—":pct(p.kz_yuzde)}</div></div>
+      <div class="pline">${p.alis_fiyati} → ${p.guncel_fiyat||"?"} TL · ${esc(p.alis_tarihi||"")} · ${Number(p.adet).toFixed(2)} adet</div>
+      ${p.gerekce?`<div class="pline" style="white-space:normal;opacity:.8">${esc(p.gerekce.slice(0,120))}</div>`:""}</div>`).join("");
+  }
+  return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [dr,btr,pr,her,agr]=await Promise.all([
+  try{const [dr,btr,pr,her,agr,mp]=await Promise.all([
         fetch("/api/decisions").then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
         fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
         fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({})),
-        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false}))]);
+        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false})),
+        fetch("/api/model-portfoy").then(r=>r.json()).catch(()=>({var:false}))]);
     const rows=dr.satirlar||[];DEC_INDEX={};
     let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
       <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
+    h+=modelPortfoyHTML(mp);
     h+=aggressiveHTML(agr);
     h+=backtestHTML(btr);
     h+=paperHTML(pr);
@@ -683,6 +763,105 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
     const d=await r.json();document.getElementById("typing")?.remove();const a=d.cevap||"Yanıt üretemedim.";
     CHAT.push({rol:"bot",metin:a});c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:a}));scrollChat();
   }catch(e){document.getElementById("typing")?.remove();c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:"Bağlantı hatası."}))}}
+
+/* ============ ONBOARDING ============ */
+let ONB_MSGS=[],ONB_BUSY=false;
+async function checkOnboarding(){if(!CUR_USER)return;
+  let skip=false;try{skip=localStorage.getItem("bb_onb_skip_"+CUR_USER)==="1"}catch(e){}
+  try{const p=await(await fetch("/api/profile"+uq())).json();
+    if(!p.onboarding_done && !skip){openOnboarding(p)}
+  }catch(e){}}
+function onbBubble(m){return`<div class="bubble ${m.rol==='user'?'user':'bot'}">${esc(m.metin)}</div>`}
+function onbRender(){document.getElementById("onb-chat").innerHTML=ONB_MSGS.map(onbBubble).join("");
+  const c=document.getElementById("onb-chat");c.scrollTop=c.scrollHeight}
+function onbScore(s){const v=Math.max(0,Math.min(100,s||0));
+  document.getElementById("onb-bar").style.width=v+"%";
+  document.getElementById("onb-pct").textContent="Botun seni tanıma oranı: %"+v;
+  document.getElementById("onb-finish").style.display=v>=75?"block":"none"}
+function openOnboarding(p){ONB_MSGS=[];document.getElementById("onb").classList.add("open");
+  onbScore((p&&p.guven_skoru)||0);
+  ONB_MSGS=[{rol:"bot",metin:"Merhaba "+(USERS[CUR_USER]?.ad||"")+"! Sana daha isabetli yorumlar verebilmem için seni biraz tanımak istiyorum. Borsadaki toplam portföyün aşağı yukarı ne kadar?"}];
+  onbRender();setTimeout(()=>document.getElementById("onb-text").focus(),200)}
+async function onbSend(){if(ONB_BUSY)return;const inp=document.getElementById("onb-text");const q=(inp.value||"").trim();if(!q)return;
+  inp.value="";ONB_MSGS.push({rol:"user",metin:q});onbRender();
+  const c=document.getElementById("onb-chat");c.insertAdjacentHTML("beforeend",`<div class="bubble bot typing" id="onb-typing">yazıyor…</div>`);c.scrollTop=c.scrollHeight;ONB_BUSY=true;
+  try{const r=await fetch("/api/onboarding",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,messages:ONB_MSGS})});
+    const d=await r.json();ONB_BUSY=false;
+    if(d.reply){ONB_MSGS.push({rol:"bot",metin:d.reply})}
+    onbRender();onbScore(d.guven_skoru);
+  }catch(e){ONB_BUSY=false;document.getElementById("onb-typing")?.remove();
+    ONB_MSGS.push({rol:"bot",metin:"Bağlantı hatası, tekrar dener misin?"});onbRender()}}
+function onbSkip(){if(!confirm("Şimdilik atlayabilirsin ama bot seni tanımadan tavsiyeleri genel kalır. Yine de atlansın mı?"))return;
+  try{localStorage.setItem("bb_onb_skip_"+CUR_USER,"1")}catch(e){}
+  document.getElementById("onb").classList.remove("open");toast("Profilini Ayarlar'dan tamamlayabilirsin")}
+function onbFinish(){try{localStorage.setItem("bb_onb_skip_"+CUR_USER,"1")}catch(e){}
+  document.getElementById("onb").classList.remove("open");loaded.ayarlar=false;
+  toast("Teşekkürler, seni artık daha iyi tanıyorum");if(curTab==="ayarlar")loadAyarlar()}
+
+/* ============ AYARLAR (profil + hafıza) ============ */
+let MEM_FILTER="hepsi";
+async function loadAyarlar(){const el=document.getElementById("page-ayarlar");
+  if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
+  el.innerHTML=skel(3);
+  try{const [pf,mem]=await Promise.all([
+      fetch("/api/profile"+uq()).then(r=>r.json()).catch(()=>({})),
+      fetch("/api/memory"+uq()).then(r=>r.json()).catch(()=>({kategoriler:{}}))]);
+    let h=`<h2 style="font-size:22px;font-weight:700;margin-bottom:4px">Ayarlar</h2>
+      <div class="tick" style="margin-bottom:14px">Bot seni nasıl tanıyor + hafızası</div>`;
+    h+=profileHTML(pf);
+    h+=memoryHTML(mem);
+    el.innerHTML=h;
+  }catch(e){el.innerHTML=empty("Yüklenemedi")}}
+function profileHTML(p){
+  const skor=p.guven_skoru||0;
+  let h=`<div class="sec-title">Bot Seni Böyle Tanıyor</div>
+    <div class="prof-score"><div class="big">%${skor}</div>
+      <div class="prof-ring">Botun seni tanıma oranı</div></div>`;
+  if(p.alanlar&&p.alanlar.length){
+    h+=`<div class="prof-grid">`+p.alanlar.map(a=>`<div class="prof-cell"><div class="k">${esc(a.etiket)}</div><div class="v">${esc(a.deger)}</div></div>`).join("")+`</div>`;
+  }else{h+=empty("Henüz profil bilgin yok. 'Beni daha iyi tanı' ile başla.")}
+  if(p.eksik_alanlar&&p.eksik_alanlar.length){
+    h+=`<div class="card" style="margin-top:12px"><div class="tick" style="line-height:1.5">Daha iyi tavsiye verebilmem için şunları bilmem lazım: <b>${p.eksik_alanlar.map(esc).join(", ")}</b></div></div>`}
+  h+=`<div class="prof-btns">
+    <button class="prof-btn" onclick="onbStartManual()">Beni daha iyi tanı</button>
+    <button class="prof-btn" onclick="profEdit()">Profilimi düzelt</button>
+    <button class="prof-btn" onclick="profRisk()">Risk seviyemi güncelle</button></div>`;
+  return h}
+function onbStartManual(){openOnboarding({guven_skoru:0})}
+async function profRisk(){const v=prompt("Risk toleransın? (dusuk / orta / yuksek)");if(!v)return;
+  const rt=v.trim().toLowerCase();if(!["dusuk","orta","yuksek"].includes(rt)){toast("dusuk, orta veya yuksek yaz");return}
+  await profSave({risk_toleransi:rt})}
+async function profEdit(){const v=prompt("Ana yatırım hedefin nedir? (kısa yaz)");if(!v)return;await profSave({ana_hedef:v.trim()})}
+async function profSave(obj){try{await fetch("/api/profile/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,...obj})});
+  toast("Güncellendi");loaded.ayarlar=false;loadAyarlar()}catch(e){toast("Kaydedilemedi")}}
+let MEM_DATA=null;
+function memoryHTML(mem){MEM_DATA=mem;const kat=mem.kategoriler||{};
+  const adlar=["Öneriler","Kararlar","Sohbetler","Öğrendikleri"];
+  let h=`<div class="sec-title">Hafıza ve Geçmiş</div>`;
+  if(!mem.toplam){return h+empty("Bot henüz seninle ilgili bir şey hatırlamıyor.")}
+  h+=`<div class="mem-tabs"><button class="${MEM_FILTER==='hepsi'?'active':''}" onclick="memFilter('hepsi')">Hepsi</button>`+
+     adlar.map(a=>`<button class="${MEM_FILTER===a?'active':''}" onclick="memFilter('${a}')">${a}</button>`).join("")+`</div>`;
+  let items=[];adlar.forEach(a=>{if(MEM_FILTER==='hepsi'||MEM_FILTER===a)(kat[a]||[]).forEach(x=>items.push({...x,kat:a}))});
+  items.sort((x,y)=>(y.tarih||"").localeCompare(x.tarih||""));
+  if(!items.length)return h+empty("Bu kategoride kayıt yok");
+  h+=items.slice(0,60).map((x,i)=>{MEM_INDEX[x.id]=x;
+    const sc=x.sonuc?`<span class="chip ${/DOGRU|DOĞRU/.test(x.sonuc)?'green':/YANLIS|YANLIŞ/.test(x.sonuc)?'red':'gray'}">${esc(x.sonuc)}</span>`:"";
+    return`<div class="card" onclick="memDetail(${x.id})"><div class="row"><div class="name" style="font-size:14px">${esc(x.kat)}${x.ticker?` · ${esc(x.ticker)}`:""}</div><span class="tick">${esc(x.tarih)}</span></div>
+      <div class="pline" style="white-space:normal">${esc(x.ozet)} ${sc}</div></div>`}).join("");
+  h+=`<button class="prof-btn" style="width:100%;margin-top:12px" onclick="memClear()">Hafızamı temizle</button>`;
+  return h}
+let MEM_INDEX={};
+function memFilter(f){MEM_FILTER=f;loadAyarlar()}
+function memDetail(id){const x=MEM_INDEX[id];if(!x)return;
+  let ic=x.icerik;let det="";
+  if(ic&&typeof ic==="object"){det=Object.entries(ic).map(([k,v])=>`<div class="row" style="margin-top:6px"><span class="muted">${esc(k)}</span><b style="max-width:60%;text-align:right;font-weight:600">${esc(typeof v==="object"?JSON.stringify(v):v)}</b></div>`).join("")}
+  else det=`<div class="quote">${esc(ic||"")}</div>`;
+  ovShow(`<h2 style="font-size:20px;font-weight:700">${esc(x.kat)}${x.ticker?" · "+esc(x.ticker):""}</h2>
+    <div class="tick" style="margin-bottom:10px">${esc(x.tarih)}</div>${det}
+    ${x.sonuc?`<div class="sec-title">Sonuç</div><div class="quote">${esc(x.sonuc)}</div>`:""}`)}
+async function memClear(){if(!confirm("Botun seninle ilgili tüm hafızası silinecek. Emin misin?"))return;
+  try{await fetch("/api/memory/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER})});
+    toast("Hafıza temizlendi");loaded.ayarlar=false;loadAyarlar()}catch(e){toast("Silinemedi")}}
 
 /* klavye: input klavyenin altinda kalmasin (iOS Safari/standalone) */
 let kbActive=false;

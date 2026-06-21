@@ -17,6 +17,8 @@ CRON_TZ=Europe/Istanbul
 35 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_paper_trades >> /root/borsa-bot/logs/paper.log 2>&1
 # Haber-fiyat etkisi (30dk/2saat/1gun) doldur: her gece 23:40
 40 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_haber_etki >> /root/borsa-bot/logs/haber_etki.log 2>&1
+# Model portfoy guncel k/z: her gece 23:45
+45 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_model_portfoy >> /root/borsa-bot/logs/model_portfoy.log 2>&1
 # Hetzner haftalik snapshot: Pazar 23:00
 0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
 # Telegram komut yoklayici: her dakika

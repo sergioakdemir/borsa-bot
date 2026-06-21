@@ -8,6 +8,7 @@ Tablolar:
 
 DB dosyasi: data/borsa.db (*.db .gitignore'da).
 """
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -92,7 +93,71 @@ CREATE TABLE IF NOT EXISTS haber_etki (
     olusturma        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_haber_etki_hid ON haber_etki(haber_id);
+CREATE TABLE IF NOT EXISTS kullanici_profil (
+    kullanici_id        INTEGER PRIMARY KEY REFERENCES kullanici(id),
+    portfoy_buyuklugu   REAL,
+    aylik_birikim       REAL,
+    ek_sermaye_mumkun   INTEGER,
+    tecrube_seviyesi    TEXT,
+    risk_toleransi      TEXT,
+    panik_egilimi       TEXT,
+    yatirim_vadesi      TEXT,
+    nakit_ihtiyaci      TEXT,
+    nakit_ihtiyac_tarihi TEXT,
+    ana_hedef           TEXT,
+    kayip_toleransi_yuzde REAL,
+    ogrenme_seviyesi    TEXT,
+    aciklama_ister      INTEGER,
+    profil_guven_skoru  INTEGER DEFAULT 0,
+    eksik_alanlar       TEXT,
+    notlar              TEXT,
+    guncelleme_tarihi   TEXT
+);
+CREATE TABLE IF NOT EXISTS kullanici_hafiza (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
+    tip           TEXT NOT NULL,
+    icerik        TEXT,
+    tarih         TEXT NOT NULL,
+    ticker        TEXT,
+    sonuc         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_hafiza_kullanici ON kullanici_hafiza(kullanici_id, tip);
+CREATE TABLE IF NOT EXISTS model_portfoy (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    adet            REAL NOT NULL,
+    alis_fiyati     REAL NOT NULL,
+    alis_tarihi     TEXT NOT NULL,
+    guncel_fiyat    REAL,
+    kz_tl           REAL,
+    kz_yuzde        REAL,
+    durum           TEXT NOT NULL DEFAULT 'acik',
+    kapanis_fiyati  REAL,
+    kapanis_tarihi  TEXT,
+    karar_gerekce   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_model_ticker_durum ON model_portfoy(ticker, durum);
 """
+
+# Profil "cekirdek" alanlari - guven skoru bu alanlarin doluluk oranindan hesaplanir
+_PROFIL_CEKIRDEK = (
+    "portfoy_buyuklugu", "aylik_birikim", "risk_toleransi", "yatirim_vadesi",
+    "nakit_ihtiyaci", "panik_egilimi", "tecrube_seviyesi", "ana_hedef",
+    "kayip_toleransi_yuzde",
+)
+# Eksik alan -> kullaniciya gosterilecek Turkce etiket
+_PROFIL_ETIKET = {
+    "portfoy_buyuklugu": "portföy büyüklüğü",
+    "aylik_birikim": "aylık birikim",
+    "risk_toleransi": "risk toleransı",
+    "yatirim_vadesi": "yatırım vadesi",
+    "nakit_ihtiyaci": "nakit ihtiyacı",
+    "panik_egilimi": "panik eğilimi (düşüşte ne yaparsın)",
+    "tecrube_seviyesi": "tecrübe seviyesi",
+    "ana_hedef": "ana yatırım hedefi",
+    "kayip_toleransi_yuzde": "kayıp toleransı (%)",
+}
 
 
 def _now() -> str:
@@ -379,6 +444,182 @@ def list_haber_etki(limit: int = 500) -> list[dict]:
     with get_conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT * FROM haber_etki ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+# ---- kullanici profili ----
+def _profil_guven(p: dict) -> tuple[int, list[str]]:
+    """Cekirdek alanlarin doluluk oranindan 0-100 guven skoru + eksik etiketler."""
+    dolu, eksik = 0, []
+    for k in _PROFIL_CEKIRDEK:
+        v = p.get(k)
+        if v not in (None, "", []):
+            dolu += 1
+        else:
+            eksik.append(_PROFIL_ETIKET.get(k, k))
+    skor = round(dolu / len(_PROFIL_CEKIRDEK) * 100)
+    return skor, eksik
+
+
+def get_profile(kullanici_id) -> dict | None:
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM kullanici_profil WHERE kullanici_id=?",
+                      (kullanici_id,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    for k in ("eksik_alanlar", "notlar"):
+        if d.get(k):
+            try:
+                d[k] = json.loads(d[k])
+            except (ValueError, TypeError):
+                pass
+    return d
+
+
+_PROFIL_KOLONLAR = (
+    "portfoy_buyuklugu", "aylik_birikim", "ek_sermaye_mumkun", "tecrube_seviyesi",
+    "risk_toleransi", "panik_egilimi", "yatirim_vadesi", "nakit_ihtiyaci",
+    "nakit_ihtiyac_tarihi", "ana_hedef", "kayip_toleransi_yuzde", "ogrenme_seviyesi",
+    "aciklama_ister", "notlar",
+)
+
+
+def upsert_profile(kullanici_id, **alanlar) -> dict:
+    """Profili olusturur/gunceller (yalniz verilen, None olmayan alanlar). Guven
+    skoru + eksik alanlari yeniden hesaplar. Guncel profili dondurur."""
+    init_db()
+    mevcut = get_profile(kullanici_id) or {"kullanici_id": kullanici_id}
+    for k, v in alanlar.items():
+        if k in _PROFIL_KOLONLAR and v is not None:
+            mevcut[k] = json.dumps(v, ensure_ascii=False) if k == "notlar" and not isinstance(v, str) else v
+    # guven skoru icin notlar'i dict olarak degerlendirme (cekirdekte yok); ham dict kullan
+    skor, eksik = _profil_guven({k: mevcut.get(k) for k in _PROFIL_CEKIRDEK})
+    mevcut["profil_guven_skoru"] = skor
+    mevcut["eksik_alanlar"] = json.dumps(eksik, ensure_ascii=False)
+    mevcut["guncelleme_tarihi"] = _now()
+
+    cols = ["kullanici_id"] + [k for k in _PROFIL_KOLONLAR if k in mevcut] + \
+           ["profil_guven_skoru", "eksik_alanlar", "guncelleme_tarihi"]
+    cols = list(dict.fromkeys(cols))
+    vals = [mevcut.get(c) for c in cols]
+    ph = ", ".join("?" * len(cols))
+    upd = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "kullanici_id")
+    with get_conn() as c:
+        c.execute(f"INSERT INTO kullanici_profil ({', '.join(cols)}) VALUES ({ph}) "
+                  f"ON CONFLICT(kullanici_id) DO UPDATE SET {upd}", vals)
+    return get_profile(kullanici_id)
+
+
+# ---- kullanici hafizasi ----
+def add_memory(kullanici_id, tip, icerik, ticker=None, sonuc=None, tarih=None) -> int:
+    """Kullaniciyla ilgili bir hareketi/oneriyi/sohbeti hafizaya yazar.
+    icerik dict veya str olabilir (dict ise JSON'a cevrilir)."""
+    init_db()
+    if not isinstance(icerik, str):
+        icerik = json.dumps(icerik, ensure_ascii=False)
+    tarih = tarih or _now()
+    with get_conn() as c:
+        cur = c.execute(
+            "INSERT INTO kullanici_hafiza (kullanici_id, tip, icerik, tarih, ticker, sonuc) "
+            "VALUES (?,?,?,?,?,?)", (kullanici_id, tip, icerik, tarih, ticker, sonuc))
+        return cur.lastrowid
+
+
+def list_memory(kullanici_id, tip=None, limit: int = 200) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        if tip:
+            q = ("SELECT * FROM kullanici_hafiza WHERE kullanici_id=? AND tip=? "
+                 "ORDER BY id DESC LIMIT ?")
+            rows = c.execute(q, (kullanici_id, tip, limit))
+        else:
+            rows = c.execute("SELECT * FROM kullanici_hafiza WHERE kullanici_id=? "
+                             "ORDER BY id DESC LIMIT ?", (kullanici_id, limit))
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.get("icerik"):
+                try:
+                    d["icerik"] = json.loads(d["icerik"])
+                except (ValueError, TypeError):
+                    pass
+            out.append(d)
+        return out
+
+
+def memory_by_id(mem_id):
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM kullanici_hafiza WHERE id=?", (mem_id,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    if d.get("icerik"):
+        try:
+            d["icerik"] = json.loads(d["icerik"])
+        except (ValueError, TypeError):
+            pass
+    return d
+
+
+def clear_memory(kullanici_id) -> int:
+    init_db()
+    with get_conn() as c:
+        cur = c.execute("DELETE FROM kullanici_hafiza WHERE kullanici_id=?", (kullanici_id,))
+        return cur.rowcount
+
+
+# ---- model portfoy (botun kendi sanal portfoyu) ----
+def open_model_position(ticker, adet, alis_fiyati, karar_gerekce=None,
+                        alis_tarihi=None) -> int:
+    init_db()
+    alis_tarihi = alis_tarihi or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO model_portfoy
+                 (ticker, adet, alis_fiyati, alis_tarihi, guncel_fiyat, durum, karar_gerekce)
+               VALUES (?, ?, ?, ?, ?, 'acik', ?)""",
+            (str(ticker).upper().replace(".IS", ""), adet, alis_fiyati, alis_tarihi,
+             alis_fiyati, karar_gerekce))
+        return cur.lastrowid
+
+
+def get_open_model_position(ticker):
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM model_portfoy WHERE ticker=? AND durum='acik' "
+                      "ORDER BY id DESC LIMIT 1",
+                      (str(ticker).upper().replace(".IS", ""),)).fetchone()
+        return dict(r) if r else None
+
+
+def list_model_positions(durum=None, limit: int = 500) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        if durum:
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM model_portfoy WHERE durum=? ORDER BY id DESC LIMIT ?",
+                (durum, limit))]
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM model_portfoy ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+def update_model_running(pos_id, guncel_fiyat, kz_tl, kz_yuzde) -> None:
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE model_portfoy SET guncel_fiyat=?, kz_tl=?, kz_yuzde=? WHERE id=?",
+                  (guncel_fiyat, kz_tl, kz_yuzde, pos_id))
+
+
+def close_model_position(pos_id, kapanis_fiyati, kz_tl, kz_yuzde, tarih=None) -> None:
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        c.execute(
+            "UPDATE model_portfoy SET durum='kapali', kapanis_fiyati=?, guncel_fiyat=?, "
+            "kz_tl=?, kz_yuzde=?, kapanis_tarihi=? WHERE id=?",
+            (kapanis_fiyati, kapanis_fiyati, kz_tl, kz_yuzde, tarih, pos_id))
 
 
 if __name__ == "__main__":
