@@ -67,7 +67,8 @@ def _kap_yorum(ticker, haber):
         client = anthropic.Anthropic()
         resp = client.messages.create(
             model="claude-haiku-4-5", max_tokens=120,
-            system=("Sen tecrubeli bir Turk borsa uzmanisin. Verilen KAP bildiriminin "
+            system=("Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. "
+                    "Direkt ve net, gereksiz yumusatmazsin. Verilen KAP bildiriminin "
                     "bu hisse icin OLUMLU mu OLUMSUZ mu yoksa NOTR mu oldugunu 1-2 kisa "
                     "cumlede degerlendir; etkinin yonunu ve nedenini soyle. Sade Turkce, "
                     "jargon yok, markdown yok. Kesin al/sat tavsiyesi verme, veri uydurma."),

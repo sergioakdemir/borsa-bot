@@ -140,11 +140,13 @@ def evaluate_all(targets, overview=None, learning=None):
                               overview=overview, learning=learning)
 
 
-def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None):
+def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
+                  profil_uyari=None):
     """Kisa ozet + en iyi firsat + hisse basina tek satir.
 
     portfolio: bu kullanicinin portfoy ticker kumesi (None ise sel['portfolio'] =
     tum portfoyler birlesik). kullanici_ad verilirse baslik kisisellestirilir.
+    profil_uyari: profil guven skoru dusukse eklenecek nazik hatirlatma metni.
     """
     is_us = sel.get("market") in ("us", "abd")
     valid = [r for r in results if not r.get("skipped")]
@@ -292,6 +294,10 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     if tut:
         lines.append(f"\n⚪ TUT ({len(tut)}): " + ", ".join(
             _esc(r.get("ticker")) for r in tut[:14]))
+    # Profil guven skoru dusukse nazik hatirlatma (onboarding tamamlanmamis)
+    if profil_uyari:
+        lines.append("")
+        lines.append(profil_uyari)
     msg = "\n".join(lines)
     if len(msg) > 2800:                       # Telegram guvenli ust sinir (4096 limit)
         msg = msg[:2780].rsplit("\n", 1)[0] + "\n…"
@@ -410,8 +416,18 @@ def main(market="bist"):
                   for p in db.list_portfolio(u["id"]) if p.get("ticker")}
         except Exception:
             pf = set()
+        # Profil guven skoru <%85 -> onboarding tamamlanmamis, nazik hatirlatma
+        profil_uyari = None
+        try:
+            skor = (db.get_profile(u["id"]) or {}).get("profil_guven_skoru") or 0
+            if skor < 85:
+                profil_uyari = ("💡 Seni daha iyi tanırsam daha isabetli öneriler "
+                                "verebilirim. Uygulamada Ayarlar → Beni daha iyi tanı")
+        except Exception:
+            pass
         msg = build_message(results, sel, now, overview=overview,
-                            portfolio=pf, kullanici_ad=u.get("ad"))
+                            portfolio=pf, kullanici_ad=u.get("ad"),
+                            profil_uyari=profil_uyari)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
