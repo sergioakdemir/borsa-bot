@@ -808,7 +808,8 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
             allText+=(allText?"\n":"")+ev.paragraf;
             c.insertAdjacentHTML("beforeend",`<div class="bubble bot"><span>${esc(ev.paragraf)}</span></div>`);
             scrollChat();
-            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 14px;display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s infinite ease-in-out"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s .2s infinite ease-in-out"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s .4s infinite ease-in-out"></span></div>`);
+            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 16px;font-size:18px;letter-spacing:3px;color:var(--text2)">●●●</div>`);
+            if(!window._tdotTimer){window._tdotTimer=setInterval(()=>{const el=document.getElementById("typing");if(!el){clearInterval(window._tdotTimer);window._tdotTimer=null;return;}const states=["●○○","●●○","●●●","○●●","○○●"];window._tdotState=(window._tdotState||0+1)%states.length;el.textContent=states[window._tdotState];},300);}
             scrollChat();
           }
           if(ev.done){
