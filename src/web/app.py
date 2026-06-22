@@ -2522,3 +2522,92 @@ def api_news():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)
+
+
+def _build_chat_content(soru, profil_ozet, baglam, piyasa, hafiza_ozet, makro, gorseller=None):
+    """Sohbet mesaji icin content bloklari olusturur (metin + opsiyonel gorseller)."""
+    text_content = (
+        f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
+        f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
+        f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
+        f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
+        f"Makro: {json.dumps(makro, ensure_ascii=False)}\n\nSoru: {soru}"
+    )
+    if not gorseller:
+        return text_content
+    blocks = []
+    for g in gorseller[:15]:
+        try:
+            data = g.get("data", "")
+            mt = g.get("type", "image/jpeg")
+            if data:
+                blocks.append({"type": "image", "source": {"type": "base64", "media_type": mt, "data": data}})
+        except Exception:
+            continue
+    blocks.append({"type": "text", "text": text_content})
+    return blocks
+
+
+@app.route("/api/chat-stream", methods=["POST"])
+def api_ask_stream():
+    d = request.get_json(silent=True) or {}
+    soru = d.get("soru") or d.get("mesaj") or d.get("message", "")
+    kullanici = d.get("kullanici")
+    gorseller = d.get("gorseller")
+
+    def generate():
+        try:
+            import anthropic as _ant
+            # ask_bot ile ayni baglam hazirlama
+            bot_result = ask_bot(soru, kullanici, gorseller)
+            # ask_bot'u streaming icin yeniden cagirmak yerine direkt stream acariz
+            # Once baglami ask_bot ile hazirla, sonra stream et
+            uid = _uid(kullanici)
+            profil = db.get_profile(uid) if uid else None
+            profil_ozet = {k: profil.get(k) for k in ("ad","yas","risk_toleransi","yatirim_vadesi","deneyim_yili","ana_korku","dusus_tepkisi_10","dusus_tepkisi_20") if profil and profil.get(k)} if profil else {}
+            baglam = get_portfolio_context(kullanici) if kullanici else []
+            piyasa = _son_kararlar(limit=5)
+            makro = {}
+            try:
+                from src.news.macro import get_macro
+                makro = get_macro() or {}
+            except Exception:
+                pass
+            hafiza_ozet = []
+            if uid:
+                for m in db.list_memory(uid, limit=8):
+                    ic = m.get("icerik")
+                    oz = (ic.get("ozet") or ic.get("soru") or ic.get("karar") if isinstance(ic, dict) else str(ic))
+                    hafiza_ozet.append({"tip": m.get("tip"), "tarih": (m.get("tarih") or "")[:10], "ticker": m.get("ticker"), "ozet": _cap(str(oz or ""), 90)})
+
+            profil_obj = profil or {}
+            d10 = _PROFIL_DEGER_ETIKET.get(str(profil_obj.get("dusus_tepkisi_10")), profil_obj.get("dusus_tepkisi_10"))
+            d20 = _PROFIL_DEGER_ETIKET.get(str(profil_obj.get("dusus_tepkisi_20")), profil_obj.get("dusus_tepkisi_20"))
+            korku = _PROFIL_DEGER_ETIKET.get(str(profil_obj.get("ana_korku")), profil_obj.get("ana_korku"))
+            davranis_notu = ""
+            if any([d10, d20, korku]):
+                davranis_notu = (f"\n\nKullanicinin %10 dususte tepkisi: {d10 or 'bilinmiyor'}, %20 dususte tepkisi: {d20 or 'bilinmiyor'}, en buyuk korkusu: {korku or 'bilinmiyor'}.")
+
+            KARAR_TIPLERI = "AL, SAT, TUT, BEKLE, POZİSYON AZALT, POZİSYON ARTIR, KADEMELİ GİR, KADEMELİ ÇIK, STOP BELİRLE, NAKİTTE KAL, İZLEMEYE AL, PANİK SATIŞ YAPMA, MALİYET DÜŞÜRMEYİ DEĞERLENDİR, BU HİSSE SENİN PROFİLİNE UYGUN DEĞİL"
+            system_prompt = ("Sen kullanicinin kisisel 25 yillik borsa asistanisin. Sade, net, sicak Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. Yanitlarini SADECE verilen baglama dayandir; baglamda yoksa elimde bu konuda veri yok de, uydurma. Bu yatirim tavsiyesi degildir.\n\nCevabini kullanicinin PROFILINE gore uyarla. Net aksiyon icin: " + KARAR_TIPLERI + davranis_notu)
+
+            content_blocks = _build_chat_content(soru, profil_ozet, baglam, piyasa, hafiza_ozet, makro, gorseller)
+            client = _ant.Anthropic()
+            full_text = []
+            with client.messages.stream(model=_CHAT_MODEL, max_tokens=700, system=system_prompt, messages=[{"role": "user", "content": content_blocks}]) as stream:
+                for text in stream.text_stream:
+                    full_text.append(text)
+                    yield "data: " + json.dumps({"delta": text}, ensure_ascii=False) + "\n\n"
+
+            cevap = "".join(full_text)
+            cevap = re.sub(r"[#*`_]+", "", cevap).strip()
+            if uid:
+                try:
+                    db.add_memory(uid, "sohbet", {"soru": soru[:300], "cevap": cevap[:600], "ozet": _cap(soru, 90)})
+                except Exception:
+                    pass
+            yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
+        except Exception as e:
+            yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+
+    return app.response_class(generate(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
