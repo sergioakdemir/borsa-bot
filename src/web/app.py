@@ -1561,27 +1561,40 @@ def _risk_sebep(rec: dict) -> str:
     return "; ".join(parts) or (rec.get("risk", {}) or {}).get("message", "").rstrip(".") or "—"
 
 
+# Kategori -> Unsplash temsili gorsel (API key gerekmez; dogrudan URL).
+_UNSPLASH = {
+    "Jeopolitik": "https://images.unsplash.com/photo-1580060839134-75a5edca2e99?w=600",
+    "Makro": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=600",
+    "Enerji/Sektör": "https://images.unsplash.com/photo-1518186285589-2f7649de83e0?w=600",
+    "Şirket": "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=600",
+    "Piyasa": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=600",
+}
+
+
 def _haber_gorsel(baslik: str):
-    """Haber kategorisi -> ikon + gradient (kategori bazli temsili gorsel)."""
+    """Haber kategorisi -> ikon + gradient + temsili gorsel (Unsplash URL)."""
     t = _norm(baslik or "")
     if any(w in t for w in ("savas", "ates", "hurmuz", "iran", "israil", "jeopolit",
                             "saldiri", "ambargo", "gerilim", "catisma")):
-        return {"kategori": "Jeopolitik", "ikon": "◆",
-                "gradient": "linear-gradient(140deg,#1a0f0f 0%,#7f1d1d 60%,#b45309 100%)"}
-    if any(w in t for w in ("faiz", "enflasyon", "tufe", "dolar", "kur", "merkez",
-                            "tcmb", "fed", "makro", "buyume", "resesyon")):
-        return {"kategori": "Makro", "ikon": "▦",
-                "gradient": "linear-gradient(140deg,#0b1220 0%,#1e3a8a 60%,#5b21b6 100%)"}
-    if any(w in t for w in ("petrol", "enerji", "dogalgaz", "elektrik", "celik",
-                            "emtia", "altin", "gumus")):
-        return {"kategori": "Enerji/Sektör", "ikon": "⬡",
-                "gradient": "linear-gradient(140deg,#1a1206 0%,#92400e 55%,#d97706 100%)"}
-    if any(w in t for w in ("bilanco", "kar", "temettu", "ihrac", "sozlesme", "yatirim",
-                            "fabrika", "satin alma", "birlesme", "hat", "siparis")):
-        return {"kategori": "Şirket", "ikon": "▲",
-                "gradient": "linear-gradient(140deg,#06120e 0%,#064e3b 55%,#0f766e 100%)"}
-    return {"kategori": "Piyasa", "ikon": "◉",
-            "gradient": "linear-gradient(140deg,#0c0f1a 0%,#3730a3 55%,#1e40af 100%)"}
+        kat, ikon, grad = ("Jeopolitik", "◆",
+                           "linear-gradient(140deg,#1a0f0f 0%,#7f1d1d 60%,#b45309 100%)")
+    elif any(w in t for w in ("faiz", "enflasyon", "tufe", "dolar", "kur", "merkez",
+                              "tcmb", "fed", "makro", "buyume", "resesyon")):
+        kat, ikon, grad = ("Makro", "▦",
+                           "linear-gradient(140deg,#0b1220 0%,#1e3a8a 60%,#5b21b6 100%)")
+    elif any(w in t for w in ("petrol", "enerji", "dogalgaz", "elektrik", "celik",
+                              "emtia", "altin", "gumus")):
+        kat, ikon, grad = ("Enerji/Sektör", "⬡",
+                           "linear-gradient(140deg,#1a1206 0%,#92400e 55%,#d97706 100%)")
+    elif any(w in t for w in ("bilanco", "kar", "temettu", "ihrac", "sozlesme", "yatirim",
+                              "fabrika", "satin alma", "birlesme", "hat", "siparis")):
+        kat, ikon, grad = ("Şirket", "▲",
+                           "linear-gradient(140deg,#06120e 0%,#064e3b 55%,#0f766e 100%)")
+    else:
+        kat, ikon, grad = ("Piyasa", "◉",
+                           "linear-gradient(140deg,#0c0f1a 0%,#3730a3 55%,#1e40af 100%)")
+    return {"kategori": kat, "ikon": ikon, "gradient": grad,
+            "img": _UNSPLASH.get(kat, _UNSPLASH["Şirket"])}
 
 
 def _mini_view(rec: dict, ozet_limit: int = 160) -> dict:
