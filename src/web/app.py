@@ -2537,14 +2537,16 @@ def api_ask_stream():
     kullanici = d.get("kullanici")
     @stream_with_context
     def generate():
+        import time as _time
         result = ask_bot(soru, kullanici)
         cevap = result.get("cevap", "Yanit uretemedi.")
-        import time as _time
-        words = cevap.split(" ")
-        for i, word in enumerate(words):
-            chunk = word + (" " if i < len(words)-1 else "")
-            yield "data: " + json.dumps({"delta": chunk}, ensure_ascii=False) + "\n\n"
-            _time.sleep(0.03)
+        paragraflar = [p.strip() for p in cevap.split("\n") if p.strip()]
+        if not paragraflar:
+            paragraflar = [cevap]
+        for i, para in enumerate(paragraflar):
+            yield "data: " + json.dumps({"paragraf": para}, ensure_ascii=False) + "\n\n"
+            if i < len(paragraflar) - 1:
+                _time.sleep(1.2)
         yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
     return app.response_class(generate(), mimetype="text/event-stream",
                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Transfer-Encoding": "chunked"})
