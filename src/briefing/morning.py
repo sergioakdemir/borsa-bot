@@ -44,6 +44,74 @@ def _esc(s):
     return html.escape(str(s or ""))
 
 
+def _kisa_gerekce(r, limit=100):
+    """Karar gerekcesini tek satira indirir, kelime sinirinda max `limit` karakter."""
+    g = " ".join((r.get("gerekce") or "").split())
+    if not g:
+        return ""
+    if len(g) > limit:
+        g = g[:limit].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+    return g
+
+
+def _zarar_uyarilari(uid, results):
+    """Kullanicinin portfoyundeki zarardaki pozisyonlar icin uyari listesi.
+
+    -%5'i gecen -> ('DIKKAT', hisse, %), -%10'u gecen -> ('KRITIK', hisse, %).
+    Guncel fiyat once brifingde analiz edilen recs'ten (son_kapanis), yoksa
+    BIST icin intraday_change'ten alinir. USD pozisyonlarda yalniz recs kullanilir
+    (alis ile ayni para birimi olmasi icin)."""
+    from src.db import database as db
+    from src.alerts.engine import intraday_change
+
+    fiyat = {}
+    for r in (results or []):
+        if r.get("skipped"):
+            continue
+        t = (r.get("ticker") or "").upper()
+        sk = (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis")
+        if t and sk:
+            fiyat[t] = sk
+
+    uyarilar = []
+    try:
+        pozisyonlar = db.list_portfolio(uid)
+    except Exception:
+        return uyarilar
+    for p in pozisyonlar:
+        tkr = (p.get("ticker") or "").upper().replace(".IS", "")
+        birim = (p.get("para_birimi") or "TL").upper()
+        alis = p.get("alim_fiyati") or 0.0
+        guncel = fiyat.get(tkr)
+        if guncel is None and birim != "USD":
+            try:
+                info = intraday_change(tkr)
+                guncel = info["last_close"] if info else None
+            except Exception:
+                guncel = None
+        if not alis or guncel is None:
+            continue
+        kz_y = (guncel - alis) / alis * 100
+        if kz_y <= -10:
+            uyarilar.append(("KRITIK", tkr, kz_y))
+        elif kz_y <= -5:
+            uyarilar.append(("DIKKAT", tkr, kz_y))
+    uyarilar.sort(key=lambda u: u[2])      # en cok zararda olan once
+    return uyarilar
+
+
+def _zarar_satirlari(uyarilar):
+    """Zarar uyarilarini Telegram satirlarina cevirir."""
+    lines = []
+    for seviye, tkr, kz_y in uyarilar:
+        if seviye == "KRITIK":
+            lines.append(f"🔴 <b>KRİTİK: {_esc(tkr)} -%{abs(kz_y):.1f} zararda</b>, "
+                         "pozisyonu gözden geçir")
+        else:
+            lines.append(f"⚠️ <b>DİKKAT: {_esc(tkr)} -%{abs(kz_y):.1f} zararda</b>")
+    return lines
+
+
 _TR_AYLAR = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
 
@@ -141,7 +209,7 @@ def evaluate_all(targets, overview=None, learning=None):
 
 
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
-                  profil_uyari=None):
+                  profil_uyari=None, zarar_uyarilari=None):
     """Kisa ozet + en iyi firsat + hisse basina tek satir.
 
     portfolio: bu kullanicinin portfoy ticker kumesi (None ise sel['portfolio'] =
@@ -236,6 +304,11 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
         except Exception:
             pass
 
+    # ZARAR UYARISI (kisisel): portfoyde -%5/-%10 esigini gecen pozisyonlar
+    if zarar_uyarilari:
+        lines.append("")
+        lines += _zarar_satirlari(zarar_uyarilari)
+
     # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
     cand = [r for r in valid if r["final_decision"] != "VETO"]
     cand.sort(key=lambda r: (r["final_decision"] == "AL", r.get("score") or 0), reverse=True)
@@ -256,8 +329,12 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
 
     def _satir(r, varsayilan="⚪"):
         emoji = _EMOJI.get(r["final_decision"], varsayilan)
-        return (f"{emoji} <b>{_esc(r.get('ticker') or r.get('symbol'))}</b> "
-                f"{r['final_label']} · {r['score']}/10 · risk {r['risk']['score']}")
+        satir = (f"{emoji} <b>{_esc(r.get('ticker') or r.get('symbol'))}</b> "
+                 f"{r['final_label']} · {r['score']}/10 · risk {r['risk']['score']}")
+        g = _kisa_gerekce(r)
+        if g:
+            satir += f"\n   <i>{_esc(g)}</i>"
+        return satir
 
     pf_rows = [r for r in valid if _in_pf(r)]
     firsat = [r for r in valid if not _in_pf(r) and r["final_decision"] == "AL"]
@@ -425,9 +502,13 @@ def main(market="bist"):
                                 "verebilirim. Uygulamada Ayarlar → Beni daha iyi tanı")
         except Exception:
             pass
+        try:
+            zarar_uy = _zarar_uyarilari(u["id"], results)
+        except Exception:
+            zarar_uy = []
         msg = build_message(results, sel, now, overview=overview,
                             portfolio=pf, kullanici_ad=u.get("ad"),
-                            profil_uyari=profil_uyari)
+                            profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"

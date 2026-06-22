@@ -1602,6 +1602,8 @@ def _mini_view(rec: dict, ozet_limit: int = 160) -> dict:
         "summary": cardtext, "action": st["actionText"],
         "risk": st["risk"], "risk_renk": st["risk_renk"], "riskReason": st["riskReason"],
         "skor": rec.get("score"),
+        # "neden ilginc?" -> AI'nin neden_simdi alani (radar kartinda kisa not)
+        "neden": _cap(rec.get("neden_simdi") or "", 80),
     }
 
 
@@ -1937,6 +1939,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
 
+    # GUNLUK PLAN niyeti: "bugun ne yapmaliyim / bugunku plan nedir" vb.
+    plan_modu = bool(re.search(
+        r"bug[uü]n.*(ne yap|yapmal[ıi]|plan)|bug[uü]nk[uü]\s+plan|g[uü]nl[uü]k\s+plan",
+        soru, re.I))
+
     # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi ---
     try:
         from src.web import code_mode
@@ -1998,6 +2005,20 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         piyasa.append({"hisse": t, "karar": r.get("final_decision"),
                        "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
                        "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
+
+    # GUNLUK PLAN: radardaki firsatlar (AL sinyalleri, puana gore en iyi 3)
+    radar_firsatlar = []
+    if plan_modu:
+        for t, r in comm.items():
+            if r.get("skipped"):
+                continue
+            if _karar5(r.get("final_decision"))[0] == "AL":
+                radar_firsatlar.append({
+                    "hisse": t, "puan": r.get("score"),
+                    "neden": _cap(r.get("neden_simdi")
+                                  or _ilk_cumleler(r.get("gerekce", ""), 1), 80)})
+        radar_firsatlar.sort(key=lambda x: x.get("puan") or 0, reverse=True)
+        radar_firsatlar = radar_firsatlar[:3]
     try:
         from src.news.macro import get_macro
         makro = get_macro()
@@ -2067,7 +2088,23 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         f"Portfoy genel analizi: {json.dumps(portfoy_analiz, ensure_ascii=False)}\n"
         f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
         f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
-        f"Makro: {json.dumps(makro, ensure_ascii=False)}")
+        f"Makro: {json.dumps(makro, ensure_ascii=False)}"
+        + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
+           if plan_modu else ""))
+
+    plan_notu = ""
+    if plan_modu:
+        plan_notu = (
+            "\n\nGUNLUK PLAN MODU — kullanici bugun ne yapmasi gerektigini soruyor. "
+            "Su sirayla, KISA ve net ver (baslik yazma, dogal cumlelerle):\n"
+            "1) Portfoyundeki ZARARDAKI pozisyonlar (varsa hisse + zarar%); yoksa "
+            "'portfoyunde belirgin zararda pozisyon yok' de.\n"
+            "2) Radardaki firsatlar (yukaridaki 'Radar firsatlari (AL)' listesinden, "
+            "en fazla 3 hisse, neden ilginc kisaca).\n"
+            "3) Gunun piyasa durumu (makro + genel havadan 1 cumle).\n"
+            "Sonunda MUTLAKA 'Bugün şunu yap:' satiriyla baslayan, NET 3 maddelik "
+            "aksiyon listesi ver (her madde tek satir, somut). SADECE verilen baglami "
+            "kullan, veri uydurma.")
 
     sistem = (
         "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani ve "
@@ -2104,7 +2141,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
         "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
         "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
-        "sekilde yonetilir.)" + davranis_notu + baglam_metni)
+        "sekilde yonetilir.)" + plan_notu + davranis_notu + baglam_metni)
 
     # Konusma gecmisi (ayni oturum, frontend'den): user/assistant siralamasi
     mesajlar = []
@@ -2122,7 +2159,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         import anthropic
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_CHAT_MODEL, max_tokens=400,
+            model=_CHAT_MODEL, max_tokens=700 if plan_modu else 400,
             system=sistem,
             messages=mesajlar,
         )

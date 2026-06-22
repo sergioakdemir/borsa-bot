@@ -764,6 +764,7 @@ function radarCard(s){const k=reg(s);
     <div class="row"><div><div class="name">${esc(s.isim)}${mtag(s.market)}</div><div class="tick">${esc(s.ticker)}</div></div>
       <div style="display:flex;align-items:center;gap:10px">${priceBlock(s)}${pill(s.etiket,s.renk)}</div></div>
     ${(s.cardText||s.summary)?`<div class="cardtext">${esc(s.cardText||s.summary)}</div>`:""}
+    ${s.neden?`<div class="why">💡 ${esc(s.neden)}</div>`:""}
     ${statusLine(s)}</div>`}
 function flt(a){return RADAR_FILTER==="all"?a:a.filter(s=>(s.market||"bist")===RADAR_FILTER)}
 function renderRadar(){const b=document.getElementById("radar-body");if(!RADAR_DATA)return;
