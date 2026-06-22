@@ -2546,7 +2546,7 @@ def api_ask_stream():
         for i, para in enumerate(paragraflar):
             yield "data: " + json.dumps({"paragraf": para}, ensure_ascii=False) + "\n\n"
             if i < len(paragraflar) - 1:
-                _time.sleep(1.2)
+                _time.sleep(2.0)
         yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
     return app.response_class(generate(), mimetype="text/event-stream",
                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Transfer-Encoding": "chunked"})

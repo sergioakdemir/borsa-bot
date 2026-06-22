@@ -801,15 +801,17 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
         try{const ev=JSON.parse(line.slice(5).trim());
           if(ev.paragraf){
             document.getElementById("typing")?.remove();
-            allText+=(allText?" ":"")+ev.paragraf;
-            c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:ev.paragraf}));
+            allText+=(allText?"\n":"")+ev.paragraf;
+            c.insertAdjacentHTML("beforeend",`<div class="bubble bot"><span>${esc(ev.paragraf)}</span></div>`);
             scrollChat();
-            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing"><span style="opacity:.5;letter-spacing:2px">···</span></div>`);
+            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 14px"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></div>`);
             scrollChat();
           }
           if(ev.done){
             document.getElementById("typing")?.remove();
+            c.insertAdjacentHTML("beforeend",`<div style="margin:-4px 0 6px 4px"><button onclick="navigator.clipboard.writeText(${JSON.stringify(allText)})" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:12px;padding:4px 10px;cursor:pointer">Kopyala</button></div>`);
             CHAT.push({rol:"bot",metin:allText});
+            scrollChat();
           }
         }catch(e){}
       }
