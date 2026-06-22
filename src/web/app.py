@@ -1424,7 +1424,8 @@ def _karar5(fd: str):
     d = (fd or "").upper()
     return {
         "AL": ("AL", "green"), "AL_TEMKINLI": ("BEKLE", "yellow"),
-        "TUT": ("TUT", "yellow"), "VETO": ("BEKLE", "yellow"),
+        "TUT": ("TUT", "yellow"), "BEKLE": ("BEKLE", "yellow"),
+        "VETO": ("BEKLE", "yellow"),
         "SAT": ("AZALT", "red"), "GUCLU_SAT": ("SAT", "red"),
     }.get(d, ("TUT", "yellow"))
 
@@ -1949,13 +1950,20 @@ def ask_bot(soru: str, kullanici=None) -> dict:
                                        profil.get("dusus_tepkisi_20"))
         korku = _PROFIL_DEGER_ETIKET.get(str(profil.get("ana_korku")),
                                          profil.get("ana_korku"))
-        if any([d10, d20, korku]):
+        risk_t = _PROFIL_DEGER_ETIKET.get(str(profil.get("risk_tercihi")),
+                                          profil.get("risk_tercihi"))
+        if any([d10, d20, korku, risk_t]):
             davranis_notu = (
-                f"\n\nKullanicinin %10 dususte tepkisi: {d10 or 'bilinmiyor'}, "
-                f"%20 dususte tepkisi: {d20 or 'bilinmiyor'}, en buyuk korkusu: "
-                f"{korku or 'bilinmiyor'}. Bu bilgileri kararinda MUTLAKA kullan; "
-                "ornegin panikle satma egilimi varsa dususte sakin kalmasi icin "
-                "yonlendir, korkusunu hafifletecek somut bir plan ver.")
+                f"\n\nKULLANICI DAVRANIS PROFILI — kararinda MUTLAKA kullan:\n"
+                f"%10 dususte tepkisi: {d10 or 'bilinmiyor'}, %20 dususte: "
+                f"{d20 or 'bilinmiyor'}, ana korkusu: {korku or 'bilinmiyor'}, "
+                f"risk tercihi: {risk_t or 'bilinmiyor'}.\n"
+                "- SAT onerirken kullanici PANIKCIYSE (dususte satar / panik egilimi "
+                "yuksek) once 'panik satisi yapma, once plan yap' uyarisi ver.\n"
+                "- AL onerirken RISK TOLERANSI DUSUKSE (az_kazanc_az_risk / dusuk) "
+                "'kademeli giris oner, tek seferde girme' de.\n"
+                "- Kullanicinin portfoyundeki ZARARDAKI pozisyonlar icin maliyeti HER "
+                "ZAMAN goz onunde bulundur (realize etmek / ortalama dusurmek / beklemek).")
 
     KARAR_TIPLERI = ("AL, SAT, TUT, BEKLE, POZİSYON AZALT, POZİSYON ARTIR, KADEMELİ GİR, "
                      "KADEMELİ ÇIK, STOP BELİRLE, NAKİTTE KAL, İZLEMEYE AL, PANİK SATIŞ "

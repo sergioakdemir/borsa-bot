@@ -36,8 +36,12 @@ MAX_TOKENS = 1000
 
 SYSTEM = (
     "Sen 25 yillik tecrubeli bir Turk borsa uzmanisin. Jargon kullanma "
-    "(RSI/MACD yasak). Net karar ver: AL/TUT/SAT. Gerekceni 2-3 cumlede soyle. "
-    "Veri yoksa yorum yapma. Hata yaparsan kabul et.\n\n"
+    "(RSI/MACD yasak). Net karar ver: AL/TUT/SAT/BEKLE. Gerekceni 2-3 cumlede soyle. "
+    "Veri yoksa yorum yapma. Hata yaparsan kabul et.\n"
+    "BEKLE karari: Yon belirsiz, kritik bir veri/katalizor bekleniyor ya da sinyal "
+    "olgunlasmadiysa BEKLE de. BEKLE secersen 'tekrar_bak_kosulu' alanina hangi "
+    "somut kosul olusunca tekrar bakilmasi gerektigini yaz (orn. 'fiyat 50 gunluk "
+    "ortalamayi yukari gecerse' veya 'bilanco aciklaninca'). Diger kararlarda bu alan bos.\n\n"
     "JEOPOLITIK/MAKRO HABER YONU: Jeopolitik haberin yonunu analiz et. Olumsuz haber "
     "+ dogrudan etki = riski artir. Olumlu haber + dogrudan fayda = riski azalt. "
     "Haberin icerigini OKU, sadece 'jeopolitik haber var' deme.\n"
@@ -57,11 +61,17 @@ SYSTEM = (
     "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
     "konsensus puani destekler; senin teknik gorusunle celisiyorsa nedenini kisaca "
     "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de.\n\n"
-    "TEMEL VERILER: Veride 'temel_veriler' varsa sirketin mali sagligini da yorumla "
-    "(F/K, PD/DD, ROE, kar marji, borc/ozsermaye, gelir buyumesi, FAVOK marji). "
-    "Yuksek F/K/PD/DD pahalilik, dusuk ve pozitif degerler ucuzluk/saglam karlilik "
-    "isaret edebilir; yuksek borc/ozsermaye riski artirir; gelir buyumesi ve marjlar "
-    "olumlu sinyaldir. Sade dille (jargon yok) acikla; sayilari girdiden birebir al.\n\n"
+    "SIRKET SAGLIGI (AGIRLIK ~%40): Veride 'sirket_sagligi' varsa bu sirketin FINANSAL "
+    "SAGLIGINI bu verilerle degerlendir ve kararinin yaklasik %40'ini buna dayandir "
+    "(teknik/haber kalan %60). Alanlar: F/K (fk), ROE (roe_%), kar marji (kar_marji_%), "
+    "borc/ozsermaye (borc_ozsermaye), gelir buyumesi (gelir_buyume_%), FAVOK marji "
+    "(favok_marji_%). Yorum: dusuk-pozitif F/K ucuzluk; yuksek ROE ve kar/FAVOK marji "
+    "saglam karlilik; pozitif gelir buyumesi olumlu; yuksek borc/ozsermaye riski artirir. "
+    "Saglam bilanco AL'i destekler, zayif bilanco (zarar, asiri borc, daralan gelir) "
+    "AL'i frenler ve riski artirir. Eger 'sirket_sagligi' degeri 'bilanço verisi eksik' "
+    "ise bunu acikca belirt ('bilanco verisi eksik, finansal saglik degerlendirilemedi') "
+    "ve UYDURMA; kararini teknik+habere agirlik vererek ver. Sayilari girdiden birebir "
+    "al, jargon kullanma.\n\n"
     "HACIM ANOMALISI: Veride 'hacim_anomalisi' varsa degerlendir. Bugunku hacim son 5 "
     "gun ortalamasinin kac kati (kat) ve seviye (NORMAL/YUKSEK/COK YUKSEK). Yuksek "
     "hacim, fiyat hareketine veya bir habere guclu katilim/ilgi demektir; yonu (yukari/"
@@ -440,13 +450,16 @@ from pydantic import BaseModel, Field
 
 
 class Verdict(BaseModel):
-    karar: Literal["AL", "TUT", "SAT"] = Field(description="Net karar")
+    karar: Literal["AL", "TUT", "SAT", "BEKLE"] = Field(description="Net karar")
     puan: int = Field(description="1-10 puan; 10 en olumlu")
     risk: int = Field(description="1-10 risk; 10 en riskli")
     eminlik: Literal["Düşük", "Orta", "Yüksek"] = Field(description="Yorum eminligi")
     gerekce: str = Field(description="2-3 cumle gerekce; sadece verilen veriden")
     neden_simdi: str = Field(description="Bu durum neden BUGUN dikkate deger")
     fiyatlanmis_mi: bool = Field(description="Haber/durum fiyata yansimis mi")
+    tekrar_bak_kosulu: str = Field(
+        default="", description="Karar BEKLE ise: hangi kosul olusunca tekrar bakilmali "
+                               "(orn. 'fiyat 50 gunluk ortalamayi gecerse'). Diger kararlarda bos.")
 
 
 def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
@@ -462,7 +475,7 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
     return resp.parsed_output
 
 
-_LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
+_LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT", "BEKLE": "BEKLE"}
 
 
 # Verdict pydantic semasinin Batch API icin acik JSON-schema karsiligi
@@ -470,7 +483,7 @@ _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT"}
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
-        "karar": {"type": "string", "enum": ["AL", "TUT", "SAT"],
+        "karar": {"type": "string", "enum": ["AL", "TUT", "SAT", "BEKLE"],
                   "description": "Net karar"},
         "puan": {"type": "integer",
                  "description": "1-10 arasi puan; 10 en olumlu (kesinlikle 1-10)"},
@@ -484,9 +497,12 @@ VERDICT_SCHEMA = {
                         "description": "Bu durum neden BUGUN dikkate deger"},
         "fiyatlanmis_mi": {"type": "boolean",
                            "description": "Haber/durum fiyata yansimis mi"},
+        "tekrar_bak_kosulu": {"type": "string",
+                              "description": "Karar BEKLE ise hangi kosulda tekrar "
+                                             "bakilmali; diger kararlarda bos string"},
     },
     "required": ["karar", "puan", "risk", "eminlik", "gerekce", "neden_simdi",
-                 "fiyatlanmis_mi"],
+                 "fiyatlanmis_mi", "tekrar_bak_kosulu"],
     "additionalProperties": False,
 }
 
@@ -550,10 +566,14 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         "kap_bildirimleri_30g": news["bildirimler"],
         "haberler_son": news["haberler"],
     }
+    # Sirket sagligi (~%40 agirlik): bilanco metrikleri. Veri yoksa "bilanço verisi eksik".
+    _saglik_alanlar = ("fk", "roe_%", "kar_marji_%", "borc_ozsermaye",
+                       "gelir_buyume_%", "favok_marji_%")
     if temel.get("available"):
-        payload["temel_veriler"] = {k: temel[k] for k in (
-            "fk", "pddd", "roe_%", "kar_marji_%", "borc_ozsermaye",
-            "gelir_buyume_%", "favok_marji_%") if temel.get(k) is not None}
+        saglik = {k: temel[k] for k in _saglik_alanlar if temel.get(k) is not None}
+        payload["sirket_sagligi"] = saglik if saglik else "bilanço verisi eksik"
+    else:
+        payload["sirket_sagligi"] = "bilanço verisi eksik"
     if hacim_anom.get("available"):
         payload["hacim_anomalisi"] = {
             "bugun_hacim": hacim_anom.get("bugun_hacim"),
@@ -627,6 +647,21 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         gozlemler.append(
             f"{len(news['haberler'])} taze haber; fiyatlanmis_mi={v.fiyatlanmis_mi}")
 
+    # --- Karar tipine gore aksiyon + stop-loss (deterministik) ---
+    son_kapanis = sig.get("son_kapanis")
+    aksiyon = None
+    stop_loss_seviyesi = None
+    tekrar_bak_kosulu = (getattr(v, "tekrar_bak_kosulu", "") or "").strip()
+    if final_decision == "AL" and v.risk >= 7:
+        aksiyon = "Kademeli gir, tek seferde değil"
+    elif final_decision in ("SAT", "GUCLU_SAT"):
+        aksiyon = "Kademeli çık (özellikle büyük pozisyonda)"
+    elif final_decision == "BEKLE":
+        aksiyon = tekrar_bak_kosulu or "Koşullar netleşince tekrar değerlendir"
+    elif final_decision == "TUT" and son_kapanis:
+        # Stop-loss: guncel fiyatin -%8'i (alis fiyati bilinmiyorsa referans guncel)
+        stop_loss_seviyesi = round(son_kapanis * 0.92, 2)
+
     return {
         "ticker": ticker,
         "symbol": sig["sembol"],
@@ -648,6 +683,9 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "vetoed": vetoed,
         "final_decision": final_decision,
         "final_label": final_label,
+        "aksiyon": aksiyon,
+        "stop_loss_seviyesi": stop_loss_seviyesi,
+        "tekrar_bak_kosulu": tekrar_bak_kosulu or None,
         "gozlemler": gozlemler,
         "haber_sayisi": len(news["haberler"]),
         "haberler": news["haberler"],
