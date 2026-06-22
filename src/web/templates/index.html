@@ -791,7 +791,7 @@ function askPreset(p){document.getElementById("chat-text").value=p;sendChat()}
 async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
   inp.value="";CHAT.push({rol:"user",metin:q});const c=document.getElementById("chat");
   c.insertAdjacentHTML("beforeend",renderBubble({rol:"user",metin:q}));
-  c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing"><span style="opacity:.5">...</span></div>`);scrollChat();
+  c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="opacity:.6;font-style:italic;font-size:13px">yazıyor...</div>`);scrollChat();
   try{
     const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER})});
     const reader=resp.body.getReader();const dec=new TextDecoder();
