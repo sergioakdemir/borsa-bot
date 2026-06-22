@@ -199,10 +199,13 @@
   .copy-btn{align-self:flex-start;background:var(--card2);border:1px solid var(--border);color:var(--muted2);
     border-radius:8px;padding:4px 10px;font-size:11.5px;font-weight:600;margin-top:-4px;margin-bottom:4px;min-height:28px}
   .copy-btn:active{opacity:.7}
+  .copy-btn.ok{color:var(--green);border-color:var(--green)}
   .chat-input{position:fixed;left:0;right:0;z-index:34;display:none;gap:9px;padding:10px 14px;
     bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
     background:rgba(7,10,15,.94);backdrop-filter:blur(18px);border-top:1px solid var(--border)}
   body.kb .chat-input{bottom:var(--kb)}
+  /* sohbet alani input kutusunun arkasinda kalmasin: son mesaj her zaman ustte gorunur */
+  #page-sor{padding-bottom:88px}
   body.kb #page-sor{padding-bottom:calc(var(--kb) + 64px)}
   .chat-input.on{display:flex}
   .chat-input input{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
@@ -757,7 +760,22 @@ function loadSor(){const el=document.getElementById("page-sor");
   el.innerHTML=`<div class="presets">${PRESETS.map(p=>`<button class="preset" onclick="askPreset(this.textContent)">${esc(p)}</button>`).join("")}</div>
     <div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Portföyün, hisselerin ve piyasa görünümü hakkında soru sorabilirsin. Cevaplar elimizdeki güncel verilere göre hazırlanır.</div>`}</div>`;
   scrollChat()}
-function renderBubble(m){return`<div class="bubble ${m.rol}">${esc(m.metin)}</div>`}
+function renderBubble(m){
+  if(m.rol==="bot"){
+    return`<div class="bubble-wrap"><div class="bubble bot">${esc(m.metin)}</div>`+
+           `<button class="copy-btn" onclick="copyMsg(this)">Kopyala</button></div>`;}
+  return`<div class="bubble ${m.rol}">${esc(m.metin)}</div>`}
+function copyMsg(btn){
+  const bubble=btn.parentElement.querySelector(".bubble");
+  const text=bubble?bubble.innerText:"";
+  const done=()=>{btn.textContent="✓ Kopyalandı";btn.classList.add("ok");
+    setTimeout(()=>{btn.textContent="Kopyala";btn.classList.remove("ok")},2000)};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>{copyFallback(text);done()});
+  }else{copyFallback(text);done()}}
+function copyFallback(t){try{const ta=document.createElement("textarea");ta.value=t;
+  ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();
+  document.execCommand("copy");document.body.removeChild(ta)}catch(e){}}
 function scrollChat(){const m=document.querySelector("main");if(m)m.scrollTop=m.scrollHeight}
 function askPreset(p){document.getElementById("chat-text").value=p;sendChat()}
 async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
