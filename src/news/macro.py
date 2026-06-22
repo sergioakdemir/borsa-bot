@@ -9,7 +9,7 @@ Genel piyasa baglami olarak commentary.py payload'ina eklenir (hisseye ozel degi
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,6 +35,42 @@ _TCMB_FAIZ_URL = ("https://www.tcmb.gov.tr/wps/wcm/connect/TR/tcmb+tr/main+menu/
 _EVDS2_URL = "https://evds2.tcmb.gov.tr/index.php?lang=tr"
 # Hicbir kaynak ve onceki deger yoksa kullanilacak guvenli sabit (en son bilinen)
 _POLITIKA_FAIZI_FALLBACK = 37.0
+
+# TCMB PPK (Para Politikasi Kurulu) toplanti tarihleri (ay, gun) - HER YIL MANUEL GUNCELLE
+_PPK_TARIHLERI = {
+    2026: ((1, 23), (3, 6), (4, 17), (6, 11), (7, 24), (9, 18), (10, 23), (12, 19)),
+}
+
+
+def ppk_tarihleri(yil=None) -> list:
+    """PPK toplanti tarihleri (date listesi, sirali). yil verilirse o yila filtreler."""
+    out = []
+    for y, gunler in _PPK_TARIHLERI.items():
+        if yil is None or y == yil:
+            out.extend(date(y, ay, gun) for ay, gun in gunler)
+    return sorted(out)
+
+
+def bugun_ppk_mi(gun=None) -> bool:
+    """Verilen gun (vars. bugun) bir PPK toplanti gunu mu?"""
+    gun = gun or datetime.now(_TZ).date()
+    return gun in set(ppk_tarihleri())
+
+
+def sonraki_ppk(gun=None, dahil=True):
+    """Verilen gunden (vars. bugun) sonraki ilk PPK tarihi. dahil=False ise bugunu
+    haric tutar (PPK gununde 'bir sonraki'yi gostermek icin). Yoksa None."""
+    gun = gun or datetime.now(_TZ).date()
+    for d in ppk_tarihleri():
+        if (d >= gun) if dahil else (d > gun):
+            return d
+    return None
+
+
+def canli_politika_faizi():
+    """TCMB resmi sayfa -> EVDS2 ile guncel politika faizini ceker.
+    (deger, kaynak) veya (None, None). PPK gunu otomasyonu kullanir."""
+    return _politika_faizi()
 
 # kucuk TTL onbellek (sayfalari her cagride tekrar cekme)
 _CACHE = {}

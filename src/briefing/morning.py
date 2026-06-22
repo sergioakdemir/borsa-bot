@@ -44,6 +44,15 @@ def _esc(s):
     return html.escape(str(s or ""))
 
 
+_TR_AYLAR = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+             "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+
+
+def _tr_tarih(d):
+    """date -> 'DD Ay YYYY' (Turkce ay adi)."""
+    return f"{d.day} {_TR_AYLAR[d.month]} {d.year}"
+
+
 def _us_portfolio_tickers():
     """Portfoylerdeki ABD (USD) hisselerinin benzersiz kodlari."""
     from src.db import database as db
@@ -203,6 +212,21 @@ def build_message(results, sel, now, overview=None):
                 lines.append(satir)
     except Exception:
         pass
+
+    # PPK (Para Politikasi Kurulu) toplanti takvimi - yalniz BIST brifingi
+    if not is_us:
+        try:
+            from src.news.macro import sonraki_ppk, bugun_ppk_mi
+            bugun = now.date()
+            ppk_bugun = bugun_ppk_mi(bugun)
+            if ppk_bugun:
+                lines.append("⚠️ <b>Bugün PPK var!</b> Faiz kararı 14:00'te açıklanacak.")
+            nxt = sonraki_ppk(bugun, dahil=not ppk_bugun)
+            if nxt:
+                kalan = (nxt - bugun).days
+                lines.append(f"📅 <b>Sonraki PPK:</b> {_tr_tarih(nxt)} ({kalan} gün kaldı)")
+        except Exception:
+            pass
 
     # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
     cand = [r for r in valid if r["final_decision"] != "VETO"]
