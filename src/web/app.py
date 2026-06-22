@@ -2531,19 +2531,23 @@ def api_news():
 
 @app.route("/api/chat-stream", methods=["POST"])
 def api_ask_stream():
+    from flask import stream_with_context
     d = request.get_json(silent=True) or {}
     soru = d.get("soru") or d.get("mesaj") or ""
     kullanici = d.get("kullanici")
+    @stream_with_context
     def generate():
         result = ask_bot(soru, kullanici)
         cevap = result.get("cevap", "Yanit uretemedi.")
+        import time as _time
         words = cevap.split(" ")
         for i, word in enumerate(words):
             chunk = word + (" " if i < len(words)-1 else "")
             yield "data: " + json.dumps({"delta": chunk}, ensure_ascii=False) + "\n\n"
+            _time.sleep(0.03)
         yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
     return app.response_class(generate(), mimetype="text/event-stream",
-                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Transfer-Encoding": "chunked"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)
