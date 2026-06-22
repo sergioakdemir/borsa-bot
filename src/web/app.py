@@ -1772,6 +1772,72 @@ def get_today(kullanici=None) -> dict:
     }
 
 
+def get_gunun_hareketlileri() -> dict:
+    """Watchlist BIST hisseleri icin 'Gunun Hareketlileri': yukselen / dusen /
+    hacim / populer (her biri 5 hisse).
+
+    Tek toplu yfinance istegiyle (~1 ay) gunluk degisim + hacim/ortalama hacim
+    orani hesaplanir. Sonuc 5 dk onbelleklenir."""
+    ck = "gunun_hareketlileri"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    bos = {"yukselen": [], "dusen": [], "hacim": [], "populer": []}
+    wl = _load_watchlist()
+    kodlar = []
+    for t in wl.get("bist_endeks", []):
+        base = (t or "").upper().split(".")[0]
+        if base and base not in kodlar:
+            kodlar.append(base)
+    if not kodlar:
+        return bos
+    syms = [f"{k}.IS" for k in kodlar]
+    try:
+        import yfinance as yf
+        df = yf.download(syms, period="1mo", progress=False, threads=True,
+                         auto_adjust=True)
+    except Exception:
+        return bos
+    try:
+        closes, vols = df["Close"], df["Volume"]
+    except Exception:
+        return bos
+    coklu = len(syms) > 1
+    satirlar = []
+    for k, sym in zip(kodlar, syms):
+        try:
+            c = (closes[sym] if coklu else closes).dropna()
+            v = (vols[sym] if coklu else vols).dropna()
+            if len(c) < 2:
+                continue
+            last, prev = float(c.iloc[-1]), float(c.iloc[-2])
+            chg = (last - prev) / prev * 100 if prev else 0.0
+            last_vol = float(v.iloc[-1]) if len(v) else 0.0
+            taban = v.iloc[-21:-1] if len(v) >= 7 else v.iloc[:-1]
+            avg_vol = float(taban.mean()) if len(taban) else 0.0
+            hacim_kat = (last_vol / avg_vol) if avg_vol else 0.0
+            satirlar.append({
+                "ticker": k, "isim": company_name(k), "market": "bist",
+                "para_birimi": "₺", "fiyat": round(last, 2),
+                "gunluk": round(chg, 2), "degisim": round(chg, 2),
+                "hacim": int(last_vol), "hacim_kat": round(hacim_kat, 2)})
+        except Exception:
+            continue
+    if not satirlar:
+        return bos
+    out = {
+        "yukselen": sorted(satirlar, key=lambda r: r["degisim"], reverse=True)[:5],
+        "dusen": sorted(satirlar, key=lambda r: r["degisim"])[:5],
+        "hacim": sorted(satirlar, key=lambda r: r["hacim_kat"], reverse=True)[:5],
+        # populer: kombinasyon skoru = |degisim| + hacim anomalisi agirligi
+        "populer": sorted(
+            satirlar, key=lambda r: abs(r["degisim"]) + max(0.0, r["hacim_kat"] - 1) * 4,
+            reverse=True)[:5],
+    }
+    _cache_set(ck, out)
+    return out
+
+
 def get_radar(market: str = "all") -> dict:
     comm = _commentary_by_ticker()
     wl = _load_watchlist()
@@ -2532,6 +2598,11 @@ def api_alerts():
 @app.route("/api/summary")
 def api_summary():
     return jsonify(get_summary())
+
+
+@app.route("/api/gunun-hareketlileri")
+def api_gunun_hareketlileri():
+    return jsonify(get_gunun_hareketlileri())
 
 
 @app.route("/api/search")

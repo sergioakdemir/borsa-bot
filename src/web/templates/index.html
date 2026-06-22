@@ -206,6 +206,24 @@
     border-radius:999px;padding:8px 15px;font-size:12.5px;font-weight:600;min-height:38px}
   .filters button.active{border-color:rgba(52,211,153,.4);color:var(--green);background:var(--green-bg)}
 
+  /* ---- gunun hareketlileri (Midas tarzi numarali liste) ---- */
+  .gh{background:var(--card2);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-bottom:8px}
+  .gh-tabs{display:flex;gap:6px;padding:10px 10px 7px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .gh-tabs button{flex:0 0 auto;background:transparent;border:1px solid var(--border2);color:var(--muted);
+    border-radius:999px;padding:6px 14px;font-size:12.5px;font-weight:600;min-height:34px}
+  .gh-tabs button.active{border-color:rgba(52,211,153,.4);color:var(--green);background:var(--green-bg)}
+  .gh-row{display:flex;align-items:center;gap:11px;padding:9px 12px;cursor:pointer;border-top:1px solid var(--border)}
+  .gh-row:active{background:rgba(255,255,255,.04)}
+  .gh-rank{width:15px;text-align:center;font-size:13px;font-weight:700;color:var(--muted2)}
+  .gh-av{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:15px;color:#fff;flex:0 0 auto}
+  .gh-main{flex:1;min-width:0}
+  .gh-tk{font-size:14.5px;font-weight:700}
+  .gh-nm{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gh-right{text-align:right;flex:0 0 auto}
+  .gh-chg{font-size:14px;font-weight:700}
+  .gh-vol{font-size:11px;color:var(--muted2);margin-top:1px}
+
   /* ---- sohbet ---- */
   .presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
   .preset{background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:999px;
@@ -767,10 +785,37 @@ function openDecision(id){const r=DEC_INDEX[id];if(!r)return;
 let radarTimer=null;
 async function loadRadar(){const el=document.getElementById("page-radar");
   el.innerHTML=`<input class="search" id="radar-search" placeholder="BIST · ABD · Kripto — ara…" oninput="radarSearch(this.value)">
+    <div id="gh-sec"></div>
     <div class="filters">${["all","bist","abd","kripto"].map(f=>`<button class="${f===RADAR_FILTER?'active':''}" onclick="setRadarFilter('${f}')">${f==="all"?"Tümü":f==="bist"?"BIST":f==="abd"?"ABD":"Kripto"}</button>`).join("")}</div>
     <div id="radar-body">${skel(4)}</div>`;
+  loadGH();
   try{RADAR_DATA=await(await fetch("/api/radar?market="+RADAR_FILTER)).json();renderRadar()}
   catch(e){document.getElementById("radar-body").innerHTML=empty("Yüklenemedi")}}
+
+/* ---- Günün Hareketlileri ---- */
+let GH_DATA=null,GH_TAB="yukselen";
+const GH_TABS=[["yukselen","Yükselen"],["dusen","Düşen"],["hacim","Hacim"],["populer","Popüler"]];
+const GH_AV_PALET=["#2563eb","#7c3aed","#0891b2","#db2777","#ea580c","#16a34a","#ca8a04","#dc2626"];
+function ghAvColor(t){let s=0;t=t||"";for(let i=0;i<t.length;i++)s+=t.charCodeAt(i);return GH_AV_PALET[s%GH_AV_PALET.length]}
+function ghTab(t){GH_TAB=t;renderGH()}
+async function loadGH(){const sec=document.getElementById("gh-sec");if(!sec)return;
+  sec.innerHTML=`<div class="sec-title">Günün Hareketlileri</div>${skel(1)}`;
+  try{GH_DATA=await(await fetch("/api/gunun-hareketlileri")).json();renderGH()}
+  catch(e){sec.innerHTML=""}}
+function renderGH(){const sec=document.getElementById("gh-sec");if(!sec||!GH_DATA)return;
+  const list=GH_DATA[GH_TAB]||[];
+  const tabs=GH_TABS.map(([k,l])=>`<button class="${k===GH_TAB?'active':''}" onclick="ghTab('${k}')">${l}</button>`).join("");
+  const volTab=(GH_TAB==="hacim"||GH_TAB==="populer");
+  const rows=list.length?list.map((s,i)=>{const k=reg(s);
+    const alt=volTab?(s.hacim_kat?`x${fmt(s.hacim_kat)} hacim`:money(s.fiyat,s.para_birimi)):money(s.fiyat,s.para_birimi);
+    return`<div class="gh-row" onclick="openStock('${k}')">
+      <span class="gh-rank">${i+1}</span>
+      <span class="gh-av" style="background:${ghAvColor(s.ticker)}">${esc((s.ticker||"?").slice(0,1))}</span>
+      <div class="gh-main"><div class="gh-tk">${esc(s.ticker)}</div><div class="gh-nm">${esc(s.isim||"")}</div></div>
+      <div class="gh-right"><div class="gh-chg ${signCls(s.degisim)}">${pct(s.degisim)}</div><div class="gh-vol">${alt}</div></div>
+    </div>`}).join(""):empty("Veri yok");
+  sec.innerHTML=`<div class="sec-title">Günün Hareketlileri</div>
+    <div class="gh"><div class="gh-tabs">${tabs}</div>${rows}</div>`}
 function setRadarFilter(f){RADAR_FILTER=f;document.querySelectorAll(".filters button").forEach((b,i)=>b.classList.toggle("active",["all","bist","abd","kripto"][i]===f));renderRadar()}
 function radarCard(s){const k=reg(s);
   return`<div class="card" ${lpAttr(k)}>
