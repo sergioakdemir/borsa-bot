@@ -1985,13 +1985,21 @@ def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
     import pandas as pd
     seri = []
     for ix, cl, vol in zip(df.index, df["Close"], df["Volume"]):
+        try:
+            cv = float(cl)
+        except (TypeError, ValueError):
+            continue
+        if cv != cv:                       # NaN kapanis (tamamlanmamis/eksik bar)
+            continue
         seri.append({"t": pd.Timestamp(ix).date().isoformat(),
-                     "c": round(float(cl), 2),
+                     "c": round(cv, 2),
                      "v": int(vol) if vol == vol else 0})
+    if not seri:
+        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
     return {"seri": seri,
             "dusuk": round(float(df["Low"].min()), 2),
             "yuksek": round(float(df["High"].max()), 2),
-            "son": round(float(df["Close"].iloc[-1]), 2)}
+            "son": seri[-1]["c"]}
 
 
 def get_stock_detail(ticker: str, market: str = "bist") -> dict:
