@@ -274,6 +274,13 @@
   .alert .ab{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.45}
   .alert .am{display:flex;gap:7px;align-items:center;margin-top:8px;flex-wrap:wrap}
   .alert .as{font-size:11px;color:var(--muted2)}
+  /* ---- detay: bot karari karti ---- */
+  .botcard{margin-top:14px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px 16px}
+  .botcard .bk-top{display:flex;align-items:center;justify-content:space-between}
+  .botcard .bk-lbl{font-size:13px;font-weight:700;color:var(--text)}
+  .botcard .bk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .botcard .bk-k{font-size:11.5px;color:var(--muted)}
+  .botcard .bk-v{font-size:17px;font-weight:750;margin-top:2px}
 
   /* ---- detay overlay ---- */
   .scrim{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.6);opacity:0;pointer-events:none;
@@ -1069,7 +1076,7 @@ function setBilFilter(x){BIL_FILTER=x;document.querySelectorAll("#bil-filters bu
 function renderBil(){const b=document.getElementById("bil-body");
   const items=ALERT_INDEX.map((a,i)=>({a,i,kat:alertKat(a)})).filter(o=>BIL_FILTER==="all"||o.kat===BIL_FILTER);
   b.innerHTML=items.length?items.map(o=>{const a=o.a,c=katColor(o.kat);
-    return`<div class="alert" onclick="openAlert(${o.i})"><span class="dotc ${c}"></span>
+    return`<div class="alert" onclick="openAlertStock(${o.i})"><span class="dotc ${c}"></span>
       <div style="flex:1;min-width:0"><div class="at">${esc(a.baslik)}</div><div class="ab">${esc(a.aciklama||"")}</div>
         <div class="am">${(a.ilgili||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join("")}<span class="chip ${c}">${esc(a.tur||o.kat)}</span>${a.tarih?`<span class="as">${esc(a.tarih)}</span>`:""}</div></div></div>`}).join(""):empty("Bu kategoride bildirim yok")}
 function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;const link=a.url?`<a class="kaplink" href="${esc(a.url)}" target="_blank">KAP'ta aç →</a>`:"";
@@ -1077,7 +1084,15 @@ function openAlert(i){const a=ALERT_INDEX[i];if(!a)return;const link=a.url?`<a c
     <div class="quote">${esc(a.aciklama||"")}</div>
     ${(a.ilgili&&a.ilgili.length)?`<div class="sec-title">İlgili hisseler</div><div>${a.ilgili.map(t=>`<span class="chip" style="margin-right:6px">${esc(t)}</span>`).join("")}</div>`:""}
     ${a.ham_baslik?`<div class="sec-title">Kaynak haber</div><div class="quote" style="font-size:13px;color:var(--muted)">${esc(a.ham_baslik)}</div>`:""}
-    <div class="anbox" style="margin-top:16px"><div class="row"><span class="muted">Kaynak: <b style="color:#fff">${esc(a.kaynak||"—")}</b></span><span class="muted">${esc(a.tarih||"")}</span></div>${link?`<div style="margin-top:10px">${link}</div>`:""}</div>`)}
+    <div class="anbox" style="margin-top:16px"><div class="row"><span class="muted">Kaynak: <b style="color:var(--text)">${esc(a.kaynak||"—")}</b></span><span class="muted">${esc(a.tarih||"")}</span></div>${link?`<div style="margin-top:10px">${link}</div>`:""}</div>`)}
+/* Bildirime tiklayinca ilgili hissenin TAM detay sayfasini ac (fiyat hareketi
+   sebebini de detayda goster). Hisse yoksa eski kucuk bildirim kartina dus. */
+function openAlertStock(i){const a=ALERT_INDEX[i];if(!a)return;
+  const tk=(a.ticker||(a.ilgili&&a.ilgili[0])||"").toUpperCase();
+  if(!tk){openAlert(i);return}
+  const kat=alertKat(a);
+  const sebepBaslik=(kat==="Fiyat"||kat==="Kritik")?"Fiyat hareketi sebebi":"Bildirim notu";
+  openStock(tk,{sebep:a.aciklama||a.baslik||"",sebepBaslik,kaynak:a.kaynak,url:a.url,tur:a.tur})}
 
 /* ============ HISSE DETAY · grafik (Midas tarzi) ============ */
 const PERIODS=["1G","1H","1A","3A","6A","1Y","5Y"];
@@ -1172,14 +1187,21 @@ function chartBox(ticker,market,grafik,bcur){const def="1A";
   return`<div id="chartbox"><div class="chart-read" id="chart-read"></div>
     <div class="periods">${PERIODS.map(p=>`<button class="${p===def?'active':''}" data-bcur="${bcur}" onclick="loadSeries('${ticker}','${market}','${p}',this)">${p}</button>`).join("")}</div>
     <div id="chart">${buildChartInner(grafik,bcur,def)}</div></div>`}
-async function openStock(k){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;const market=s?(s.market||"bist"):"bist";
+async function openStock(k,extra){const s=STOCK_INDEX[k];const ticker=s?s.ticker:k;const market=s?(s.market||"bist"):"bist";
   ovShow(`<div class="spin">Yükleniyor…</div>`);
   try{const d=await(await fetch(`/api/stock/${encodeURIComponent(ticker)}?market=${market}`)).json();const lv=d.seviyeler||{};const an=d.analist;
     const lvf=(kk,v,c)=>v==null?"":`<div class="lvl"><div class="k">${kk}</div><div class="v ${c}">${money(v,d.para_birimi)}</div></div>`;
+    const botKarti=`<div class="botcard"><div class="bk-top"><span class="bk-lbl">Bot kararı</span>${pill(d.decision||"—",d.renk)}</div>
+      <div class="bk-grid"><div><div class="bk-k">Puan</div><div class="bk-v">${d.puan!=null?d.puan+"/10":"—"}</div></div>
+        <div><div class="bk-k">Risk</div><div class="bk-v">${d.risk_skoru!=null?d.risk_skoru+"/10":esc(d.risk||"—")}</div></div>
+        <div><div class="bk-k">Güven</div><div class="bk-v">${esc(d.guven||"—")}</div></div></div></div>`;
+    const sebepBox=(extra&&extra.sebep)?`<div class="sec-title">${esc(extra.sebepBaslik||"Fiyat hareketi sebebi")}</div><div class="quote">${esc(extra.sebep)}</div>${extra.url?`<a class="kaplink" href="${esc(extra.url)}" target="_blank" style="display:inline-block;margin-top:8px">Kaynak →</a>`:""}`:"";
     let h=`<div class="row"><div><h2 style="font-size:22px;font-weight:700">${esc(d.isim)}</h2><div class="tick">${esc(d.ticker)}${mtag(d.market)}</div></div>${pill(d.decision,d.renk)}</div>
       <div class="row" style="margin-top:12px"><div><div class="price" style="font-size:24px">${money(d.fiyat,d.para_birimi)}</div><div class="chg ${signCls(d.gunluk)}">${pct(d.gunluk)}</div></div>
         <div style="text-align:right">${statusLine({statusPhrase:d.statusPhrase||("Risk: "+d.risk),statusColor:d.risk_renk})}<div class="muted" style="font-size:11.5px;margin-top:6px">Güven: ${esc(d.guven)}</div></div></div>
       ${chartBox(d.ticker,d.market,d.grafik,d.para_birimi||"₺")}
+      ${sebepBox}
+      ${botKarti}
       ${d.action?`<div class="anbox" style="margin-top:14px;border-color:rgba(52,211,153,.3)"><b class="c-green">Ne yapmalı?</b> ${esc(d.action)}</div>`:""}
       <div class="sec-title">Bot yorumu</div><div class="quote">${esc(d.reason)}</div>
       ${d.riskReason&&d.riskReason!=="—"?`<div class="sec-title">Risk · ${esc(d.risk)}</div><div class="quote">${esc(d.riskReason)}</div>`:""}`;

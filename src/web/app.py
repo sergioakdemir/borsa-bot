@@ -2028,6 +2028,8 @@ def get_stock_detail(ticker: str, market: str = "bist") -> dict:
         "para_birimi": (rec or {}).get("para_birimi") or base.get("para_birimi", "₺"),
         "fiyat": son, "gunluk": base.get("gunluk"),
         "decision": etiket, "renk": renk,
+        "puan": (rec or {}).get("score"),
+        "risk_skoru": (rec or {}).get("risk", {}).get("score") if rec else None,
         "guven": base.get("eminlik", "—"),
         "risk": rk, "risk_renk": rkr,
         "summary": st.get("summary", ""),
