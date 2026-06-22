@@ -20,6 +20,15 @@ _INVESTING = {
     "tr_10y_faiz": "https://tr.investing.com/rates-bonds/turkey-10-year-bond-yield",
 }
 
+# investing.com cekilemezse Yahoo Finance alternatifi (yfinance sembolleri)
+_YAHOO = {
+    "usdtry": "TRY=X",
+    "tr_10y_faiz": "^TYF",
+}
+
+# Hicbir kaynak gelmezse kullanilacak son bilinen degerlerin kalici deposu
+_SON_BILINEN = Path(__file__).resolve().parents[2] / "data" / "macro_last.json"
+
 # kucuk TTL onbellek (sayfalari her cagride tekrar cekme)
 _CACHE = {}
 _TTL = 300.0  # saniye
@@ -107,6 +116,47 @@ def _investing_last(url):
     return None
 
 
+def _yahoo_last(symbol):
+    """Yahoo Finance (yfinance) son kapanis degeri; cekilemezse None."""
+    if not symbol:
+        return None
+    try:
+        import logging
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)  # gurultu kapali
+        from src.data.factory import get_data_source
+        start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
+        df = get_data_source().get_history(symbol, start=start)
+        if df is None or df.empty:
+            return None
+        return round(float(df["Close"].iloc[-1]), 4)
+    except Exception:
+        return None
+
+
+def _load_son_bilinen() -> dict:
+    """data/macro_last.json'dan son bilinen makro degerleri okur."""
+    try:
+        import json
+        return json.loads(_SON_BILINEN.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _kaydet_son_bilinen(degerler: dict):
+    """Taze cekilen makro degerleri son bilinen depoya yazar (birlestirerek)."""
+    if not degerler:
+        return
+    try:
+        import json
+        _SON_BILINEN.parent.mkdir(exist_ok=True)
+        mevcut = _load_son_bilinen()
+        mevcut.update(degerler)
+        _SON_BILINEN.write_text(
+            json.dumps(mevcut, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _investing_cpi_yoy(url=None):
     """investing.com ekonomik-takvim event sayfasindan TUFE (yillik) degerini ceker.
 
@@ -143,11 +193,35 @@ def get_macro() -> dict:
 
     out = {"available": False, "kaynaklar": []}
 
-    # 1) investing.com -> usdtry, tr_10y_faiz
+    # 1) usdtry + tr_10y_faiz: investing.com -> Yahoo Finance -> son bilinen deger
+    son_bilinen = _load_son_bilinen()
+    taze = {}
     for ad, url in _INVESTING.items():
-        out[ad] = _investing_last(url)
-    if any(out.get(a) is not None for a in _INVESTING):
-        out["kaynaklar"].append("investing.com")
+        v = _investing_last(url)
+        if v is not None:
+            out[ad] = v
+            taze[ad] = v
+            if "investing.com" not in out["kaynaklar"]:
+                out["kaynaklar"].append("investing.com")
+            continue
+        # investing.com basarisiz -> Yahoo Finance alternatifi
+        yv = _yahoo_last(_YAHOO.get(ad))
+        if yv is not None:
+            out[ad] = yv
+            taze[ad] = yv
+            if "yahoo" not in out["kaynaklar"]:
+                out["kaynaklar"].append("yahoo")
+            continue
+        # her iki kaynak da basarisiz -> son bilinen degere dus + logla
+        sv = son_bilinen.get(ad)
+        out[ad] = sv
+        _log_macro_hata(_YAHOO.get(ad) or ad,
+                        f"YEDEK_KULLANILDI (investing+yahoo basarisiz, "
+                        f"son bilinen deger={sv})")
+        if sv is not None and "son_bilinen" not in out["kaynaklar"]:
+            out["kaynaklar"].append("son_bilinen")
+    # taze degerleri kalici sakla (sonraki yedek icin)
+    _kaydet_son_bilinen(taze)
 
     # 2) EVDS3 -> politika_faizi, tufe_yillik (KYC sonrasi otomatik devreye girer)
     key = os.environ.get("EVDS_API_KEY")

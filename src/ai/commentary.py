@@ -20,7 +20,7 @@ import json
 import os
 import statistics
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -174,10 +174,49 @@ def _volume_signal(pct):
     return "yuksek" if pct > 25 else ("dusuk" if pct < -25 else "normal")
 
 
-def _veri_bayat(last_date, now=None) -> bool:
+# Turkiye sabit tarihli resmi tatilleri (ay, gun) - borsa kapali
+_TR_SABIT_TATIL = ((1, 1), (4, 23), (5, 1), (5, 19), (7, 15), (8, 30), (10, 29))
+# Degisken tarihli dini bayramlar: her yil resmi ilan sonrasi MANUEL eklenir.
+_TR_BAYRAM = {
+    2026: ((3, 20), (3, 21), (3, 22),                 # Ramazan Bayrami
+           (6, 5), (6, 6), (6, 7), (6, 8), (6, 9)),   # Kurban Bayrami
+}
+
+
+def _tr_tatilleri(start, end) -> set:
+    """BIST tatilleri: sabit resmi gunler + manuel dini bayram listesi."""
+    hols = set()
+    for yil in range(start.year, end.year + 1):
+        for ay, gun in _TR_SABIT_TATIL:
+            hols.add(date(yil, ay, gun))
+        for ay, gun in _TR_BAYRAM.get(yil, ()):
+            hols.add(date(yil, ay, gun))
+    return hols
+
+
+def _piyasa_tatilleri(market: str, start, end) -> set:
+    """Iki tarih arasindaki BORSA tatillerini dondurur (hafta sonu haric).
+    ABD icin NYSE tatilleri (federal + Good Friday, Juneteenth dahil); BIST icin
+    Turkiye resmi + dini bayram tatilleri. Tatiller iş gunu sayilirsa yanlis
+    KILL_SWITCH olusur."""
+    if market in ("us", "abd"):
+        try:
+            import pandas as pd
+            from pandas.tseries.holiday import USFederalHolidayCalendar, GoodFriday
+            hols = {h.date() for h in
+                    USFederalHolidayCalendar().holidays(start=start, end=end)}
+            gf = GoodFriday.dates(pd.Timestamp(start), pd.Timestamp(end))
+            hols |= {pd.Timestamp(d).date() for d in gf}
+            return hols
+        except Exception:
+            return set()
+    return _tr_tatilleri(start, end)
+
+
+def _veri_bayat(last_date, now=None, market: str = "bist") -> bool:
     """KILL SWITCH: yfinance son bar tarihi 'bayat' mi?
     24 saatten eski VE son bardan sonra en az bir TAM is gunu gecmisse bayattir
-    (hafta sonu/tatil tek basina bayat saymaz, yanlis kill onlenir)."""
+    (hafta sonu/borsa tatili tek basina bayat saymaz, yanlis kill onlenir)."""
     now = now or datetime.now(_TZ)
     try:
         last_dt = datetime.combine(last_date, datetime.min.time(), tzinfo=_TZ)
@@ -185,9 +224,10 @@ def _veri_bayat(last_date, now=None) -> bool:
         return False
     if (now - last_dt).total_seconds() / 3600 <= 24:
         return False
+    tatiller = _piyasa_tatilleri(market, last_date, now.date())
     d, biz = last_date + timedelta(days=1), 0
     while d < now.date():
-        if d.weekday() < 5:
+        if d.weekday() < 5 and d not in tatiller:
             biz += 1
         d += timedelta(days=1)
     return biz >= 1
@@ -232,7 +272,7 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         son_bar = last_ts.date() if hasattr(last_ts, "date") else None
     except Exception:
         son_bar = None
-    bayat = _veri_bayat(son_bar) if son_bar else False
+    bayat = _veri_bayat(son_bar, market=market) if son_bar else False
 
     closes = [float(x) for x in df["Close"].tolist()]
     highs = [float(x) for x in df["High"].tolist()]
