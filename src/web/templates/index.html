@@ -859,6 +859,9 @@ let ONB_MSGS=[],ONB_BUSY=false;
 async function checkOnboarding(){if(!CUR_USER)return;
   let skip=false;try{skip=localStorage.getItem("bb_onb_skip_"+CUR_USER)==="1"}catch(e){}
   try{const p=await(await fetch("/api/profile"+uq())).json();
+    // Profil HIC yoksa (var=false) ya da guven skoru 0 ise: bayat 'skip' bayragini
+    // yok say ve temizle -> onboarding otomatik baslar (kullanici hic tanitilmamis).
+    if(!p.var || (p.guven_skoru||0)===0){skip=false;try{localStorage.removeItem("bb_onb_skip_"+CUR_USER)}catch(e){}}
     if(!p.onboarding_done && !skip){openOnboarding(p)}
   }catch(e){}}
 function onbBubble(m){return`<div class="bubble ${m.rol==='user'?'user':'bot'}">${esc(m.metin)}</div>`}
