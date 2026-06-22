@@ -223,6 +223,8 @@
   .gh-right{text-align:right;flex:0 0 auto}
   .gh-chg{font-size:14px;font-weight:700}
   .gh-vol{font-size:11px;color:var(--muted2);margin-top:1px}
+  .gh-badge{margin-left:8px;font-size:10.5px;font-weight:700;letter-spacing:.3px;color:var(--amber);
+    background:var(--amber-bg);border-radius:999px;padding:2px 8px;vertical-align:middle;text-transform:none}
 
   /* ---- sohbet ---- */
   .presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
@@ -814,7 +816,8 @@ function renderGH(){const sec=document.getElementById("gh-sec");if(!sec||!GH_DAT
       <div class="gh-main"><div class="gh-tk">${esc(s.ticker)}</div><div class="gh-nm">${esc(s.isim||"")}</div></div>
       <div class="gh-right"><div class="gh-chg ${signCls(s.degisim)}">${pct(s.degisim)}</div><div class="gh-vol">${alt}</div></div>
     </div>`}).join(""):empty("Veri yok");
-  sec.innerHTML=`<div class="sec-title">Günün Hareketlileri</div>
+  const sonK=GH_DATA.son_kapanis?`<span class="gh-badge">Son kapanış</span>`:"";
+  sec.innerHTML=`<div class="sec-title">Günün Hareketlileri${sonK}</div>
     <div class="gh"><div class="gh-tabs">${tabs}</div>${rows}</div>`}
 function setRadarFilter(f){RADAR_FILTER=f;document.querySelectorAll(".filters button").forEach((b,i)=>b.classList.toggle("active",["all","bist","abd","kripto"][i]===f));renderRadar()}
 function radarCard(s){const k=reg(s);

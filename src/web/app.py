@@ -1772,36 +1772,55 @@ def get_today(kullanici=None) -> dict:
     }
 
 
-def get_gunun_hareketlileri() -> dict:
-    """Watchlist BIST hisseleri icin 'Gunun Hareketlileri': yukselen / dusen /
-    hacim / populer (her biri 5 hisse).
+# --- Gunun Hareketlileri: BIST-100 + dosya onbellek (15 dk) + arka plan guncelleme ---
+_GH_PATH = DATA / "gunun_hareketlileri.json"
+_GH_TTL = 900                      # 15 dakika
+_GH_LOCK = threading.Lock()
+_GH_REFRESHING = {"v": False}
 
-    Tek toplu yfinance istegiyle (~1 ay) gunluk degisim + hacim/ortalama hacim
-    orani hesaplanir. Sonuc 5 dk onbelleklenir."""
-    ck = "gunun_hareketlileri"
-    cached = _cache_get(ck)
-    if cached is not None:
-        return cached
-    bos = {"yukselen": [], "dusen": [], "hacim": [], "populer": []}
-    wl = _load_watchlist()
-    kodlar = []
-    for t in wl.get("bist_endeks", []):
-        base = (t or "").upper().split(".")[0]
-        if base and base not in kodlar:
-            kodlar.append(base)
+
+def _bist100_kodlar() -> list[str]:
+    """config/bist100.json'dan benzersiz BIST hisse kodlari (taban, .IS'siz)."""
+    raw = _read_json(CONFIG / "bist100.json", [])
+    if isinstance(raw, dict):
+        raw = raw.get("hisseler") or raw.get("tickers") or []
+    out = []
+    for t in raw:
+        base = (t or "").upper().split(".")[0].strip()
+        if base and base not in out:
+            out.append(base)
+    return out
+
+
+def _gh_compute() -> dict:
+    """BIST-100 listesi icin TEK toplu yfinance batch'iyle gunun hareketlileri.
+
+    AI yok; yalniz fiyat + hacim. ~1 ay pencere: gunluk degisim ve hacim/ortalama
+    hacim (anomali) icin gerekli. Hafta sonu/borsa kapaliysa son islem gunu verisi
+    kullanilir (son_kapanis=True)."""
+    bos = {"yukselen": [], "dusen": [], "hacim": [], "populer": [],
+           "son_kapanis": False, "veri_tarihi": None}
+    kodlar = _bist100_kodlar()
     if not kodlar:
         return bos
     syms = [f"{k}.IS" for k in kodlar]
     try:
         import yfinance as yf
-        df = yf.download(syms, period="1mo", progress=False, threads=True,
-                         auto_adjust=True)
+        df = yf.download(syms, period="1mo", interval="1d",
+                         progress=False, threads=True, auto_adjust=True)
     except Exception:
         return bos
     try:
         closes, vols = df["Close"], df["Volume"]
     except Exception:
         return bos
+    try:
+        import pandas as pd
+        son_tarih = pd.Timestamp(df.index[-1]).date()
+    except Exception:
+        son_tarih = None
+    bugun = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    son_kapanis = bool(son_tarih and son_tarih < bugun)
     coklu = len(syms) > 1
     satirlar = []
     for k, sym in zip(kodlar, syms):
@@ -1825,7 +1844,7 @@ def get_gunun_hareketlileri() -> dict:
             continue
     if not satirlar:
         return bos
-    out = {
+    return {
         "yukselen": sorted(satirlar, key=lambda r: r["degisim"], reverse=True)[:5],
         "dusen": sorted(satirlar, key=lambda r: r["degisim"])[:5],
         "hacim": sorted(satirlar, key=lambda r: r["hacim_kat"], reverse=True)[:5],
@@ -1833,9 +1852,55 @@ def get_gunun_hareketlileri() -> dict:
         "populer": sorted(
             satirlar, key=lambda r: abs(r["degisim"]) + max(0.0, r["hacim_kat"] - 1) * 4,
             reverse=True)[:5],
+        "son_kapanis": son_kapanis,
+        "veri_tarihi": son_tarih.isoformat() if son_tarih else None,
+        "taranan": len(satirlar),
     }
-    _cache_set(ck, out)
-    return out
+
+
+def _gh_save(data: dict) -> None:
+    try:
+        data = {**data, "guncelleme_ts": time.time(),
+                "guncelleme": datetime.now(ZoneInfo("Europe/Istanbul")).isoformat(
+                    timespec="seconds")}
+        DATA.mkdir(exist_ok=True)
+        _GH_PATH.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _gh_refresh_bg() -> None:
+    """Arka planda yeniden hesapla + cache'e yaz (ayni anda yalniz bir kez)."""
+    with _GH_LOCK:
+        if _GH_REFRESHING["v"]:
+            return
+        _GH_REFRESHING["v"] = True
+
+    def _run():
+        try:
+            data = _gh_compute()
+            if data.get("yukselen"):
+                _gh_save(data)
+        finally:
+            _GH_REFRESHING["v"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def get_gunun_hareketlileri() -> dict:
+    """BIST-100 'Gunun Hareketlileri'. Dosya onbellek: data/gunun_hareketlileri.json
+    (15 dk). Once cache'den sunar; bayatsa arka planda gunceller (eskisini doner).
+    Cache hic yoksa ilk seferde senkron hesaplar."""
+    cached = _read_json(_GH_PATH, None)
+    if isinstance(cached, dict) and cached.get("yukselen"):
+        yas = time.time() - (cached.get("guncelleme_ts") or 0)
+        if yas >= _GH_TTL:
+            _gh_refresh_bg()              # bayat -> arka planda guncelle, eskisini sun
+        return cached
+    data = _gh_compute()                  # cache yok -> ilk sefer senkron
+    if data.get("yukselen"):
+        _gh_save(data)
+    return data
 
 
 def get_radar(market: str = "all") -> dict:

@@ -1,0 +1,15 @@
+{
+  "aciklama": "Gunun Hareketlileri taramasi icin BIST-100 hisse listesi (yfinance .IS).",
+  "hisseler": [
+    "THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS", "EREGL", "AKBNK", "YKBNK", "HALKB", "VAKBN",
+    "ISCTR", "TCELL", "BIMAS", "MGROS", "TOASO", "DOHOL", "ENKAI", "ARCLK", "SISE", "EKGYO",
+    "TTKOM", "PGSUS", "TAVHL", "KOZAL", "KRDMD", "PETKM", "ULKER", "SAHOL", "AGHOL", "CCOLA",
+    "OYAKC", "VESTL", "LOGO", "NETAS", "TTRAK", "FROTO", "OTKAR", "AEFES", "KERVT", "SASA",
+    "ALARK", "ISDMR", "BRSAN", "CIMSA", "ADNAC", "ZOREN", "ODAS", "AKSEN", "CLEBI", "BUCIM",
+    "CEMTS", "RYSAS", "MPARK", "BERA", "SOYLM", "ASUZU", "ATAGY", "BASGZ", "BIZIM", "BRKO",
+    "BRYAT", "CANTE", "CUSAN", "DYOBY", "ECZYT", "EGEEN", "EMKEL", "FINBN", "GEREL", "GOZDE",
+    "GUBRF", "HEKTS", "ISGSY", "JANTS", "KAPLM", "KARTN", "KORDS", "KONTR", "KONYA", "MAVI",
+    "NUHCM", "PARSN", "PENGD", "PKART", "POLHO", "SELEC", "SKBNK", "SNPAM", "TIRE", "TKNSA",
+    "TURSG", "ULUUN", "YATAS", "YKGYO", "ZORLU", "BINHO", "ANGEN", "INTEM", "ACSEL", "TRGYO"
+  ]
+}
