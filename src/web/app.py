@@ -1345,7 +1345,8 @@ def get_alerts() -> list[dict]:
         with sqlite3.connect(DB_PATH) as c:
             c.row_factory = sqlite3.Row
             for r in c.execute(
-                    "SELECT * FROM uyari_kayit ORDER BY id DESC LIMIT 8"):
+                    "SELECT * FROM uyari_kayit WHERE seviye IN ('ACIL','IZLE') "
+                    "ORDER BY id DESC LIMIT 8"):
                 tkr = (r["ticker"] or "").upper()
                 yon = "yükseliş" if (r["degisim"] or 0) > 0 else "düşüş"
                 kritik = (r["seviye"] == "ACIL")
