@@ -29,6 +29,13 @@ _YAHOO = {
 # Hicbir kaynak gelmezse kullanilacak son bilinen degerlerin kalici deposu
 _SON_BILINEN = Path(__file__).resolve().parents[2] / "data" / "macro_last.json"
 
+# TCMB politika faizi (1 hafta repo): once resmi sayfa, sonra EVDS2
+_TCMB_FAIZ_URL = ("https://www.tcmb.gov.tr/wps/wcm/connect/TR/tcmb+tr/main+menu/"
+                  "para+politikasi/merkez+bankasi+faiz+oranlari")
+_EVDS2_URL = "https://evds2.tcmb.gov.tr/index.php?lang=tr"
+# Hicbir kaynak ve onceki deger yoksa kullanilacak guvenli sabit (en son bilinen)
+_POLITIKA_FAIZI_FALLBACK = 46.0
+
 # kucuk TTL onbellek (sayfalari her cagride tekrar cekme)
 _CACHE = {}
 _TTL = 300.0  # saniye
@@ -157,6 +164,32 @@ def _kaydet_son_bilinen(degerler: dict):
         pass
 
 
+def _parse_politika_faizi(html):
+    """HTML'den 1 hafta repo (politika faizi) yuzdesini cikarir; bulunamazsa None."""
+    if not html:
+        return None
+    t = re.sub(r"<[^>]+>", " ", html)
+    t = re.sub(r"\s+", " ", t)
+    # "1 Hafta Repo" / "Politika Faizi" / "Repo" anahtari yakininda makul bir yuzde ara
+    for anahtar in ("1 Hafta Repo", "Hafta Repo", "Politika Faizi", "Repo Faiz", "Repo"):
+        m = re.search(re.escape(anahtar) + r"[^\d%]{0,40}%?\s*([0-9]{1,2}(?:[.,][0-9]{1,2})?)",
+                      t, re.IGNORECASE)
+        if m:
+            v = _num(m.group(1))
+            if v is not None and 5 <= v <= 100:   # makul politika faizi araligi
+                return v
+    return None
+
+
+def _politika_faizi():
+    """TCMB resmi sayfasi -> EVDS2; bulunamazsa (None, None). Deger + kaynak doner."""
+    for url, ad in ((_TCMB_FAIZ_URL, "tcmb"), (_EVDS2_URL, "evds2")):
+        v = _parse_politika_faizi(_fetch(url))
+        if v is not None:
+            return v, ad
+    return None, None
+
+
 def _investing_cpi_yoy(url=None):
     """investing.com ekonomik-takvim event sayfasindan TUFE (yillik) degerini ceker.
 
@@ -220,8 +253,6 @@ def get_macro() -> dict:
                         f"son bilinen deger={sv})")
         if sv is not None and "son_bilinen" not in out["kaynaklar"]:
             out["kaynaklar"].append("son_bilinen")
-    # taze degerleri kalici sakla (sonraki yedek icin)
-    _kaydet_son_bilinen(taze)
 
     # 2) EVDS3 -> politika_faizi, tufe_yillik (KYC sonrasi otomatik devreye girer)
     key = os.environ.get("EVDS_API_KEY")
@@ -231,8 +262,27 @@ def get_macro() -> dict:
         for ad in ("politika_faizi", "tufe_yillik"):
             code, agg = _EVDS_SERIES[ad]
             out[ad] = _evds_series(code, agg, key)
+            if out.get(ad) is not None:
+                taze[ad] = out[ad]
         if out.get("politika_faizi") is not None or out.get("tufe_yillik") is not None:
             out["kaynaklar"].append("EVDS3")
+
+    # 2b) Politika faizi EVDS3'ten gelmediyse: TCMB sayfasi -> EVDS2 -> son bilinen -> 46.0
+    if out.get("politika_faizi") is None:
+        pf, pk = _politika_faizi()
+        if pf is not None:
+            out["politika_faizi"] = pf
+            taze["politika_faizi"] = pf
+            if pk not in out["kaynaklar"]:
+                out["kaynaklar"].append(pk)
+        else:
+            sv = son_bilinen.get("politika_faizi", _POLITIKA_FAIZI_FALLBACK)
+            out["politika_faizi"] = sv
+            _log_macro_hata(_TCMB_FAIZ_URL,
+                            f"YEDEK_KULLANILDI (TCMB+EVDS2 basarisiz, "
+                            f"politika faizi={sv})")
+            if "son_bilinen" not in out["kaynaklar"]:
+                out["kaynaklar"].append("son_bilinen")
 
     # 3) TUFE EVDS'ten gelmediyse investing.com event sayfasindan (TUFE_INVESTING_URL)
     if out.get("tufe_yillik") is None:
@@ -240,6 +290,9 @@ def get_macro() -> dict:
         if tv is not None:
             out["tufe_yillik"] = tv
             out["kaynaklar"].append("investing.com(TUFE)")
+
+    # taze cekilen degerleri kalici sakla (sonraki yedek icin)
+    _kaydet_son_bilinen(taze)
 
     out["available"] = bool(out["kaynaklar"])
     if not out["available"]:

@@ -56,9 +56,21 @@ def _us_portfolio_tickers():
         return []
 
 
+def _portfolio_tickers():
+    """Tum portfoylerdeki benzersiz hisse kodlari (BIST + ABD), normalize."""
+    from src.db import database as db
+    try:
+        rows = db.list_portfolio()
+        return {(r.get("ticker") or "").upper().replace(".IS", "")
+                for r in rows if r.get("ticker")}
+    except Exception:
+        return set()
+
+
 def select_targets():
-    """AI brifingi icin hedef hisseleri sec: kisisel + hareketli (onceki seans)
-    + portfoydeki ABD hisseleri (':us' etiketli)."""
+    """AI brifingi icin hedef hisseleri sec: TUM bist_endeks watchlist + kisisel
+    + portfoydeki ABD hisseleri (':us' etiketli). Kisisel/hareketli ayrimi
+    yalnizca gosterim (mesaj kategorileri) icin tutulur."""
     from src.watchlist import load_index, load_personal, load_mover_threshold
     from src.alerts.engine import intraday_change
 
@@ -74,15 +86,11 @@ def select_targets():
 
     movers = [t for t in index if abs(changes.get(t, 0.0)) >= threshold]
 
-    targets = []
-    for t in personal + movers:
+    # TUM bist_endeks hisseleri analiz edilir
+    targets = list(index)
+    for t in personal:                 # kisisel listede index disinda hisse olabilir
         if t not in targets:
             targets.append(t)
-
-    # Fallback: kisisel bos ve hareketli yoksa en hareketli 3 hisse
-    if not targets and changes:
-        targets = sorted(changes, key=lambda k: abs(changes[k]), reverse=True)[:3]
-        movers = list(targets)
 
     # Portfoydeki ABD hisselerini ':us' etiketiyle ekle (KAP/analist atlanir)
     us = _us_portfolio_tickers()
@@ -91,7 +99,8 @@ def select_targets():
             targets.append(f"{t}:us")
 
     return {"targets": targets, "personal": personal, "movers": movers, "us": us,
-            "changes": changes, "threshold": threshold, "taranan": len(index)}
+            "changes": changes, "threshold": threshold, "taranan": len(index),
+            "portfolio": _portfolio_tickers()}
 
 
 def evaluate_all(targets, overview=None, learning=None):
@@ -163,6 +172,20 @@ def build_message(results, sel, now, overview=None):
     except Exception:
         pass
 
+    # Makro: TCMB politika faizi (+ USD/TRY) - get_macro cache'li (ek maliyet yok)
+    try:
+        from src.news.macro import get_macro
+        mk = get_macro()
+        pf = mk.get("politika_faizi")
+        if pf is not None:
+            satir = f"🏦 <b>TCMB Politika Faizi:</b> %{pf:g}"
+            usd = mk.get("usdtry")
+            if usd is not None:
+                satir += f" · USD/TRY {usd:g}"
+            lines.append(satir)
+    except Exception:
+        pass
+
     # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
     cand = [r for r in valid if r["final_decision"] != "VETO"]
     cand.sort(key=lambda r: (r["final_decision"] == "AL", r.get("score") or 0), reverse=True)
@@ -173,22 +196,57 @@ def build_message(results, sel, now, overview=None):
                      f"({b['score']}/10 · risk {b['risk']['score']} · {_esc(b['final_label'])})")
         lines.append(f"<i>{_esc((b.get('gerekce') or '')[:220])}</i>")
 
-    # Kisa tut (Telegram ~1000-1200 karakter): yalniz dikkat ceken kararlar.
-    # TUT'lar tek satirda ozetlenir.
-    notable = [r for r in valid if r["final_decision"] != "TUT"]
-    if notable:
+    # Kategoriler: Portfoy (her zaman) / Firsat-Radar (portfoy disi AL) /
+    # Bildirim (portfoy disi SAT-AZALT-VETO). Web Radar/Bildirimler de
+    # ai_commentary.json'dan ayni ayrimi otomatik turetir.
+    portfolio = sel.get("portfolio") or set()
+
+    def _in_pf(r):
+        return (r.get("ticker") or "").upper() in portfolio
+
+    def _satir(r, varsayilan="⚪"):
+        emoji = _EMOJI.get(r["final_decision"], varsayilan)
+        return (f"{emoji} <b>{_esc(r.get('ticker') or r.get('symbol'))}</b> "
+                f"{r['final_label']} · {r['score']}/10 · risk {r['risk']['score']}")
+
+    pf_rows = [r for r in valid if _in_pf(r)]
+    firsat = [r for r in valid if not _in_pf(r) and r["final_decision"] == "AL"]
+    uyari = [r for r in valid if not _in_pf(r)
+             and r["final_decision"] in ("SAT", "GUCLU_SAT", "AZALT", "VETO")]
+
+    # Portfoyum: karar ne olursa olsun her zaman goster
+    if pf_rows:
         lines.append("")
-        for r in notable:
-            sym = _esc(r.get("ticker") or r.get("symbol"))
-            emoji = _EMOJI.get(r["final_decision"], "⚪")
-            lines.append(f"{emoji} <b>{sym}</b> {r['final_label']} · "
-                         f"{r['score']}/10 · risk {r['risk']['score']}")
+        lines.append("<b>💼 Portföyüm</b>")
+        for r in pf_rows:
+            lines.append(_satir(r))
+
+    # Firsat / Radar: portfoy disi AL sinyalleri (web Radar'a da duser)
+    if firsat:
+        firsat.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        lines.append("")
+        lines.append(f"<b>🟢 Fırsat / Radar ({len(firsat)})</b>")
+        for r in firsat[:6]:
+            lines.append(_satir(r, "🟢"))
+        if len(firsat) > 6:
+            lines.append(f"<i>+{len(firsat) - 6} hisse daha — web Radar'da</i>")
+
+    # Bildirim: portfoy disi SAT/risk sinyalleri (web Bildirimler'e de duser)
+    if uyari:
+        uyari.sort(key=lambda r: r.get("score") or 0)
+        lines.append("")
+        lines.append(f"<b>🔴 Bildirim ({len(uyari)})</b>")
+        for r in uyari[:6]:
+            lines.append(_satir(r, "🔴"))
+        if len(uyari) > 6:
+            lines.append(f"<i>+{len(uyari) - 6} hisse daha — web Bildirimler'de</i>")
+
     if tut:
         lines.append(f"\n⚪ TUT ({len(tut)}): " + ", ".join(
-            _esc(r.get("ticker")) for r in tut[:12]))
+            _esc(r.get("ticker")) for r in tut[:14]))
     msg = "\n".join(lines)
-    if len(msg) > 1200:                       # guvenli ust sinir
-        msg = msg[:1180].rsplit("\n", 1)[0] + "\n…"
+    if len(msg) > 2800:                       # Telegram guvenli ust sinir (4096 limit)
+        msg = msg[:2780].rsplit("\n", 1)[0] + "\n…"
     return msg
 
 
