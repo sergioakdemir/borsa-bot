@@ -75,7 +75,18 @@
     gap:4px;color:var(--muted2);font-size:10.5px;font-weight:600;min-height:44px;padding-top:8px}
   nav button .ico{width:23px;height:23px;opacity:.7}
   nav button.active{color:var(--text)}
-  nav button.active .ico{opacity:1;color:var(--green)}
+  nav button[data-tab="bugun"].active .ico{opacity:1;color:var(--amber)}
+  nav button[data-tab="portfoy"].active .ico{opacity:1;color:var(--green)}
+  nav button[data-tab="radar"].active .ico{opacity:1;color:var(--blue)}
+  nav button[data-tab="sor"].active .ico{opacity:1;color:#C084FC}
+  nav button[data-tab="bildirim"].active .ico{opacity:1;color:var(--red)}
+  nav button[data-tab="ayarlar"].active .ico{opacity:1;color:var(--muted)}
+  nav button[data-tab="bugun"].active{color:var(--amber)}
+  nav button[data-tab="portfoy"].active{color:var(--green)}
+  nav button[data-tab="radar"].active{color:var(--blue)}
+  nav button[data-tab="sor"].active{color:#C084FC}
+  nav button[data-tab="bildirim"].active{color:var(--red)}
+  nav button[data-tab="ayarlar"].active{color:var(--muted)}
   body.kb nav{transform:translateY(120%)}
 
   /* ---- ortak ---- */
