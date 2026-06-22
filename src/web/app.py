@@ -2136,11 +2136,12 @@ def _detect_tickers(text: str, limit: int = 4) -> list[str]:
 
 
 def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
-    """Verilen sembollerin yfinance'ten ANLIK fiyat + gunluk degisimini dondurur.
+    """Verilen TUM sembollerin yfinance'ten ANLIK fiyat + gunluk degisimini dondurur.
 
-    Pazar (BIST/.IS vs ABD) tespiti: once commentary + portfoy + watchlist'teki
-    bilinen kayitlardan; bilinmeyen sembol icin her iki form (ham ve .IS) denenir,
-    veri donen kullanilir."""
+    Portfoyde olup olmadigina BAKMAZ; soruda gecen her hisse icin fiyat ceker.
+    Commentary + portfoy + watchlist yalniz pazar (BIST/.IS vs ABD) tespitinde
+    kullanilir; bilinmeyen sembol icin her iki form denenir (Turk borsasi botu
+    oldugundan once .IS / BIST, sonra ABD) ve veri donen kullanilir."""
     if not tickers:
         return []
     us, bist = set(), set()
@@ -2163,8 +2164,8 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
             plan[t] = [(t, "abd")]
         elif t in bist:
             plan[t] = [(f"{t}.IS", "bist")]
-        else:                                   # bilinmiyor -> her iki formu dene
-            plan[t] = [(t, "abd"), (f"{t}.IS", "bist")]
+        else:                                   # bilinmiyor -> once BIST sonra ABD
+            plan[t] = [(f"{t}.IS", "bist"), (t, "abd")]
 
     syms = [s for cands in plan.values() for s, _ in cands]
     px = _yf_prices(syms)
