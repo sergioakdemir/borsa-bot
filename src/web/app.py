@@ -2171,13 +2171,54 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
     px = _yf_prices(syms)
     out = []
     for t, cands in plan.items():
+        bulundu = False
         for sym, mkt in cands:
             d = px.get(sym)
             if d and d.get("fiyat") is not None:
                 out.append({"hisse": t, "fiyat": d["fiyat"], "gunluk": d.get("gunluk"),
                             "para_birimi": "$" if mkt == "abd" else "₺"})
+                bulundu = True
+                break
+        if bulundu:
+            continue
+        # YEDEK: batch download bos dondu (yfinance ara sira sapitiyor, or. SPCX) ->
+        # her aday sembolu tek tek Ticker.history / fast_info ile yeniden dene
+        for sym, mkt in cands:
+            d = _yf_single_price(sym)
+            if d and d.get("fiyat") is not None:
+                out.append({"hisse": t, "fiyat": d["fiyat"], "gunluk": d.get("gunluk"),
+                            "para_birimi": "$" if mkt == "abd" else "₺"})
                 break
     return out
+
+
+def _yf_single_price(sym: str) -> dict | None:
+    """Tek sembol icin yedek fiyat cekme (batch yf.download bos donerse).
+
+    Once Ticker.history (en guvenilir), sonra fast_info. {fiyat, gunluk} veya None."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(sym)
+        h = t.history(period="5d")
+        if h is not None and not h.empty:
+            c = h["Close"].dropna()
+            if len(c) >= 2:
+                last, prev = float(c.iloc[-1]), float(c.iloc[-2])
+                chg = ((last - prev) / prev * 100) if prev else None
+                return {"fiyat": round(last, 2),
+                        "gunluk": round(chg, 2) if chg is not None else None}
+            if len(c) >= 1:
+                return {"fiyat": round(float(c.iloc[-1]), 2), "gunluk": None}
+        fi = t.fast_info
+        lp = fi.get("last_price") if hasattr(fi, "get") else None
+        if lp:
+            pc = fi.get("previous_close") if hasattr(fi, "get") else None
+            chg = ((lp - pc) / pc * 100) if pc else None
+            return {"fiyat": round(float(lp), 2),
+                    "gunluk": round(chg, 2) if chg is not None else None}
+    except Exception:
+        return None
+    return None
 
 
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
@@ -2381,6 +2422,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "Baglamda 'Anlik veri' varsa bir hissenin guncel fiyat/gunluk degisim "
         "sorusunu DOGRUDAN o veriyle cevapla; bu durumda 'gercek zamanli verim yok' "
         "DEME, gercek fiyati ve degisimi soyle. "
+        "KULLANICININ PORTFOYU hakkinda EMIN olmadigin bir sey SOYLEME. Portfoy "
+        "verisi ('Portfoyu') sana acikca verilmisse kullan; verilmemisse veya bos "
+        "ise 'portfoy bilgine erisimim yok' de. Bir hissenin portfoyde olup "
+        "olmadigini ancak verilen portfoy listesinde kesin goruyorsan soyle; "
+        "'portfoyunde yok / var' diye TAHMIN etme. "
         "Bu yatirim tavsiyesi degildir.\n\n"
         "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
         "kar-zarar/tutma_gun/bot_karari), portfoy genel analizi (cesitlendirme/en "
