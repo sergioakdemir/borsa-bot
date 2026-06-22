@@ -524,7 +524,7 @@ def _yf_prices(symbols: list[str]) -> dict:
         try:
             col = closes[s].dropna() if len(symbols) > 1 else closes.dropna()
             if len(col) >= 2:
-                prev, last = float(col.iloc[-2]), float(col.iloc[-1])
+                prev, last = float(col.iloc[-2].iloc[0]) if hasattr(col.iloc[-2], "iloc") else float(col.iloc[-2]), float(col.iloc[-1].iloc[0]) if hasattr(col.iloc[-1], "iloc") else float(col.iloc[-1])
                 chg = ((last - prev) / prev * 100) if prev else None
                 out[s] = {"fiyat": round(last, 2),
                           "gunluk": round(chg, 2) if chg is not None else None}
