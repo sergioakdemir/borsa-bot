@@ -4,6 +4,7 @@ Watchlist'teki her hisseyi kontrol eder; ACIL/IZLE seviyesindeki YENI uyarilari
 Telegram'a gonderir. Spam onleme: ayni hisseye gun icinde ayni/daha dusuk
 seviyede tekrar gondermez. Bayat/tatil verisinde (bugun bari yoksa) uyarmaz.
 """
+import hashlib
 import os
 import sys
 from datetime import datetime
@@ -36,6 +37,20 @@ from src.db import database as db
 
 _EMOJI = {"ACIL": "\U0001F6A8", "IZLE": "\U0001F440", "HABER": "\U0001F4F0",
           "HACIM": "\U0001F4CA"}
+
+
+def _kap_key(disclosure_id, baslik) -> str:
+    """Bir KAP bildirimi icin KARARLI dedup anahtari.
+
+    disclosure_id (KAP disclosureIndex) varsa onu, yoksa baslik hash'ini kullanir.
+    Hem gunluk uyari (main) hem hizli KAP taramasi (scan_kap_unpriced) AYNI anahtari
+    uretir; boylece ayni bildirim iki yoldan/iki taramadan tekrar gonderilmez.
+    """
+    if disclosure_id:
+        base = f"id:{disclosure_id}"
+    else:
+        base = "t:" + " ".join((baslik or "").lower().split())
+    return "KAP:" + hashlib.md5(base.encode("utf-8")).hexdigest()[:12]
 
 
 def unpriced_fresh_news(ticker, news_src=None):
@@ -99,6 +114,43 @@ def _kaydet_kap_yorum(ticker, haber, yorum, tarih):
                                    encoding="utf-8")
     except Exception:
         pass
+
+
+def _hareket_sebebi(ticker, change, haberler, now=None):
+    """Fiyat hareketinin OLASI nedeni (1 cumle). Varsa o gun cikan KAP haberiyle
+    iliskilendirir. Anahtar yoksa/hata olursa None (sessiz)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    now = now or datetime.now(_TZ)
+    bugun = now.date().isoformat()
+    taze = [h for h in (haberler or []) if str(h.get("tarih", "")).startswith(bugun)]
+    if taze:
+        haber_txt = "\n".join(f"- {h.get('baslik')} (fiyatlanma: {h.get('fiyatlanma')})"
+                              for h in taze[:5])
+    else:
+        haber_txt = "(bugun bu hisseye dair KAP haberi yok)"
+    yon = "yukseldi" if change > 0 else "dustu"
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=110,
+            system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Bir hissenin "
+                    "gun ici fiyat hareketinin OLASI nedenini TEK kisa cumlede acikla. "
+                    "Asagida bugunku KAP haberleri varsa hareketi DOGRUDAN onlarla "
+                    "iliskilendir; haber yoksa 'belirgin KAP haberi yok, muhtemelen "
+                    "piyasa/sektor kaynakli' de. Veri veya haber UYDURMA, kesin neden "
+                    "iddia etme, sade Turkce, markdown yok, tek cumle."),
+            messages=[{"role": "user", "content":
+                       f"Hisse: {ticker}\nBugunku hareket: %{change:+} ({yon})\n"
+                       f"Bugunku KAP haberleri:\n{haber_txt}\n"
+                       "Bu hareket neden olmus olabilir? Tek cumle."}],
+        )
+        t = "".join(getattr(b, "text", "") for b in resp.content
+                    if getattr(b, "type", "") == "text").strip()
+        return t or None
+    except Exception:
+        return None
 
 
 def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
@@ -167,13 +219,16 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
 
         gonderilmis = set(db.alert_levels_today(ticker, today))
         for it in taze:
-            did = it.disclosure_id or (it.title or "")[:40]
-            tok = f"KAPHIZLI:{did}"
+            tok = _kap_key(it.disclosure_id, it.title)
             if tok in gonderilmis:
-                continue
+                continue   # ayni bildirim bugun zaten gonderildi (main veya onceki tarama)
             db.record_alert(ticker, today, tok, info["change"])
             gonderilmis.add(tok)
-            hits.append({"ticker": ticker, "change": info["change"], "item": it})
+            haber = {"baslik": it.title, "url": it.url}
+            yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz/notr yorum
+            _kaydet_kap_yorum(ticker, haber, yorum, today)
+            hits.append({"ticker": ticker, "change": info["change"],
+                         "item": it, "yorum": yorum})
 
     if not hits:
         print(f"[{now:%Y-%m-%d %H:%M}] Fiyatlanmamis yeni KAP haberi yok "
@@ -191,6 +246,8 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
             baslik = f'<a href="{url}">{baslik}</a>'
         lines.append(f"⚡ <b>{h['ticker']}</b> ({h['change']:+}%): {baslik} "
                      f"<i>[{it.published_at:%H:%M}]</i>")
+        if h.get("yorum"):
+            lines.append(f"     💡 {h['yorum']}")
     sonuc = telegram.broadcast("\n".join(lines))
     ok = [c for c, s in sonuc.items() if s == "ok"]
     print(f"[{now:%Y-%m-%d %H:%M}] {len(hits)} fiyatlanmamis KAP haberi -> "
@@ -206,8 +263,11 @@ def build_message(price_alerts, news_alerts, vol_alerts, now):
     def fmt(a):
         arrow = "\U0001F4C8" if a["change"] > 0 else "\U0001F4C9"
         sign = "+" if a["change"] > 0 else ""
-        return (f"{arrow} <b>{a['ticker']}</b>  {sign}{a['change']}%  "
+        line = (f"{arrow} <b>{a['ticker']}</b>  {sign}{a['change']}%  "
                 f"({a['prev_close']} → {a['last_close']} TL)")
+        if a.get("sebep"):
+            line += f"\n     💡 {a['sebep']}"
+        return line
 
     if acil:
         lines.append(f"{_EMOJI['ACIL']} <b>ACIL</b>")
@@ -245,7 +305,7 @@ def main():
         print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis - uyari atlandi.")
         return 0
 
-    from src.news.service import get_news_source
+    from src.news.service import get_news_source, filtered_news
     from src.news.fundamental_source import get_volume_anomaly
     news_src, _ = get_news_source(verbose=False)
 
@@ -264,12 +324,21 @@ def main():
                        default=0)
             if level_rank(level) > sent:
                 db.record_alert(ticker, today, level, info["change"])
-                price_alerts.append({"ticker": ticker, "seviye": level, **info})
+                # SEBEP: neden dustu/yukseldi? Varsa o gun cikan KAP haberiyle iliskilendir.
+                try:
+                    haberler = filtered_news(ticker, source=news_src)
+                except Exception:
+                    haberler = []
+                sebep = _hareket_sebebi(ticker, info["change"], haberler, now=now)
+                price_alerts.append({"ticker": ticker, "seviye": level,
+                                     "sebep": sebep, **info})
         else:
             # Fiyat oynamamis -> KAP'ta taze fiyatlanmamis haber var mi? -> ACIL
             haber = unpriced_fresh_news(ticker, news_src)
-            if haber and "HABER" not in db.alert_levels_today(ticker, today):
-                db.record_alert(ticker, today, "HABER", info["change"])
+            # Dedup: hizli KAP taramasiyla AYNI anahtar -> ayni bildirim tekrar gitmez
+            tok = _kap_key(haber.get("disclosure_id"), haber.get("baslik")) if haber else None
+            if haber and tok not in db.alert_levels_today(ticker, today):
+                db.record_alert(ticker, today, tok, info["change"])
                 yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz yorum
                 _kaydet_kap_yorum(ticker, haber, yorum, today)
                 news_alerts.append({"ticker": ticker, "change": info["change"],

@@ -48,5 +48,7 @@ def filtered_news(ticker: str, source=None, now=None, exclude_stale: bool = True
             "tarih": it.published_at.strftime("%Y-%m-%d %H:%M"),
             "tazelik": fr.status.value,
             "fiyatlanma": pi.status,
+            "disclosure_id": it.disclosure_id,   # dedup anahtari icin
+            "url": it.url,
         })
     return out
