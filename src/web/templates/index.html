@@ -1024,10 +1024,10 @@ function setChart(pts,bcur,period,acilis){const cs=(pts||[]).map(p=>p.c);
   const lo=Math.min(...cs),hi=Math.max(...cs);          // gercek veri araligi (eksen etiketleri)
   let dlo=lo,dhi=hi;
   if(acilis!=null){dlo=Math.min(dlo,acilis);dhi=Math.max(dhi,acilis)}  // ref cizgisi gorunur kalsin
-  // y-ekseni otomatik sikistirma: %15 deger padi (alt x0.85 / ust x1.15); 0'dan baslamaz.
-  // Fiyat-bazli oldugundan 1G/1H dar araliklarda da min %15 pad garanti.
-  let mn=dlo*0.85,mx=dhi*1.15;
-  if(mn===mx){mn=mn*0.85;mx=mx*1.15||1}
+  // y-ekseni otomatik zoom: alt %0.5 (x0.995) / ust %0.5 (x1.005) bosluk; 0'dan
+  // baslamaz, sadece o periyodun fiyat araligini gosterir.
+  let mn=dlo*0.995,mx=dhi*1.005;
+  if(mn===mx){mn=mn*0.995;mx=mx*1.005||1}
   CHART={pts:pts||[],bcur,period,acilis:(acilis==null?null:acilis),lo,hi,mn,mx}}
 function chgStr(c){const v=(CHART.acilis?(c-CHART.acilis)/CHART.acilis*100:0);
   return{cls:v>=0?"pos":"neg",txt:(v>0?"+":v<0?"-":"")+"%"+fmt(Math.abs(v))}}
