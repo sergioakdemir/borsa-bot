@@ -34,7 +34,7 @@ _TCMB_FAIZ_URL = ("https://www.tcmb.gov.tr/wps/wcm/connect/TR/tcmb+tr/main+menu/
                   "para+politikasi/merkez+bankasi+faiz+oranlari")
 _EVDS2_URL = "https://evds2.tcmb.gov.tr/index.php?lang=tr"
 # Hicbir kaynak ve onceki deger yoksa kullanilacak guvenli sabit (en son bilinen)
-_POLITIKA_FAIZI_FALLBACK = 46.0
+_POLITIKA_FAIZI_FALLBACK = 37.0
 
 # kucuk TTL onbellek (sayfalari her cagride tekrar cekme)
 _CACHE = {}
