@@ -52,6 +52,7 @@ def run(verbose: bool = True) -> int:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] model portfoy acik pozisyon: {len(acik)}")
     fx = None
     guncellenen = 0
+    kapanan = 0
     for p in acik:
         pb = (p.get("para_birimi") or "TL").upper()
         native = _son_fiyat(p["ticker"], pb)
@@ -69,12 +70,35 @@ def run(verbose: bool = True) -> int:
         adet = p.get("adet") or 0.0
         kz_tl = round((fiyat_tl - giris) * adet, 2)
         kz_y = round((fiyat_tl - giris) / giris * 100, 2) if giris else None
+
+        # --- Otomatik cikis: stop-loss -%10 veya max bekleme 20 gun ---
+        from src.portfolio.model import STOP_LOSS, MAX_HOLD_GUN
+        held = None
+        try:
+            held = (datetime.now(_TZ).date()
+                    - datetime.fromisoformat(p["alis_tarihi"]).date()).days
+        except (ValueError, TypeError, KeyError):
+            held = None
+        neden = None
+        if kz_y is not None and kz_y <= STOP_LOSS * 100:
+            neden = "STOP-LOSS"
+        elif held is not None and held >= MAX_HOLD_GUN:
+            neden = "MAX-BEKLEME"
+        if neden:
+            db.close_model_position(p["id"], fiyat_tl, kz_tl, kz_y)
+            kapanan += 1
+            if verbose:
+                print(f"  {p['ticker']:7} KAPANDI ({neden}) {giris} -> {fiyat_tl:.2f} TL "
+                      f"({kz_tl} TL / %{kz_y})")
+            continue
+
         db.update_model_running(p["id"], fiyat_tl, kz_tl, kz_y)
         guncellenen += 1
         if verbose:
             print(f"  {p['ticker']:7} {giris} -> {fiyat_tl:.2f} TL : {kz_tl} TL (%{kz_y})")
     if verbose:
-        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} pozisyon guncellendi.")
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} guncellendi, "
+              f"{kapanan} otomatik kapandi.")
     return guncellenen
 
 

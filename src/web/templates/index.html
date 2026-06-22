@@ -706,8 +706,14 @@ async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
     let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
       <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
     h+=modelPortfoyHTML(mp);
-    h+=aggressiveHTML(agr);
-    h+=backtestHTML(btr);
+    // Backtest dosyalari yoksa gercek-karar mesaji goster
+    if((!agr||!agr.var)&&(!btr||!btr.var)){
+      h+=`<div class="sec-title">Backtest</div>`+
+         `<div class="card"><div class="tick" style="line-height:1.5">Henüz yeterli gerçek karar verisi yok. Pazartesi'den itibaren botun gerçek kararları burada birikecek.</div></div>`;
+    }else{
+      h+=aggressiveHTML(agr);
+      h+=backtestHTML(btr);
+    }
     h+=paperHTML(pr);
     h+=haberEtkiHTML(her);
     h+=`<div class="sec-title">Geçmiş Kararlar</div>`;

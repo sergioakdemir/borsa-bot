@@ -1,15 +1,21 @@
 """Model portfoy: botun kendi sanal portfoyu (100.000 TL, bugunden itibaren).
 
-- Sabah AL karari -> 50.000 TL'lik sanal alim (acik pozisyon yoksa, nakit yeterse).
+- Sabah AL karari (puan >= 7) -> 20.000 TL'lik sanal alim (acik pozisyon yoksa,
+  nakit yeterse, max 5 acik pozisyon).
 - SAT/GUCLU_SAT -> acik pozisyonu kapat, kar/zarar kaydet.
-- Her gece guncel fiyatlarla kagit k/z guncellenir (ops/update_model_portfoy.py).
+- Her gece guncel fiyatla kagit k/z guncellenir; stop-loss -%10 veya 20 gun
+  max bekleme dolunca pozisyon otomatik kapanir (ops/update_model_portfoy.py).
 - BIST-100 (XU100.IS) ile ayni donem getirisi karsilastirilir.
 
-paper_trades'ten farkli, bagimsiz bir portfoy: 50K/pozisyon, gerekce saklanir,
-BIST100 kiyasi yapilir.
+paper_trades'ten farkli, bagimsiz bir portfoy. AL esigi MODEL portfoy icin 7;
+canli karar/yorum esigi (commentary) 8'de kalir.
 """
 BASLANGIC_TL = 100_000.0
-POZ_TL = 50_000.0
+POZ_TL = 20_000.0            # her pozisyon 20K TL
+MAX_OPEN = 5                 # ayni anda en fazla 5 acik pozisyon
+AL_PUAN_ESIK = 7            # model portfoy AL esigi (canli yorum esigi 8)
+STOP_LOSS = -0.10           # -%10 stop-loss
+MAX_HOLD_GUN = 20          # max bekleme 20 gun
 
 
 def _usdtry():
@@ -38,6 +44,7 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
     from src.db import database as db
     acilan = kapanan = 0
     cash = model_cash()
+    acik_sayisi = len(db.list_model_positions(durum="acik"))
     fx = None                                       # USD/TRY (lazy)
     for r in results or []:
         if r.get("skipped") or r.get("kill_switch"):
@@ -67,13 +74,15 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
         acik = db.get_open_model_position(ticker)
 
         if karar == "AL":
-            if acik or cash < POZ_TL:
+            puan = r.get("score") or r.get("puan") or 0
+            if acik or cash < POZ_TL or acik_sayisi >= MAX_OPEN or puan < AL_PUAN_ESIK:
                 continue
             adet = round(POZ_TL / fiyat, 6)
             gerekce = (r.get("gerekce") or "")[:300]
             db.open_model_position(ticker, adet, fiyat, karar_gerekce=gerekce,
                                    alis_tarihi=tarih, para_birimi=para_birimi)
             cash -= adet * fiyat
+            acik_sayisi += 1
             acilan += 1
             if verbose:
                 print(f"  [model] AL  {ticker} @ {fiyat:.2f} TL x {adet} ({para_birimi})")
