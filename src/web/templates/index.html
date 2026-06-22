@@ -192,6 +192,16 @@
   .hero .grid b{display:block;font-size:15px;font-weight:650;margin-top:3px}
   .hero .yorum{font-size:13.5px;color:var(--muted);line-height:1.55;margin-top:14px;
     border-top:1px solid var(--border);padding-top:13px}
+  /* ---- getiri sekmesi (gunluk/haftalik/aylik) ---- */
+  .ret{margin-top:15px;border-top:1px solid var(--border);padding-top:13px}
+  .ret-tabs{display:flex;gap:6px;margin-bottom:10px}
+  .ret-tabs button{flex:1;background:transparent;border:1px solid var(--border2);color:var(--muted);
+    border-radius:999px;padding:6px 0;font-size:12.5px;font-weight:600;min-height:32px}
+  .ret-tabs button.active{border-color:rgba(52,211,153,.4);color:var(--green);background:var(--green-bg)}
+  .ret-val{display:flex;align-items:baseline;gap:10px}
+  .ret-tl{font-size:22px;font-weight:750}
+  .ret-pct{font-size:14px;font-weight:650}
+  .ret-na{font-size:13px;color:var(--muted)}
   .pline{font-size:13px;color:var(--muted);margin-top:5px}
   .dots{color:var(--muted);font-size:22px;line-height:1;padding:0 6px;min-height:44px;min-width:36px;
     display:flex;align-items:center;justify-content:center}
@@ -648,6 +658,21 @@ function posCardHTML(p){const k=reg(p);
     ${p.guncel!=null?`<div class="pline">Güncel: ${money(p.guncel,p.para_birimi)}${kz}</div>`:""}
     ${p.cardText?`<div class="cardtext">${esc(p.cardText)}</div>`:""}
     <div class="acc-foot">${statusLine(p)}${p.actionText?`<span class="actiontext">${esc(p.actionText)}</span>`:""}</div></div>`}
+/* ---- Portföy getiri (Günlük/Haftalık/Aylık) ---- */
+let RET_DATA=null,RET_TAB="gunluk";
+const RET_TABS=[["gunluk","Günlük"],["haftalik","Haftalık"],["aylik","Aylık"]];
+function retHTML(getiri){RET_DATA=getiri||{};
+  const tabs=RET_TABS.map(([k,l])=>`<button class="${k===RET_TAB?'active':''}" onclick="setRetTab('${k}')">${l}</button>`).join("");
+  return`<div class="ret"><div class="ret-tabs">${tabs}</div><div id="ret-body">${retBody()}</div></div>`}
+function retBody(){const g=(RET_DATA||{})[RET_TAB];
+  if(!g)return`<div class="ret-na">Bu dönem için henüz veri yok (snapshot bekleniyor).</div>`;
+  const sc=signCls(g.tl);const sign=g.tl>0?"+":"";
+  return`<div class="ret-val"><span class="ret-tl ${sc}">${sign}${money(g.tl)}</span>`+
+    `<span class="ret-pct ${sc}">${pct(g.yuzde)}</span></div>`}
+function setRetTab(t){RET_TAB=t;
+  document.querySelectorAll(".ret-tabs button").forEach((b,i)=>b.classList.toggle("active",RET_TABS[i][0]===t));
+  const el=document.getElementById("ret-body");if(el)el.innerHTML=retBody()}
+
 async function loadPortfoy(){const el=document.getElementById("page-portfoy");
   if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
   el.innerHTML=skel(4);
@@ -655,6 +680,7 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
     let h=`<div class="sec-row"><div class="sec-title">Portföyüm</div><button class="addbtn" onclick="openPf()">+</button></div>
       <div class="hero"><div class="lbl">Toplam Değer</div><div class="big">${money(o.deger)}</div>
         <div class="chg ${signCls(o.kz)}">${money(o.kz)} (${pct(o.kz_yuzde)})</div>
+        ${retHTML(d.getiri)}
         <div class="grid"><div><div class="lbl">Yatırım</div><b>${money(o.maliyet)}</b></div>
           <div><div class="lbl">Toplam K/Z</div><b class="${signCls(o.kz)}">${money(o.kz)}</b></div></div>
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;

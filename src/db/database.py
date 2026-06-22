@@ -147,6 +147,17 @@ CREATE TABLE IF NOT EXISTS model_portfoy (
     para_birimi     TEXT DEFAULT 'TL'
 );
 CREATE INDEX IF NOT EXISTS ix_model_ticker_durum ON model_portfoy(ticker, durum);
+CREATE TABLE IF NOT EXISTS portfoy_snapshot (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id    INTEGER NOT NULL,
+    tarih           TEXT NOT NULL,
+    toplam_deger_tl REAL,
+    bist_degeri     REAL,
+    abd_degeri      REAL,
+    olusturma       TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_portfoy_snapshot_uid_tarih
+    ON portfoy_snapshot(kullanici_id, tarih);
 """
 
 # Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
@@ -349,6 +360,42 @@ def list_portfolio(kullanici_id=None) -> list[dict]:
             q = "SELECT * FROM portfoy WHERE kullanici_id=? ORDER BY id"
             return [dict(r) for r in c.execute(q, (kullanici_id,))]
         return [dict(r) for r in c.execute("SELECT * FROM portfoy ORDER BY kullanici_id, id")]
+
+
+# ---- portfoy degeri snapshot (gunluk/haftalik/aylik getiri takibi) ----
+def record_portfoy_snapshot(kullanici_id, tarih, toplam_deger_tl,
+                            bist_degeri=None, abd_degeri=None) -> None:
+    """O gunku portfoy kapanis degerini yazar (kullanici+tarih basina tek kayit)."""
+    init_db()
+    with get_conn() as c:
+        c.execute(
+            """INSERT INTO portfoy_snapshot
+                 (kullanici_id, tarih, toplam_deger_tl, bist_degeri, abd_degeri, olusturma)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(kullanici_id, tarih) DO UPDATE SET
+                 toplam_deger_tl=excluded.toplam_deger_tl,
+                 bist_degeri=excluded.bist_degeri,
+                 abd_degeri=excluded.abd_degeri,
+                 olusturma=excluded.olusturma""",
+            (kullanici_id, tarih, toplam_deger_tl, bist_degeri, abd_degeri, _now()))
+
+
+def snapshot_on_or_before(kullanici_id, tarih) -> dict | None:
+    """Verilen tarihe (dahil) en yakin ONCEKI portfoy snapshot'i (yoksa None)."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT * FROM portfoy_snapshot WHERE kullanici_id=? AND tarih<=? "
+            "ORDER BY tarih DESC LIMIT 1", (kullanici_id, tarih)).fetchone()
+        return dict(r) if r else None
+
+
+def list_portfoy_snapshots(kullanici_id, limit: int = 90) -> list[dict]:
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM portfoy_snapshot WHERE kullanici_id=? ORDER BY tarih DESC LIMIT ?",
+            (kullanici_id, limit))]
 
 
 # ---- karar gunlugu (decisions) ----

@@ -764,6 +764,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
     comm = _commentary_by_ticker()
     pozisyonlar = []
     toplam_maliyet = toplam_deger = 0.0
+    bist_deger = abd_deger = 0.0    # piyasa bazli deger (TL); snapshot icin
 
     with sqlite3.connect(DB_PATH) as c:
         c.row_factory = sqlite3.Row
@@ -818,10 +819,16 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         if guncel is not None:
             deger = adet * guncel
             toplam_deger += deger * fx
+            deger_tl = deger * fx
             kz = deger - maliyet            # kart icin native para biriminde
             kz_yuzde = (kz / maliyet * 100) if maliyet else None
         else:
             toplam_deger += maliyet * fx
+            deger_tl = maliyet * fx
+        if birim_kod == "USD":
+            abd_deger += deger_tl
+        else:
+            bist_deger += deger_tl
 
         birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
         market = "abd" if birim == "$" else "bist"
@@ -853,18 +860,48 @@ def get_portfolio(kullanici: str | None = None) -> dict:
     toplam_kz = toplam_deger - toplam_maliyet
     owned_recs = [comm[t] for t in {p["ticker"] for p in pozisyonlar}
                   if t in comm and not comm[t].get("skipped")]
+    # Snapshot bazli getiri (gunluk/haftalik/aylik) - yalniz tek kullanici sorusunda
+    getiri = _portfoy_getiri(_uid(kullanici), toplam_deger) if kullanici else \
+        {"gunluk": None, "haftalik": None, "aylik": None}
     result = {
         "pozisyonlar": pozisyonlar,
         "genel_yorum": _cap(_overview_fallback(owned_recs), 280),   # AI yorumu /api/overview ile asenkron
         "ozet": {
             "maliyet": toplam_maliyet,
             "deger": toplam_deger,
+            "bist_degeri": round(bist_deger, 2),
+            "abd_degeri": round(abd_deger, 2),
             "kz": toplam_kz,
             "kz_yuzde": (toplam_kz / toplam_maliyet * 100) if toplam_maliyet else None,
         },
+        "getiri": getiri,
     }
     _cache_set(ck, result)
     return result
+
+
+def _portfoy_getiri(uid, guncel_deger) -> dict:
+    """Snapshot'lara gore gunluk/haftalik/aylik getiri (TL + %). Snapshot yoksa None.
+
+    Referans: ilgili tarihe (1/7/30 gun once) en yakin ONCEKI gun kapanis snapshot'i.
+    """
+    bos = {"gunluk": None, "haftalik": None, "aylik": None}
+    if uid is None or guncel_deger is None:
+        return bos
+    from src.db import database as db
+    bugun = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+
+    def _delta(gun):
+        snap = db.snapshot_on_or_before(uid, (bugun - timedelta(days=gun)).isoformat())
+        ref = (snap or {}).get("toplam_deger_tl")
+        if not ref:
+            return None
+        tl = guncel_deger - ref
+        return {"tl": round(tl, 2),
+                "yuzde": round(tl / ref * 100, 2) if ref else None,
+                "ref_tarih": snap.get("tarih")}
+
+    return {"gunluk": _delta(1), "haftalik": _delta(7), "aylik": _delta(30)}
 
 
 _VISION_PROMPT = (
