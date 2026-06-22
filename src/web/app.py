@@ -1932,6 +1932,70 @@ def portfolio_analysis(kullanici=None) -> dict:
     }
 
 
+# Soruda hisse sembolu tespiti: buyuk harf 2-5 karakterlik kelimeler.
+# Yatirim/jargon kisaltmalarini hisse sanmamak icin blokliste.
+_TICKER_RE = re.compile(r"\b[A-Z]{2,5}\b")
+_TICKER_STOP = {
+    "AL", "SAT", "TUT", "BIST", "ABD", "USD", "EUR", "TRY", "TL", "KAP", "PPK",
+    "TCMB", "RSI", "MACD", "ETF", "BYF", "IPO", "ATH", "AI", "OK", "TV", "SPK",
+    "KZ", "USA", "FED", "GSYH", "TUFE", "UFE", "BIM",
+}
+
+
+def _detect_tickers(text: str, limit: int = 4) -> list[str]:
+    """Metindeki olasi hisse sembollerini (BUYUK harf 2-5 karakter) dondurur."""
+    out = []
+    for m in _TICKER_RE.findall(text or ""):
+        if m in _TICKER_STOP or m in out:
+            continue
+        out.append(m)
+    return out[:limit]
+
+
+def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
+    """Verilen sembollerin yfinance'ten ANLIK fiyat + gunluk degisimini dondurur.
+
+    Pazar (BIST/.IS vs ABD) tespiti: once commentary + portfoy + watchlist'teki
+    bilinen kayitlardan; bilinmeyen sembol icin her iki form (ham ve .IS) denenir,
+    veri donen kullanilir."""
+    if not tickers:
+        return []
+    us, bist = set(), set()
+    for t, r in (comm or {}).items():
+        (us if r.get("market") == "abd" else bist).add((t or "").upper())
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            for tk, pb in c.execute("SELECT DISTINCT ticker, para_birimi FROM portfoy"):
+                base = (tk or "").upper().split(".")[0]
+                (us if (pb or "TL").upper() == "USD" else bist).add(base)
+    except sqlite3.Error:
+        pass
+    wl = _load_watchlist()
+    for t in (wl.get("bist_endeks", []) + wl.get("kisisel", [])):
+        bist.add((t or "").upper().split(".")[0])
+
+    plan = {}    # ticker -> [(yf_symbol, market), ...] denenecek formlar
+    for t in tickers:
+        if t in us:
+            plan[t] = [(t, "abd")]
+        elif t in bist:
+            plan[t] = [(f"{t}.IS", "bist")]
+        else:                                   # bilinmiyor -> her iki formu dene
+            plan[t] = [(t, "abd"), (f"{t}.IS", "bist")]
+
+    syms = [s for cands in plan.values() for s, _ in cands]
+    px = _yf_prices(syms)
+    out = []
+    for t, cands in plan.items():
+        for sym, mkt in cands:
+            d = px.get(sym)
+            if d and d.get("fiyat") is not None:
+                out.append({"hisse": t, "fiyat": d["fiyat"], "gunluk": d.get("gunluk"),
+                            "para_birimi": "$" if mkt == "abd" else "₺"})
+                break
+    return out
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
@@ -2019,6 +2083,13 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
                                   or _ilk_cumleler(r.get("gerekce", ""), 1), 80)})
         radar_firsatlar.sort(key=lambda x: x.get("puan") or 0, reverse=True)
         radar_firsatlar = radar_firsatlar[:3]
+
+    # ANLIK FIYAT: soruda gecen hisse sembolleri icin yfinance'ten guncel veri
+    try:
+        anlik_fiyatlar = _anlik_fiyatlar(_detect_tickers(soru), comm)
+    except Exception:
+        anlik_fiyatlar = []
+
     try:
         from src.news.macro import get_macro
         makro = get_macro()
@@ -2089,6 +2160,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
         f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
         f"Makro: {json.dumps(makro, ensure_ascii=False)}"
+        + ("\nAnlik veri (yfinance, su an): " + "; ".join(
+            (f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}, bugün "
+             f"%{a['gunluk']:+g} degisim") if a.get("gunluk") is not None
+            else f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}"
+            for a in anlik_fiyatlar) if anlik_fiyatlar else "")
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
            if plan_modu else ""))
 
@@ -2118,6 +2194,9 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
         "Yanitlarini SADECE verilen baglama dayandir; elinde bu konuda veri yoksa "
         "'bu konuda guncel verim yok' de; asla tahmin yapma, uydurma. "
+        "Baglamda 'Anlik veri' varsa bir hissenin guncel fiyat/gunluk degisim "
+        "sorusunu DOGRUDAN o veriyle cevapla; bu durumda 'gercek zamanli verim yok' "
+        "DEME, gercek fiyati ve degisimi soyle. "
         "Bu yatirim tavsiyesi degildir.\n\n"
         "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
         "kar-zarar/tutma_gun/bot_karari), portfoy genel analizi (cesitlendirme/en "
