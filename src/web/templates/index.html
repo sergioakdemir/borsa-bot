@@ -808,8 +808,7 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
             allText+=(allText?"\n":"")+ev.paragraf;
             c.insertAdjacentHTML("beforeend",`<div class="bubble bot"><span>${esc(ev.paragraf)}</span></div>`);
             scrollChat();
-            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 16px;font-size:18px;letter-spacing:3px;color:var(--text2)">●●●</div>`);
-            if(!window._tdotTimer){window._tdotTimer=setInterval(()=>{const el=document.getElementById("typing");if(!el){clearInterval(window._tdotTimer);window._tdotTimer=null;return;}const states=["●○○","●●○","●●●","○●●","○○●"];window._tdotState=(window._tdotState||0+1)%states.length;el.textContent=states[window._tdotState];},300);}
+            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="opacity:.6;font-style:italic;font-size:13px">yazıyor...</div>`);
             scrollChat();
           }
           if(ev.done){
