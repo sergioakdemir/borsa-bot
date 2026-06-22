@@ -50,6 +50,14 @@
   .uc-av{width:26px;height:26px;border-radius:999px;background:var(--green2);color:#04150a;
     font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center}
   .userchip.u-yigit .uc-av{background:var(--blue);color:#04101f}
+  .hdr-right{display:flex;align-items:center;gap:10px}
+  .refresh-btn{display:flex;align-items:center;justify-content:center;
+    width:36px;height:36px;border-radius:999px;background:var(--card);
+    border:1px solid var(--border);color:var(--text);font-size:19px;line-height:1;
+    cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent}
+  .refresh-btn:active{opacity:.6}
+  .refresh-btn.spin{animation:spin .6s linear}
+  @keyframes spin{to{transform:rotate(360deg)}}
 
   main{position:fixed;left:0;right:0;
     top:calc(var(--header-h) + env(safe-area-inset-top));
@@ -387,9 +395,13 @@
 
 <header>
   <div class="brand">Borsa Takip</div>
-  <button class="userchip" id="userchip" onclick="openUserPick()">
-    <span class="uc-av" id="uc-av">?</span><span id="uc-name">—</span>
-  </button>
+  <div class="hdr-right">
+    <button class="refresh-btn" id="refreshBtn" onclick="refreshTab()"
+            title="Yenile" aria-label="Yenile">↻</button>
+    <button class="userchip" id="userchip" onclick="openUserPick()">
+      <span class="uc-av" id="uc-av">?</span><span id="uc-name">—</span>
+    </button>
+  </div>
 </header>
 
 <main>
@@ -534,6 +546,9 @@ function showTab(t){curTab=t;try{localStorage.setItem("bb_tab",t)}catch(e){}
   document.querySelector("main").scrollTop=0;
   if(!loaded[t])load(t)}
 function load(t){loaded[t]=true;({bugun:loadBugun,portfoy:loadPortfoy,radar:loadRadar,sor:loadSor,bildirim:loadBildirim,ayarlar:loadAyarlar}[t])()}
+function refreshTab(){loaded[curTab]=false;load(curTab);
+  const b=document.getElementById("refreshBtn");
+  if(b){b.classList.remove("spin");void b.offsetWidth;b.classList.add("spin")}}
 const uq=()=>CUR_USER?("?kullanici="+encodeURIComponent(CUR_USER)):"";
 function skel(n){return('<div class="skel skel-card"></div>').repeat(n||3)}
 

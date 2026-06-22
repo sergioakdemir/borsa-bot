@@ -67,11 +67,23 @@ def _portfolio_tickers():
         return set()
 
 
-def select_targets():
-    """AI brifingi icin hedef hisseleri sec: TUM bist_endeks watchlist + kisisel
-    + portfoydeki ABD hisseleri (':us' etiketli). Kisisel/hareketli ayrimi
-    yalnizca gosterim (mesaj kategorileri) icin tutulur."""
-    from src.watchlist import load_index, load_personal, load_mover_threshold
+def select_targets(market="bist"):
+    """AI brifingi icin hedef hisseleri sec.
+
+    market='bist' -> TUM bist_endeks watchlist + kisisel (09:00 brifingi).
+    market='us'   -> yalnizca portfoydeki ABD hisseleri (':us' etiketli, 15:30).
+    """
+    from src.watchlist import load_mover_threshold
+
+    if market in ("us", "abd"):
+        us = _us_portfolio_tickers()
+        targets = [f"{t}:us" for t in us]
+        return {"targets": targets, "personal": [], "movers": [], "us": us,
+                "changes": {}, "threshold": load_mover_threshold(),
+                "taranan": len(us), "portfolio": _portfolio_tickers(),
+                "market": "us"}
+
+    from src.watchlist import load_index, load_personal
     from src.alerts.engine import intraday_change
 
     personal = load_personal()
@@ -86,21 +98,15 @@ def select_targets():
 
     movers = [t for t in index if abs(changes.get(t, 0.0)) >= threshold]
 
-    # TUM bist_endeks hisseleri analiz edilir
+    # TUM bist_endeks hisseleri analiz edilir (ABD ayri brifingde)
     targets = list(index)
     for t in personal:                 # kisisel listede index disinda hisse olabilir
         if t not in targets:
             targets.append(t)
 
-    # Portfoydeki ABD hisselerini ':us' etiketiyle ekle (KAP/analist atlanir)
-    us = _us_portfolio_tickers()
-    for t in us:
-        if t not in targets and f"{t}:us" not in targets:
-            targets.append(f"{t}:us")
-
-    return {"targets": targets, "personal": personal, "movers": movers, "us": us,
+    return {"targets": targets, "personal": personal, "movers": movers, "us": [],
             "changes": changes, "threshold": threshold, "taranan": len(index),
-            "portfolio": _portfolio_tickers()}
+            "portfolio": _portfolio_tickers(), "market": "bist"}
 
 
 def evaluate_all(targets, overview=None, learning=None):
@@ -127,27 +133,33 @@ def evaluate_all(targets, overview=None, learning=None):
 
 def build_message(results, sel, now, overview=None):
     """Kisa ozet + en iyi firsat + hisse basina tek satir."""
-    personal = set(sel["personal"])
+    is_us = sel.get("market") in ("us", "abd")
     valid = [r for r in results if not r.get("skipped")]
     al = [r for r in valid if r["final_decision"] == "AL"]
     tut = [r for r in valid if r["final_decision"] == "TUT"]
     sat = [r for r in valid if r["final_decision"] in ("SAT", "GUCLU_SAT")]
     veto = [r for r in valid if r["final_decision"] == "VETO"]
 
-    lines = [f"<b>\U0001F305 Sabah Brifingi</b> — {now:%Y-%m-%d %H:%M}"]
+    baslik = "\U0001F1FA\U0001F1F8 ABD Piyasası Açılıyor" if is_us else "\U0001F305 Sabah Brifingi"
+    lines = [f"<b>{baslik}</b> — {now:%Y-%m-%d %H:%M}"]
     if not results:
-        lines.append("\nBugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
+        bos = ("Analiz edilecek ABD hissesi yok." if is_us
+               else "Bugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
+        lines.append(f"\n{bos}")
         return "\n".join(lines)
 
     ozet = f"{len(al)} AL · {len(tut)} TUT · {len(sat)} SAT"
     if veto:
         ozet += f" · {len(veto)} VETO"
     lines.append(f"<b>Ozet:</b> {ozet}")
-    lines.append(f"<i>Kisisel {len(sel['personal'])} · Hareketli {len(sel['movers'])} "
-                 f"(≥%{sel['threshold']:g}) · taranan {sel['taranan']}</i>")
+    if is_us:
+        lines.append(f"<i>{sel['taranan']} ABD hissesi tarandı</i>")
+    else:
+        lines.append(f"<i>Kisisel {len(sel['personal'])} · Hareketli {len(sel['movers'])} "
+                     f"(≥%{sel['threshold']:g}) · taranan {sel['taranan']}</i>")
 
-    # Genel piyasa yonu (BIST-100 / breadth / USD-TRY)
-    if overview and overview.get("available"):
+    # Genel piyasa yonu (BIST-100 / breadth / USD-TRY) - yalniz BIST brifingi
+    if not is_us and overview and overview.get("available"):
         yon_emoji = {"YUKSELIYOR": "\U0001F4C8", "DUSUYOR": "\U0001F4C9",
                      "YATAY": "➡️"}.get(overview.get("yon"), "📊")
         g = overview.get("bist100_gunluk_%")
@@ -163,26 +175,32 @@ def build_message(results, sel, now, overview=None):
                      f"<i>({' · '.join(detay)})</i>")
         lines.append(f"<i>{_esc(overview.get('brifing_notu'))}</i>")
 
-    # Yabanci yatirimci akisi (varsa)
-    try:
-        from src.news.foreign_investor import briefing_line
-        yb = briefing_line()
-        if yb:
-            lines.append(yb)
-    except Exception:
-        pass
+    # Yabanci yatirimci akisi (varsa) - yalniz BIST brifingi
+    if not is_us:
+        try:
+            from src.news.foreign_investor import briefing_line
+            yb = briefing_line()
+            if yb:
+                lines.append(yb)
+        except Exception:
+            pass
 
-    # Makro: TCMB politika faizi (+ USD/TRY) - get_macro cache'li (ek maliyet yok)
+    # Makro: BIST -> TCMB politika faizi + USD/TRY; ABD -> yalniz USD/TRY
+    # get_macro cache'li (ek maliyet yok)
     try:
         from src.news.macro import get_macro
         mk = get_macro()
-        pf = mk.get("politika_faizi")
-        if pf is not None:
-            satir = f"🏦 <b>TCMB Politika Faizi:</b> %{pf:g}"
-            usd = mk.get("usdtry")
+        usd = mk.get("usdtry")
+        if is_us:
             if usd is not None:
-                satir += f" · USD/TRY {usd:g}"
-            lines.append(satir)
+                lines.append(f"💵 <b>USD/TRY:</b> {usd:g}")
+        else:
+            pf = mk.get("politika_faizi")
+            if pf is not None:
+                satir = f"🏦 <b>TCMB Politika Faizi:</b> %{pf:g}"
+                if usd is not None:
+                    satir += f" · USD/TRY {usd:g}"
+                lines.append(satir)
     except Exception:
         pass
 
@@ -274,13 +292,15 @@ def _record_briefing_memory(results):
                 ticker=tkr, tarih=bugun)
 
 
-def main():
+def main(market="bist"):
+    is_us = market in ("us", "abd")
+    etiket = "ABD brifingi" if is_us else "Sabah brifingi"
     now = datetime.now(_TZ)
     if not telegram.is_configured():
-        print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis. Brifing atlandi, token harcanmadi.")
+        print(f"[{now:%Y-%m-%d %H:%M}] Telegram yapilandirilmamis. {etiket} atlandi, token harcanmadi.")
         return 0
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(f"[{now:%Y-%m-%d %H:%M}] ANTHROPIC_API_KEY yok. Brifing atlandi.")
+        print(f"[{now:%Y-%m-%d %H:%M}] ANTHROPIC_API_KEY yok. {etiket} atlandi.")
         return 1
 
     # 1) Karar sonuclarini doldur (ogrenme) - brifingden ONCE
@@ -291,20 +311,21 @@ def main():
     except Exception as e:
         print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
-    print(f"[{now:%Y-%m-%d %H:%M}] Hedef secimi (kisisel + hareketli)...")
-    sel = select_targets()
-    print(f"  taranan={sel['taranan']} kisisel={len(sel['personal'])} "
-          f"hareketli={len(sel['movers'])} -> AI hedefi: {sel['targets']}")
+    print(f"[{now:%Y-%m-%d %H:%M}] {etiket} - hedef secimi ({market})...")
+    sel = select_targets(market=market)
+    print(f"  taranan={sel['taranan']} -> AI hedefi: {sel['targets']}")
 
-    # 2) Genel piyasa baglami (breadth icin sel['changes'] tekrar kullanilir)
-    try:
-        from src.news.market_overview import get_market_overview
-        overview = get_market_overview(changes=sel.get("changes"))
-        print(f"  piyasa yonu: {overview.get('yon')} | BIST gunluk "
-              f"%{overview.get('bist100_gunluk_%')} haftalik %{overview.get('bist100_haftalik_%')}")
-    except Exception as e:
-        print(f"  piyasa baglami alinamadi: {type(e).__name__}: {str(e)[:80]}")
-        overview = None
+    # 2) Genel piyasa baglami - yalniz BIST (ABD brifingi BIST breadth'i kullanmaz)
+    overview = None
+    if not is_us:
+        try:
+            from src.news.market_overview import get_market_overview
+            overview = get_market_overview(changes=sel.get("changes"))
+            print(f"  piyasa yonu: {overview.get('yon')} | BIST gunluk "
+                  f"%{overview.get('bist100_gunluk_%')} haftalik %{overview.get('bist100_haftalik_%')}")
+        except Exception as e:
+            print(f"  piyasa baglami alinamadi: {type(e).__name__}: {str(e)[:80]}")
+            overview = None
 
     # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
     try:
@@ -343,10 +364,11 @@ def main():
     msg = build_message(results, sel, now, overview=overview)
     sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)
     ok = [c for c, s in sonuc.items() if s == "ok"]
-    print(f"[{now:%Y-%m-%d %H:%M}] Telegram broadcast: {len(ok)}/{len(sonuc)} alici "
+    print(f"[{now:%Y-%m-%d %H:%M}] Telegram broadcast ({etiket}): {len(ok)}/{len(sonuc)} alici "
           f"({len(results)} hisse). Sonuc: {sonuc}")
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _market = "us" if (len(sys.argv) > 1 and sys.argv[1].lower() in ("us", "abd")) else "bist"
+    sys.exit(main(_market))
