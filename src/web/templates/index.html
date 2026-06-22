@@ -28,7 +28,8 @@
   html,body{height:100%;background:var(--bg);color:var(--text);overscroll-behavior:none}
   body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;
     font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
-    background:linear-gradient(180deg,#F5F7FA 0%,#EAECF0 100%);overflow:hidden}
+    background:var(--bg);color:var(--text);overflow:hidden}
+  main{background:var(--bg)}
   button{font-family:inherit;cursor:pointer;color:inherit;border:none;background:none}
   a{color:inherit;text-decoration:none}
   .c-green{color:var(--green)} .c-amber{color:var(--amber)} .c-red{color:var(--red)}
@@ -216,7 +217,7 @@
   .gh-row:active{background:rgba(255,255,255,.04)}
   .gh-rank{width:15px;text-align:center;font-size:13px;font-weight:700;color:var(--muted2)}
   .gh-av{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-    font-weight:800;font-size:15px;color:#fff;flex:0 0 auto}
+    font-weight:800;font-size:15px;color:var(--text);flex:0 0 auto}
   .gh-main{flex:1;min-width:0}
   .gh-tk{font-size:14.5px;font-weight:700}
   .gh-nm{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
