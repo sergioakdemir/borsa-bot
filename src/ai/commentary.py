@@ -160,6 +160,10 @@ SEKTOR_NOTLARI = {
     "KOZAL": "Altın madenciliğinde ons altın fiyatı, üretim ve dolar kuru kritiktir",
     # Taahhut / insaat
     "ENKAI": "Taahhütte yurt dışı projeler, döviz geliri ve enerji yatırımları kritiktir",
+    # Kiymetli maden BYF (borsa yatirim fonu)
+    "GMSTR.F": ("Bu bir altın/gümüş BYF (Borsa Yatırım Fonu). Kıymetli maden "
+                "fiyatlarına, dolar/TL kuruna ve enflasyon beklentilerine bağlı "
+                "hareket eder."),
 }
 
 
@@ -278,7 +282,10 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         return None
     if df is None or df.empty:
         return None
-    df = df[df["Volume"] > 0]
+    df_v = df[df["Volume"] > 0]
+    # Hacim verisi guvenilmez ETF/fonlarda (yfinance Volume=0) tum barlar elenebilir;
+    # bu durumda fiyat barlariyla devam et (hacim filtresiz).
+    df = df_v if len(df_v) >= 2 else df
     if len(df) < 2:
         return None
 

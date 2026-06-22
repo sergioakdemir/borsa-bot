@@ -9,4 +9,8 @@ class BIST(Market):
 
     def to_symbol(self, ticker: str) -> str:
         ticker = ticker.upper().strip()
-        return ticker if ticker.endswith(".IS") else f"{ticker}.IS"
+        if ticker.endswith(".IS"):
+            return ticker
+        if ticker.endswith(".F"):          # fon/yanlis eki (GMSTR.F -> GMSTR.IS)
+            ticker = ticker[:-2]
+        return f"{ticker}.IS"

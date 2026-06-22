@@ -138,6 +138,16 @@ _GRUPLAR = {
             {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 60, "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
         ],
     },
+    "kiymetli_maden": {
+        "ozet": ("Altın/gümüş kıymetli maden BYF'i: fiyatı doğrudan maden fiyatına, "
+                 "dolar/TL kuruna ve enflasyon beklentisine bağlı. Dolar güçlendiğinde "
+                 "(TL değer kaybettiğinde) veya enflasyon yükseldiğinde genellikle yukarı "
+                 "hareket eder; güvenli liman talebiyle desteklenir."),
+        "kurallar": [
+            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 70, "aciklama": "dolar güçlenirken / TL değer kaybederken"},
+            {"kosul": "enflasyon_yuksek", "yon": "yükseliş", "olasilik": 65, "aciklama": "enflasyon yüksekken (değer saklama / güvenli liman)"},
+        ],
+    },
 }
 
 # Hisse -> grup
@@ -158,6 +168,7 @@ _TICKER_GRUP = {
     "KOZAL": "altin",
     "ARCLK": "beyaz_esya",
     "ENKAI": "taahhut",
+    "GMSTR.F": "kiymetli_maden",
 }
 
 
@@ -176,6 +187,11 @@ def _aktif_kosullar(macro_data: dict | None, overview: dict | None = None) -> se
             aktif.add("faiz_yuksek")
         elif faiz <= 28:
             aktif.add("faiz_dusuk")
+
+    # Enflasyon seviyesi (TUFE yillik): yuksek enflasyon kiymetli madeni destekler
+    tufe = macro_data.get("tufe_yillik")
+    if isinstance(tufe, (int, float)) and tufe >= 30:
+        aktif.add("enflasyon_yuksek")
 
     # TL yonu: haftalik USD/TRY degisimi (overview'dan); yoksa makro yok
     usdtry_h = overview.get("usdtry_haftalik_%")
