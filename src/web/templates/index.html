@@ -808,7 +808,7 @@ async function sendChat(){const inp=document.getElementById("chat-text");const q
             allText+=(allText?"\n":"")+ev.paragraf;
             c.insertAdjacentHTML("beforeend",`<div class="bubble bot"><span>${esc(ev.paragraf)}</span></div>`);
             scrollChat();
-            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 14px"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></div>`);
+            c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="padding:10px 14px;display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s infinite ease-in-out"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s .2s infinite ease-in-out"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--text2);display:inline-block;animation:tdotanim 1.4s .4s infinite ease-in-out"></span></div>`);
             scrollChat();
           }
           if(ev.done){
