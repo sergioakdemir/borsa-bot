@@ -71,7 +71,7 @@ _WL_LOCK = threading.Lock()
 
 # Disari acilan arama sonuclari icin kucuk TTL onbellegi (rate-limit korumasi)
 _SEARCH_CACHE: dict[str, tuple[float, list]] = {}
-_SEARCH_TTL = 60.0  # saniye
+_SEARCH_TTL = 300.0  # saniye (5 dakika)
 
 _OPPORTUNITY_MIN = 7  # firsat bolgesine girmek icin gereken puan
 _VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
@@ -757,6 +757,10 @@ def get_search(q: str, market: str = "bist") -> list[dict]:
 def get_portfolio(kullanici: str | None = None) -> dict:
     """Portfoy ozeti. kullanici verilirse (ad, orn. 'serhat') yalniz o kisinin
     pozisyonlari dondurulur; yoksa tum kullanicilar."""
+    ck = f"portfolio_{kullanici or 'all'}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
     comm = _commentary_by_ticker()
     pozisyonlar = []
     toplam_maliyet = toplam_deger = 0.0
@@ -849,7 +853,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
     toplam_kz = toplam_deger - toplam_maliyet
     owned_recs = [comm[t] for t in {p["ticker"] for p in pozisyonlar}
                   if t in comm and not comm[t].get("skipped")]
-    return {
+    result = {
         "pozisyonlar": pozisyonlar,
         "genel_yorum": _cap(_overview_fallback(owned_recs), 280),   # AI yorumu /api/overview ile asenkron
         "ozet": {
@@ -859,6 +863,8 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "kz_yuzde": (toplam_kz / toplam_maliyet * 100) if toplam_maliyet else None,
         },
     }
+    _cache_set(ck, result)
+    return result
 
 
 _VISION_PROMPT = (
@@ -1958,9 +1964,10 @@ def ask_bot(soru: str, kullanici=None) -> dict:
         import anthropic
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_CHAT_MODEL, max_tokens=700,
+            model=_CHAT_MODEL, max_tokens=400,
             system=(
                 "Sen kullanicinin kisisel 25 yillik borsa asistanisin. Sade, net, sicak "
+                "Turkce konus. KISA ve NET ol: max 3-4 cumle. Detay istenirse ver. "
                 "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
                 "Yanitlarini SADECE verilen baglama dayandir; baglamda yoksa 'elimde bu "
                 "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir.\n\n"
@@ -2519,6 +2526,24 @@ def api_today_summary():
 def api_news():
     return jsonify(get_news())
 
+
+
+
+@app.route("/api/chat-stream", methods=["POST"])
+def api_ask_stream():
+    d = request.get_json(silent=True) or {}
+    soru = d.get("soru") or d.get("mesaj") or ""
+    kullanici = d.get("kullanici")
+    def generate():
+        result = ask_bot(soru, kullanici)
+        cevap = result.get("cevap", "Yanit uretemedi.")
+        words = cevap.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words)-1 else "")
+            yield "data: " + json.dumps({"delta": chunk}, ensure_ascii=False) + "\n\n"
+        yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
+    return app.response_class(generate(), mimetype="text/event-stream",
+                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)

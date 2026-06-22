@@ -787,10 +787,28 @@ function askPreset(p){document.getElementById("chat-text").value=p;sendChat()}
 async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
   inp.value="";CHAT.push({rol:"user",metin:q});const c=document.getElementById("chat");
   c.insertAdjacentHTML("beforeend",renderBubble({rol:"user",metin:q}));
-  c.insertAdjacentHTML("beforeend",`<div class="bubble bot typing" id="typing">yazıyor…</div>`);scrollChat();
-  try{const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER})});
-    const d=await r.json();document.getElementById("typing")?.remove();const a=d.cevap||"Yanıt üretemedim.";
-    CHAT.push({rol:"bot",metin:a});c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:a}));scrollChat();
+  c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing"><span style="opacity:.5">...</span></div>`);scrollChat();
+  try{
+    const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER})});
+    const reader=resp.body.getReader();const dec=new TextDecoder();
+    let buf="",fullText="",botEl=null;
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split("\n");buf=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith("data:"))continue;
+        try{const ev=JSON.parse(line.slice(5).trim());
+          if(ev.delta){fullText+=ev.delta;
+            if(!botEl){document.getElementById("typing")?.remove();
+              c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="bs"></div>`);
+              botEl=document.getElementById("bs");}
+            if(botEl)botEl.textContent=fullText;scrollChat();}
+          if(ev.done){if(botEl)botEl.removeAttribute("id");CHAT.push({rol:"bot",metin:fullText});}
+        }catch(e){}
+      }
+    }
+    if(!botEl){document.getElementById("typing")?.remove();c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:fullText||"Yanıt üretemedim."}));}
   }catch(e){document.getElementById("typing")?.remove();c.insertAdjacentHTML("beforeend",renderBubble({rol:"bot",metin:"Bağlantı hatası."}))}}
 
 /* ============ ONBOARDING ============ */
