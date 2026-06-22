@@ -1339,6 +1339,7 @@ def get_alerts() -> list[dict]:
     Oncelik db.uyari_kayit; bos ise ai_commentary sinyallerinden turetir.
     """
     out = []
+    kap_yorumlar = _read_json(DATA / "kap_yorumlar.json", {})  # run_alerts AI yorumlari
     # 1) Fiyat hareketi uyarilari (uyari_kayit) -> bot ozeti
     try:
         with sqlite3.connect(DB_PATH) as c:
@@ -1382,13 +1383,18 @@ def get_alerts() -> list[dict]:
                         "kaynak": "AI Analiz", "url": None, "tarih": None})
         for hb in (rec.get("haberler") or []):
             if hb.get("fiyatlanma") == "FIYATLANMADI":
-                # generic tekrar yerine hissenin kendi durumundan kisa, ozel yorum
-                aciklama = ozet or (f"{ad} tarafında yeni bir gelişme var; "
-                                    "etkisi henüz fiyata yansımadı.")
+                # KAP bildirimi icin AI yorumu varsa onu goster (run_alerts uretir),
+                # yoksa hissenin kendi durumundan kisa ozel yorum.
+                kap = kap_yorumlar.get(tkr) or {}
+                kap_yorum = kap.get("yorum") if isinstance(kap, dict) else None
+                aciklama = (kap_yorum or ozet
+                            or f"{ad} tarafında yeni bir gelişme var; "
+                               "etkisi henüz fiyata yansımadı.")
                 out.append({"ticker": tkr, "isim": ad, "tip": "haber",
                             "tur": "Haber Etkisi",
                             "baslik": _cap(f"{tkr} için gelişme ihtimali", 45),
-                            "aciklama": _cap(aciklama, 140),
+                            "aciklama": _cap(aciklama, 180),
+                            "yorum": kap_yorum,
                             "ilgili": [tkr], "ham_baslik": hb.get("baslik"),
                             "kaynak": hb.get("kaynak") or "KAP", "url": hb.get("url"),
                             "tarih": hb.get("tarih")})
@@ -1753,22 +1759,27 @@ def get_radar(market: str = "all") -> dict:
     wl = _load_watchlist()
     izleme_kodlar = {t.upper() for t in wl.get("kisisel", [])}
 
-    alinabilir, riskli = [], []
+    alinabilir, riskli, yakin_takip = [], [], []
     for rec in comm.values():
         etiket, _ = _karar5(rec.get("final_decision"))
         mv = _mini_view(rec, ozet_limit=120)   # radar: kisa
+        skor = rec.get("score") or 0
         if etiket == "AL":
             alinabilir.append(mv)
         elif etiket in ("SAT", "AZALT"):
             riskli.append(mv)
+        elif 6 <= skor <= 7:                   # AL degil ama ilginc -> Yakin Takip
+            yakin_takip.append(mv)
     alinabilir.sort(key=lambda c: c.get("skor") or 0, reverse=True)
+    yakin_takip.sort(key=lambda c: c.get("skor") or 0, reverse=True)
     izleme = [_mini_view(comm[t], ozet_limit=120) if t in comm else
               {"ticker": t, "isim": company_name(t), "market": "bist",
                "etiket": None, "renk": "gray", "fiyat": None, "gunluk": None,
                "para_birimi": "₺", "summary": "", "action": "",
                "risk": "—", "risk_renk": "gray", "riskReason": ""}
               for t in izleme_kodlar]
-    return {"alinabilir": alinabilir, "izleme": izleme, "riskli": riskli}
+    return {"alinabilir": alinabilir, "izleme": izleme,
+            "yakin_takip": yakin_takip, "riskli": riskli}
 
 
 def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
@@ -1846,7 +1857,77 @@ def get_stock_detail(ticker: str, market: str = "bist") -> dict:
     }
 
 
-def ask_bot(soru: str, kullanici=None) -> dict:
+_SEKTOR_ETIKET = {
+    "havayolu": "Havayolu", "banka": "Bankacılık", "savunma": "Savunma",
+    "rafineri": "Rafineri", "petrokimya": "Petrokimya", "celik": "Demir-Çelik",
+    "gyo": "GYO", "otomotiv": "Otomotiv", "holding": "Holding",
+    "perakende": "Perakende", "telekom": "Telekom", "cam": "Cam",
+    "altin": "Altın madenciliği", "beyaz_esya": "Beyaz eşya",
+    "taahhut": "Taahhüt", "kiymetli_maden": "Kıymetli maden BYF", "diğer": "Diğer",
+}
+
+
+def portfolio_analysis(kullanici=None) -> dict:
+    """Portfoyu bir butun olarak analiz eder: sektor yogunlasmasi, en riskli
+    pozisyon, genel skor (1-10). USD pozisyonlar TL'ye cevrilerek oransal hesap."""
+    from src.ai.scenarios import _TICKER_GRUP
+    comm = _commentary_by_ticker()
+    try:
+        from src.news.macro import get_macro
+        usdtry = (get_macro() or {}).get("usdtry") or 1.0
+    except Exception:
+        usdtry = 1.0
+    try:
+        poz = get_portfolio(kullanici).get("pozisyonlar", [])
+    except Exception:
+        poz = []
+    if not poz:
+        return {"available": False, "neden": "Portföy boş"}
+
+    toplam = 0.0
+    sektor_deger = {}
+    skor_ag = 0.0
+    skor_w = 0.0
+    en_riskli = None
+    for p in poz:
+        norm = (p.get("ticker") or "").upper().replace(".IS", "")
+        pb = str(p.get("para_birimi") or "TL")
+        kur = usdtry if ("$" in pb or "USD" in pb.upper()) else 1.0
+        deger = float((p.get("guncel") or 0) * (p.get("adet") or 0) * kur)
+        toplam += deger
+        sek = _TICKER_GRUP.get(norm, "diğer")
+        sektor_deger[sek] = sektor_deger.get(sek, 0.0) + deger
+        r = comm.get(norm) or comm.get(norm.upper()) or {}
+        puan = r.get("score")
+        risk = (r.get("risk") or {}).get("score")
+        if isinstance(puan, (int, float)) and deger > 0:
+            skor_ag += puan * deger
+            skor_w += deger
+        if isinstance(risk, (int, float)):
+            if en_riskli is None or risk > en_riskli["risk"]:
+                en_riskli = {"hisse": norm, "risk": risk,
+                             "karar": r.get("final_decision")}
+
+    yogun = sorted(
+        [{"sektor": _SEKTOR_ETIKET.get(s, s),
+          "yuzde": round(v / toplam * 100, 1) if toplam else None}
+         for s, v in sektor_deger.items()],
+        key=lambda x: x["yuzde"] or 0, reverse=True)
+    genel_skor = round(skor_ag / skor_w, 1) if skor_w else None
+    return {
+        "available": True,
+        "pozisyon_sayisi": len(poz),
+        "sektor_yogunlasma": yogun,
+        "en_yogun_sektor": yogun[0] if yogun else None,
+        "cesitlendirme": ("zayıf" if yogun and (yogun[0]["yuzde"] or 0) >= 50
+                          else "orta" if yogun and (yogun[0]["yuzde"] or 0) >= 35
+                          else "iyi"),
+        "en_riskli_pozisyon": en_riskli,
+        "genel_skor": genel_skor,
+    }
+
+
+def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
         return {"ok": False, "cevap": "Bir soru yaz."}
@@ -1968,42 +2049,72 @@ def ask_bot(soru: str, kullanici=None) -> dict:
     KARAR_TIPLERI = ("AL, SAT, TUT, BEKLE, POZİSYON AZALT, POZİSYON ARTIR, KADEMELİ GİR, "
                      "KADEMELİ ÇIK, STOP BELİRLE, NAKİTTE KAL, İZLEMEYE AL, PANİK SATIŞ "
                      "YAPMA, MALİYET DÜŞÜRMEYİ DEĞERLENDİR, BU HİSSE SENİN PROFİLİNE UYGUN DEĞİL")
+
+    # Portfoy genel analizi (cesitlendirme/en riskli/genel skor) - "portfoyum nasil" icin
+    try:
+        portfoy_analiz = portfolio_analysis(kullanici)
+    except Exception:
+        portfoy_analiz = {"available": False}
+
+    # Guncel baglam sistem promptuna eklenir (her soruda taze); konusma gecmisi messages'ta
+    baglam_metni = (
+        "\n\nGÜNCEL BAĞLAM (her soruda yenilenir):\n"
+        f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
+        f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
+        f"Portfoy genel analizi: {json.dumps(portfoy_analiz, ensure_ascii=False)}\n"
+        f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
+        f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
+        f"Makro: {json.dumps(makro, ensure_ascii=False)}")
+
+    sistem = (
+        "Sen kullanicinin kisisel 25 yillik borsa asistanisin. Sade, net, sicak "
+        "Turkce konus. KISA ve NET ol: max 3-4 cumle. Detay istenirse ver. "
+        "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
+        "Yanitlarini SADECE verilen baglama dayandir; baglamda yoksa 'elimde bu "
+        "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir.\n\n"
+        "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
+        "kar-zarar/tutma_gun/bot_karari), portfoy genel analizi (cesitlendirme/en "
+        "riskli/genel skor), izlenen hisselerdeki son AI kararlari, gecmis sohbet "
+        "ozeti ve makro. AYRICA bu oturumun onceki mesajlari konusma gecmisi olarak "
+        "verilir; 'az once konustugumuz' gibi atiflari hatirla ve baglami surdur.\n"
+        "'Portfoyum nasil' benzeri sorularda 'portfoy genel analizi'ni kullan "
+        "(sektor yogunlasmasi, en riskli pozisyon, genel skor).\n"
+        "Cevabini kullanicinin PROFILINE gore uyarla (risk toleransi, vade, nakit "
+        "ihtiyaci, panik egilimi, tecrube). Her cevapta sirayla sun: "
+        "1) Genel piyasa gorusu (kisa), 2) Kisiye ozel yorum (profili+portfoyu "
+        "kullanarak), 3) Net aksiyon, 4) Risk seviyesi, 5) Kisa ogretici not. "
+        "Bu basliklari yazma; akici cumlelerle dogal bir paragraf/birkac cumle "
+        "halinde ver. ZARARDA pozisyonlarda maliyeti goz onunde bulundur (realize "
+        "etmek / ortalama dusurmek / beklemek).\n"
+        f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
+        "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
+        "daha isabetli yorum yaparim' diye nazikce hatirlat.\n\n"
+        "ARAYUZ DEGISIKLIGI: Kullanici arayuz degisikligi isterse (renk, buton, "
+        "baslik, yazi, sekme vb.): 1) Ne yapacagini acikla, 2) Onay bekle, "
+        "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
+        "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
+        "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
+        "sekilde yonetilir.)" + davranis_notu + baglam_metni)
+
+    # Konusma gecmisi (ayni oturum, frontend'den): user/assistant siralamasi
+    mesajlar = []
+    for m in (gecmis or [])[-12:]:
+        rol = m.get("role") or m.get("rol")
+        rol = "assistant" if rol in ("bot", "assistant") else "user"
+        icerik = (m.get("content") or m.get("metin") or "").strip()
+        if icerik:
+            mesajlar.append({"role": rol, "content": icerik[:2000]})
+    while mesajlar and mesajlar[0]["role"] != "user":
+        mesajlar.pop(0)                     # ilk mesaj user olmali (API kurali)
+    mesajlar.append({"role": "user", "content": soru})
+
     try:
         import anthropic
         client = anthropic.Anthropic()
         resp = client.messages.create(
             model=_CHAT_MODEL, max_tokens=400,
-            system=(
-                "Sen kullanicinin kisisel 25 yillik borsa asistanisin. Sade, net, sicak "
-                "Turkce konus. KISA ve NET ol: max 3-4 cumle. Detay istenirse ver. "
-                "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
-                "Yanitlarini SADECE verilen baglama dayandir; baglamda yoksa 'elimde bu "
-                "konuda veri yok' de, uydurma. Bu yatirim tavsiyesi degildir.\n\n"
-                "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
-                "kar-zarar/tutma_gun/bot_karari), izlenen hisselerdeki son AI kararlari, "
-                "gecmis sohbet/hafiza ozeti ve makro.\n"
-                "Cevabini kullanicinin PROFILINE gore uyarla (risk toleransi, vade, nakit "
-                "ihtiyaci, panik egilimi, tecrube). Her cevapta sirayla sun: "
-                "1) Genel piyasa gorusu (kisa), 2) Kisiye ozel yorum (profili+portfoyu "
-                "kullanarak), 3) Net aksiyon, 4) Risk seviyesi, 5) Kisa ogretici not. "
-                "Bu basliklari yazma; akici cumlelerle dogal bir paragraf/birkac cumle "
-                "halinde ver. ZARARDA pozisyonlarda maliyeti goz onunde bulundur (realize "
-                "etmek / ortalama dusurmek / beklemek).\n"
-                f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
-                "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
-                "daha isabetli yorum yaparim' diye nazikce hatirlat.\n\n"
-                "ARAYUZ DEGISIKLIGI: Kullanici arayuz degisikligi isterse (renk, buton, "
-                "baslik, yazi, sekme vb.): 1) Ne yapacagini acikla, 2) Onay bekle, "
-                "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
-                "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
-                "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
-                "sekilde yonetilir.)" + davranis_notu),
-            messages=[{"role": "user", "content":
-                       f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
-                       f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
-                       f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
-                       f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
-                       f"Makro: {json.dumps(makro, ensure_ascii=False)}\n\nSoru: {soru}"}],
+            system=sistem,
+            messages=mesajlar,
         )
         cevap = "".join(getattr(b, "text", "") for b in resp.content
                         if getattr(b, "type", "") == "text").strip()
@@ -2520,7 +2631,13 @@ def api_series(ticker):
 def api_ask():
     d = request.get_json(silent=True) or {}
     return jsonify(ask_bot(d.get("soru") or d.get("mesaj") or d.get("message", ""),
-                           d.get("kullanici")))
+                           d.get("kullanici"),
+                           d.get("gecmis") or d.get("messages")))
+
+
+@app.route("/api/portfolio-analysis")
+def api_portfolio_analysis():
+    return jsonify(portfolio_analysis(request.args.get("kullanici")))
 
 
 @app.route("/api/today-summary")
@@ -2543,10 +2660,11 @@ def api_ask_stream():
     d = request.get_json(silent=True) or {}
     soru = d.get("soru") or d.get("mesaj") or ""
     kullanici = d.get("kullanici")
+    gecmis = d.get("gecmis") or d.get("messages")
     @stream_with_context
     def generate():
         import time as _time
-        result = ask_bot(soru, kullanici)
+        result = ask_bot(soru, kullanici, gecmis)
         cevap = result.get("cevap", "Yanit uretemedi.")
         paragraflar = [p.strip() for p in cevap.split("\n") if p.strip()]
         if not paragraflar:

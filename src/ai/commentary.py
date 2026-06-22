@@ -34,6 +34,27 @@ OUT_PATH = ROOT / "data" / "ai_commentary.json"
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1000
 
+
+def _save_results(results, verbose=False):
+    """ai_commentary.json'a yazar. Bu kosunun market(ler)indeki eski kayitlari
+    yenisiyle degistirir, DIGER market'lerin kayitlarini KORUR. Boylece BIST
+    (09:00) ve ABD (15:30) brifingleri birbirinin verisini ezmez."""
+    OUT_PATH.parent.mkdir(exist_ok=True)
+    try:
+        mevcut = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        if not isinstance(mevcut, list):
+            mevcut = []
+    except Exception:
+        mevcut = []
+    yeni_marketler = {(r.get("market") or "").lower() for r in results}
+    korunan = [r for r in mevcut if (r.get("market") or "").lower() not in yeni_marketler]
+    birlesik = korunan + list(results)
+    OUT_PATH.write_text(json.dumps(birlesik, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    if verbose:
+        print(f"\nKaydedildi: {OUT_PATH} ({len(results)} yeni · {len(birlesik)} toplam)")
+    return birlesik
+
 SYSTEM = (
     "Sen 25 yillik tecrubeli bir Turk borsa uzmanisin. Jargon kullanma "
     "(RSI/MACD yasak). Net karar ver: AL/TUT/SAT/BEKLE. Gerekceni 2-3 cumlede soyle. "
@@ -742,11 +763,7 @@ def _persist(results, save: bool, verbose: bool):
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")
     if save:
-        OUT_PATH.parent.mkdir(exist_ok=True)
-        OUT_PATH.write_text(json.dumps(results, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        if verbose:
-            print(f"\nKaydedildi: {OUT_PATH} ({len(results)} kayit)")
+        _save_results(results, verbose=verbose)
 
 
 def _verbose_satir(t, r):
@@ -939,11 +956,7 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
                 print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
 
     if save:
-        OUT_PATH.parent.mkdir(exist_ok=True)
-        OUT_PATH.write_text(json.dumps(results, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        if verbose:
-            print(f"\nKaydedildi: {OUT_PATH} ({len(results)} kayit)")
+        _save_results(results, verbose=verbose)
     return results
 
 

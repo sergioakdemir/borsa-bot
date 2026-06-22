@@ -50,6 +50,56 @@ def unpriced_fresh_news(ticker, news_src=None):
     return None
 
 
+# Bildirimler sekmesinin okudugu KAP yorum deposu (web app.py get_alerts)
+_KAP_YORUM_PATH = Path(__file__).resolve().parents[2] / "data" / "kap_yorumlar.json"
+
+
+def _kap_yorum(ticker, haber):
+    """Bu KAP bildirimi bu hisse icin olumlu mu olumsuz mu? 1-2 cumle AI yorumu.
+    Anahtar yoksa/hata olursa None (sessiz)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    baslik = (haber.get("baslik") or "").strip()
+    if not baslik:
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=120,
+            system=("Sen tecrubeli bir Turk borsa uzmanisin. Verilen KAP bildiriminin "
+                    "bu hisse icin OLUMLU mu OLUMSUZ mu yoksa NOTR mu oldugunu 1-2 kisa "
+                    "cumlede degerlendir; etkinin yonunu ve nedenini soyle. Sade Turkce, "
+                    "jargon yok, markdown yok. Kesin al/sat tavsiyesi verme, veri uydurma."),
+            messages=[{"role": "user", "content":
+                       f"Hisse: {ticker}\nKAP bildirimi: {baslik}\n"
+                       "Bu bildirim bu hisse icin ne anlama geliyor?"}],
+        )
+        t = "".join(getattr(b, "text", "") for b in resp.content
+                    if getattr(b, "type", "") == "text").strip()
+        return t or None
+    except Exception:
+        return None
+
+
+def _kaydet_kap_yorum(ticker, haber, yorum, tarih):
+    """KAP yorumunu data/kap_yorumlar.json'a yazar (hisse basina son kayit)."""
+    if not yorum:
+        return
+    try:
+        import json
+        d = {}
+        if _KAP_YORUM_PATH.exists():
+            d = json.loads(_KAP_YORUM_PATH.read_text(encoding="utf-8"))
+        d[ticker.upper()] = {"tarih": tarih, "baslik": haber.get("baslik"),
+                             "url": haber.get("url"), "yorum": yorum}
+        _KAP_YORUM_PATH.parent.mkdir(exist_ok=True)
+        _KAP_YORUM_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    except Exception:
+        pass
+
+
 def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
     """GUN ICI KAP TARAMASI (cron: hafta ici 10-18 her 15 dk).
 
@@ -183,6 +233,8 @@ def build_message(price_alerts, news_alerts, vol_alerts, now):
             h = a["haber"]
             lines.append(f"  ⚡ <b>{a['ticker']}</b> ({a['change']:+}%): "
                          f"{h.get('baslik')} <i>[{h.get('tarih')}]</i>")
+            if a.get("yorum"):
+                lines.append(f"     💡 {a['yorum']}")
     return "\n".join(lines).rstrip()
 
 
@@ -217,8 +269,10 @@ def main():
             haber = unpriced_fresh_news(ticker, news_src)
             if haber and "HABER" not in db.alert_levels_today(ticker, today):
                 db.record_alert(ticker, today, "HABER", info["change"])
+                yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz yorum
+                _kaydet_kap_yorum(ticker, haber, yorum, today)
                 news_alerts.append({"ticker": ticker, "change": info["change"],
-                                    "haber": haber})
+                                    "haber": haber, "yorum": yorum})
 
         # HACIM anomalisi: COK YUKSEK (5g ort. 3x+) -> uyari (gunde bir kez)
         try:

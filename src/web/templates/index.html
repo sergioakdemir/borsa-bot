@@ -767,8 +767,9 @@ function radarCard(s){const k=reg(s);
     ${statusLine(s)}</div>`}
 function flt(a){return RADAR_FILTER==="all"?a:a.filter(s=>(s.market||"bist")===RADAR_FILTER)}
 function renderRadar(){const b=document.getElementById("radar-body");if(!RADAR_DATA)return;
-  const al=flt(RADAR_DATA.alinabilir),iz=flt(RADAR_DATA.izleme),ri=flt(RADAR_DATA.riskli);
+  const al=flt(RADAR_DATA.alinabilir),iz=flt(RADAR_DATA.izleme),yt=flt(RADAR_DATA.yakin_takip),ri=flt(RADAR_DATA.riskli);
   let h=`<div class="sec-title">Alınabilir görünenler</div>`+(al.length?al.map(radarCard).join(""):empty("Şu an AL sinyali yok"));
+  h+=`<div class="sec-title">Yakın Takip</div><div class="muted" style="font-size:12px;margin:-4px 0 8px 2px">Bot henüz AL demiyor ama ilginç buluyor (puan 6-7).</div>`+(yt.length?yt.map(radarCard).join(""):empty("Yakın takip listesi boş"));
   h+=`<div class="sec-title">İzlemeye alınanlar</div>`+(iz.length?iz.map(radarCard).join(""):empty("Takip listen boş"));
   h+=`<div class="sec-title">Riskli görünenler</div>`+(ri.length?ri.map(radarCard).join(""):empty("Riskli sinyal yok"));
   b.innerHTML=h}
@@ -804,11 +805,13 @@ function copyFallback(t){try{const ta=document.createElement("textarea");ta.valu
 function scrollChat(){const m=document.querySelector("main");if(m)m.scrollTop=m.scrollHeight}
 function askPreset(p){document.getElementById("chat-text").value=p;sendChat()}
 async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
-  inp.value="";CHAT.push({rol:"user",metin:q});const c=document.getElementById("chat");
+  inp.value="";
+  const gecmis=CHAT.slice(-12).map(m=>({role:m.rol==="bot"?"assistant":"user",content:m.metin}));
+  CHAT.push({rol:"user",metin:q});const c=document.getElementById("chat");
   c.insertAdjacentHTML("beforeend",renderBubble({rol:"user",metin:q}));
   c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="opacity:.6;font-style:italic;font-size:13px">yazıyor...</div>`);scrollChat();
   try{
-    const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER})});
+    const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER,gecmis})});
     const reader=resp.body.getReader();const dec=new TextDecoder();
     let buf="",allText="";
     while(true){

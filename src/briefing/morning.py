@@ -140,8 +140,12 @@ def evaluate_all(targets, overview=None, learning=None):
                               overview=overview, learning=learning)
 
 
-def build_message(results, sel, now, overview=None):
-    """Kisa ozet + en iyi firsat + hisse basina tek satir."""
+def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None):
+    """Kisa ozet + en iyi firsat + hisse basina tek satir.
+
+    portfolio: bu kullanicinin portfoy ticker kumesi (None ise sel['portfolio'] =
+    tum portfoyler birlesik). kullanici_ad verilirse baslik kisisellestirilir.
+    """
     is_us = sel.get("market") in ("us", "abd")
     valid = [r for r in results if not r.get("skipped")]
     al = [r for r in valid if r["final_decision"] == "AL"]
@@ -150,6 +154,8 @@ def build_message(results, sel, now, overview=None):
     veto = [r for r in valid if r["final_decision"] == "VETO"]
 
     baslik = "\U0001F1FA\U0001F1F8 ABD Piyasası Açılıyor" if is_us else "\U0001F305 Sabah Brifingi"
+    if kullanici_ad:
+        baslik += f" · {str(kullanici_ad).capitalize()}"
     lines = [f"<b>{baslik}</b> — {now:%Y-%m-%d %H:%M}"]
     if not results:
         bos = ("Analiz edilecek ABD hissesi yok." if is_us
@@ -241,7 +247,7 @@ def build_message(results, sel, now, overview=None):
     # Kategoriler: Portfoy (her zaman) / Firsat-Radar (portfoy disi AL) /
     # Bildirim (portfoy disi SAT-AZALT-VETO). Web Radar/Bildirimler de
     # ai_commentary.json'dan ayni ayrimi otomatik turetir.
-    portfolio = sel.get("portfolio") or set()
+    portfolio = portfolio if portfolio is not None else (sel.get("portfolio") or set())
 
     def _in_pf(r):
         return (r.get("ticker") or "").upper() in portfolio
@@ -256,10 +262,10 @@ def build_message(results, sel, now, overview=None):
     uyari = [r for r in valid if not _in_pf(r)
              and r["final_decision"] in ("SAT", "GUCLU_SAT", "AZALT", "VETO")]
 
-    # Portfoyum: karar ne olursa olsun her zaman goster
+    # Portfoyundeki hisseler: karar ne olursa olsun her zaman goster (kisisel bolum)
     if pf_rows:
         lines.append("")
-        lines.append("<b>💼 Portföyüm</b>")
+        lines.append("<b>💼 Portföyündeki hisseler:</b>")
         for r in pf_rows:
             lines.append(_satir(r))
 
@@ -385,10 +391,46 @@ def main(market="bist"):
     except Exception as e:
         print(f"  hafiza kaydi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
-    msg = build_message(results, sel, now, overview=overview)
-    sonuc = telegram.broadcast(msg)        # tum alicilara (Serhat + Yigit ...)
+    # 7) KISISEL gonderim: ortak piyasa/haber govdesi + her kullanicinin kendi
+    #    portfoyune ozel "Portföyündeki hisseler" bolumu. DB'de telegram_id'si olan
+    #    her kullaniciya kendi mesaji; DB disi env alicilara birlesik mesaj.
+    from src.db import database as db
+    sonuc = {}
+    gonderilen = set()
+    try:
+        kullanicilar = db.list_users()
+    except Exception:
+        kullanicilar = []
+    for u in kullanicilar:
+        tg = u.get("telegram_id")
+        if not tg:
+            continue
+        try:
+            pf = {(p.get("ticker") or "").upper().replace(".IS", "")
+                  for p in db.list_portfolio(u["id"]) if p.get("ticker")}
+        except Exception:
+            pf = set()
+        msg = build_message(results, sel, now, overview=overview,
+                            portfolio=pf, kullanici_ad=u.get("ad"))
+        try:
+            telegram.send_message(msg, chat_id=tg)
+            sonuc[str(tg)] = "ok"
+        except Exception as e:
+            sonuc[str(tg)] = f"hata:{type(e).__name__}"
+        gonderilen.add(str(tg))
+    # DB'de kullanici olarak olmayan env alicilari (TELEGRAM_CHAT_ID/IDS) -> birlesik
+    genel = build_message(results, sel, now, overview=overview)   # portfolio=tum birlesik
+    for cid in telegram.recipient_ids():
+        if str(cid) in gonderilen:
+            continue
+        try:
+            telegram.send_message(genel, chat_id=cid)
+            sonuc[str(cid)] = "ok"
+        except Exception as e:
+            sonuc[str(cid)] = f"hata:{type(e).__name__}"
+
     ok = [c for c, s in sonuc.items() if s == "ok"]
-    print(f"[{now:%Y-%m-%d %H:%M}] Telegram broadcast ({etiket}): {len(ok)}/{len(sonuc)} alici "
+    print(f"[{now:%Y-%m-%d %H:%M}] Telegram kisisel gonderim ({etiket}): {len(ok)}/{len(sonuc)} alici "
           f"({len(results)} hisse). Sonuc: {sonuc}")
     return 0 if ok else 1
 
