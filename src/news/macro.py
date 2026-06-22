@@ -190,6 +190,37 @@ def _politika_faizi():
     return None, None
 
 
+def _borsapy_macro() -> dict:
+    """borsapy (opsiyonel) ile TUFE (yillik) + politika faizi. Kutuphane yok/hata
+    olursa {} doner -> mevcut fallback korunur. NOT: borsapy.policy_rate su an
+    hatali (7.0 gibi) deger donebiliyor; makul aralik disi degerler REDDEDILIR."""
+    out = {}
+    try:
+        import borsapy as bp
+    except Exception:
+        return out
+    # TUFE (yillik) - calisiyor (bp.Inflation().latest())
+    try:
+        enf = bp.Inflation().latest()
+        v = enf.get("yearly_inflation") if isinstance(enf, dict) else None
+        if v is not None:
+            v = round(float(v), 2)
+            if 0 < v < 300:                 # makul yillik TUFE araligi
+                out["tufe_yillik"] = v
+    except Exception:
+        pass
+    # Politika faizi - makullik kontrolu (borsapy bazen 7.0 gibi hatali doner)
+    try:
+        pf = bp.policy_rate()
+        if pf is not None:
+            pf = round(float(pf), 2)
+            if 20 <= pf <= 80:              # guncel TR politika faizi makul araligi
+                out["politika_faizi"] = pf
+    except Exception:
+        pass
+    return out
+
+
 def _investing_cpi_yoy(url=None):
     """investing.com ekonomik-takvim event sayfasindan TUFE (yillik) degerini ceker.
 
@@ -255,19 +286,35 @@ def get_macro() -> dict:
             out["kaynaklar"].append("son_bilinen")
 
     # 2) EVDS3 -> politika_faizi, tufe_yillik (KYC sonrasi otomatik devreye girer)
-    key = os.environ.get("EVDS_API_KEY")
     out["politika_faizi"] = None
     out["tufe_yillik"] = None
+
+    # 2a) borsapy (opsiyonel): TUFE + politika faizi. Basarisiz/yok ise sessizce atla.
+    bpy = _borsapy_macro()
+    for ad in ("tufe_yillik", "politika_faizi"):
+        if bpy.get(ad) is not None:
+            out[ad] = bpy[ad]
+            taze[ad] = bpy[ad]
+            if "borsapy" not in out["kaynaklar"]:
+                out["kaynaklar"].append("borsapy")
+
+    # 2b) EVDS3 (KYC sonrasi) - yalniz borsapy'den gelmeyen alanlari doldurur
+    key = os.environ.get("EVDS_API_KEY")
     if key:
+        evds_katki = False
         for ad in ("politika_faizi", "tufe_yillik"):
-            code, agg = _EVDS_SERIES[ad]
-            out[ad] = _evds_series(code, agg, key)
             if out.get(ad) is not None:
-                taze[ad] = out[ad]
-        if out.get("politika_faizi") is not None or out.get("tufe_yillik") is not None:
+                continue
+            code, agg = _EVDS_SERIES[ad]
+            v = _evds_series(code, agg, key)
+            if v is not None:
+                out[ad] = v
+                taze[ad] = v
+                evds_katki = True
+        if evds_katki and "EVDS3" not in out["kaynaklar"]:
             out["kaynaklar"].append("EVDS3")
 
-    # 2b) Politika faizi EVDS3'ten gelmediyse: TCMB sayfasi -> EVDS2 -> son bilinen -> 46.0
+    # 2c) Politika faizi hala yoksa: TCMB sayfasi -> EVDS2 -> son bilinen -> 46.0
     if out.get("politika_faizi") is None:
         pf, pk = _politika_faizi()
         if pf is not None:
