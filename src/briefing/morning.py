@@ -34,10 +34,7 @@ _load_dotenv()
 
 from src.notify import telegram
 from src.notify.telegram import TelegramNotConfigured
-
-_EMOJI = {"AL": "\U0001F7E2", "AL_TEMKINLI": "\U0001F7E1", "TUT": "⚪",
-          "SAT": "\U0001F534", "GUCLU_SAT": "\U0001F534", "VETO": "⛔",
-          "SKIP": "⏭"}
+from src.ai.decision import karar_kelime, karar_emoji, aksiyon_metni
 
 
 def _esc(s):
@@ -105,10 +102,10 @@ def _zarar_satirlari(uyarilar):
     lines = []
     for seviye, tkr, kz_y in uyarilar:
         if seviye == "KRITIK":
-            lines.append(f"🔴 <b>KRİTİK: {_esc(tkr)} -%{abs(kz_y):.1f} zararda</b>, "
-                         "pozisyonu gözden geçir")
+            lines.append(f"🔴 <b>KRİTİK: {_esc(tkr)} -%{abs(kz_y):.1f} zararda</b> — "
+                         "pozisyonu gözden geçir.")
         else:
-            lines.append(f"⚠️ <b>DİKKAT: {_esc(tkr)} -%{abs(kz_y):.1f} zararda</b>")
+            lines.append(f"🟡 <b>DİKKAT: {_esc(tkr)} -%{abs(kz_y):.1f} zararda.</b>")
     return lines
 
 
@@ -208,176 +205,135 @@ def evaluate_all(targets, overview=None, learning=None):
                               overview=overview, learning=learning)
 
 
-def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
-                  profil_uyari=None, zarar_uyarilari=None):
-    """Kisa ozet + en iyi firsat + hisse basina tek satir.
+def _yorum_cumle(r, limit=180):
+    """Hisse icin sade 1-2 cumlelik yorum. Once AI'nin teknik-oran icermeyen
+    'sade_yorum' alanini kullanir; yoksa (eski kayit) gerekceye duser."""
+    sade = " ".join((r.get("sade_yorum") or "").split())
+    if sade:
+        if len(sade) > limit:
+            sade = sade[:limit].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+        return sade
+    return _kisa_gerekce(r, limit=limit)
 
-    portfolio: bu kullanicinin portfoy ticker kumesi (None ise sel['portfolio'] =
-    tum portfoyler birlesik). kullanici_ad verilirse baslik kisisellestirilir.
-    profil_uyari: profil guven skoru dusukse eklenecek nazik hatirlatma metni.
+
+def _risk_kelime(r):
+    """Risk skorunu sade kelimeye cevirir (sayi gostermez)."""
+    s = (r.get("risk") or {}).get("score")
+    if s is None:
+        return None
+    if s >= 7:
+        return "yüksek risk"
+    if s >= 4:
+        return "orta risk"
+    return "düşük risk"
+
+
+def _hisse_blok(r, portfoyde=False):
+    """Tek hisse blogu: '<emoji> TICKER — KARAR' + sade yorum + 'Aksiyon: ...'."""
+    fd = r.get("final_decision")
+    kelime = karar_kelime(fd)
+    if not kelime:                       # KILL_SWITCH vb. -> kullaniciya gosterme
+        return []
+    tkr = _esc(r.get("ticker") or r.get("symbol"))
+    blok = [f"{karar_emoji(fd)} <b>{tkr} — {kelime}</b>"]
+    yorum = _yorum_cumle(r)
+    if yorum:
+        if _risk_kelime(r) == "yüksek risk":
+            yorum = f"{yorum} (yüksek risk)"
+        blok.append(f"<i>{_esc(yorum)}</i>")
+    blok.append(f"Aksiyon: {_esc(aksiyon_metni(fd, portfoyde))}")
+    return blok
+
+
+def _plan_cumlesi(overview, now, is_us):
+    """GÜNÜN PLANI: genel piyasa durumu 1-2 sade cümle (teknik oran yok)."""
+    if is_us:
+        return "ABD piyasası açılışa hazırlanıyor."
+    if overview and overview.get("available"):
+        notu = (overview.get("brifing_notu") or "").strip()
+        if notu:
+            return notu
+        yon = (overview.get("yon") or "").upper()
+        return {"YUKSELIYOR": "Piyasa güne alıcılı başlıyor.",
+                "DUSUYOR": "Piyasa güne satıcılı başlıyor.",
+                "YATAY": "Piyasa yatay, belirgin yön yok."}.get(
+                    yon, "Piyasada belirgin bir yön yok.")
+    return "Piyasa için net bir yön sinyali yok; temkinli başla."
+
+
+def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
+                  profil_uyari=None, zarar_uyarilari=None, senaryolar=None):
+    """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
+
+    Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
+    (🟢🟡🔴⚡📰), teknik oran yok, kısa. portfolio=None ise sel['portfolio']
+    (tüm portföyler birleşik) kullanılır; kullanici_ad başlığı kişiselleştirir.
     """
     is_us = sel.get("market") in ("us", "abd")
     valid = [r for r in results if not r.get("skipped")]
-    al = [r for r in valid if r["final_decision"] == "AL"]
-    tut = [r for r in valid if r["final_decision"] == "TUT"]
-    sat = [r for r in valid if r["final_decision"] in ("SAT", "GUCLU_SAT")]
-    veto = [r for r in valid if r["final_decision"] == "VETO"]
-
-    baslik = "\U0001F1FA\U0001F1F8 ABD Piyasası Açılıyor" if is_us else "\U0001F305 Sabah Brifingi"
-    if kullanici_ad:
-        baslik += f" · {str(kullanici_ad).capitalize()}"
-    lines = [f"<b>{baslik}</b> — {now:%Y-%m-%d %H:%M}"]
-    if not results:
-        bos = ("Analiz edilecek ABD hissesi yok." if is_us
-               else "Bugun kisisel liste bos ve belirgin hareket yok. Yorum uretilmedi.")
-        lines.append(f"\n{bos}")
-        return "\n".join(lines)
-
-    ozet = f"{len(al)} AL · {len(tut)} TUT · {len(sat)} SAT"
-    if veto:
-        ozet += f" · {len(veto)} VETO"
-    lines.append(f"<b>Ozet:</b> {ozet}")
-    if is_us:
-        lines.append(f"<i>{sel['taranan']} ABD hissesi tarandı</i>")
-    else:
-        lines.append(f"<i>Kisisel {len(sel['personal'])} · Hareketli {len(sel['movers'])} "
-                     f"(≥%{sel['threshold']:g}) · taranan {sel['taranan']}</i>")
-
-    # Genel piyasa yonu (BIST-100 / breadth / USD-TRY) - yalniz BIST brifingi
-    if not is_us and overview and overview.get("available"):
-        yon_emoji = {"YUKSELIYOR": "\U0001F4C8", "DUSUYOR": "\U0001F4C9",
-                     "YATAY": "➡️"}.get(overview.get("yon"), "📊")
-        g = overview.get("bist100_gunluk_%")
-        h = overview.get("bist100_haftalik_%")
-        detay = []
-        if g is not None:
-            detay.append(f"bugün %{g:+g}")
-        if h is not None:
-            detay.append(f"hafta %{h:+g}")
-        detay.append(f"{overview.get('yukselen')}↑/{overview.get('dusen')}↓")
-        lines.append("")
-        lines.append(f"{yon_emoji} <b>Piyasa: {_esc(overview.get('yon'))}</b> "
-                     f"<i>({' · '.join(detay)})</i>")
-        lines.append(f"<i>{_esc(overview.get('brifing_notu'))}</i>")
-
-    # Yabanci yatirimci akisi (varsa) - yalniz BIST brifingi
-    if not is_us:
-        try:
-            from src.news.foreign_investor import briefing_line
-            yb = briefing_line()
-            if yb:
-                lines.append(yb)
-        except Exception:
-            pass
-
-    # Makro: BIST -> TCMB politika faizi + USD/TRY; ABD -> yalniz USD/TRY
-    # get_macro cache'li (ek maliyet yok)
-    try:
-        from src.news.macro import get_macro
-        mk = get_macro()
-        usd = mk.get("usdtry")
-        if is_us:
-            if usd is not None:
-                lines.append(f"💵 <b>USD/TRY:</b> {usd:g}")
-        else:
-            pf = mk.get("politika_faizi")
-            if pf is not None:
-                satir = f"🏦 <b>TCMB Politika Faizi:</b> %{pf:g}"
-                if usd is not None:
-                    satir += f" · USD/TRY {usd:g}"
-                lines.append(satir)
-    except Exception:
-        pass
-
-    # PPK (Para Politikasi Kurulu) toplanti takvimi - yalniz BIST brifingi
-    if not is_us:
-        try:
-            from src.news.macro import sonraki_ppk, bugun_ppk_mi
-            bugun = now.date()
-            ppk_bugun = bugun_ppk_mi(bugun)
-            if ppk_bugun:
-                lines.append("⚠️ <b>Bugün PPK var!</b> Faiz kararı 14:00'te açıklanacak.")
-            nxt = sonraki_ppk(bugun, dahil=not ppk_bugun)
-            if nxt:
-                kalan = (nxt - bugun).days
-                lines.append(f"📅 <b>Sonraki PPK:</b> {_tr_tarih(nxt)} ({kalan} gün kaldı)")
-        except Exception:
-            pass
-
-    # ZARAR UYARISI (kisisel): portfoyde -%5/-%10 esigini gecen pozisyonlar
-    if zarar_uyarilari:
-        lines.append("")
-        lines += _zarar_satirlari(zarar_uyarilari)
-
-    # En iyi firsat: VETO haric en yuksek puanli (AL'lar oncelikli)
-    cand = [r for r in valid if r["final_decision"] != "VETO"]
-    cand.sort(key=lambda r: (r["final_decision"] == "AL", r.get("score") or 0), reverse=True)
-    if cand:
-        b = cand[0]
-        lines.append("")
-        lines.append(f"⭐ <b>En iyi firsat: {_esc(b['ticker'])}</b> "
-                     f"({b['score']}/10 · risk {b['risk']['score']} · {_esc(b['final_label'])})")
-        lines.append(f"<i>{_esc((b.get('gerekce') or '')[:220])}</i>")
-
-    # Kategoriler: Portfoy (her zaman) / Firsat-Radar (portfoy disi AL) /
-    # Bildirim (portfoy disi SAT-AZALT-VETO). Web Radar/Bildirimler de
-    # ai_commentary.json'dan ayni ayrimi otomatik turetir.
     portfolio = portfolio if portfolio is not None else (sel.get("portfolio") or set())
 
     def _in_pf(r):
         return (r.get("ticker") or "").upper() in portfolio
 
-    def _satir(r, varsayilan="⚪"):
-        emoji = _EMOJI.get(r["final_decision"], varsayilan)
-        satir = (f"{emoji} <b>{_esc(r.get('ticker') or r.get('symbol'))}</b> "
-                 f"{r['final_label']} · {r['score']}/10 · risk {r['risk']['score']}")
-        g = _kisa_gerekce(r)
-        if g:
-            satir += f"\n   <i>{_esc(g)}</i>"
-        return satir
+    ad = f" · {str(kullanici_ad).capitalize()}" if kullanici_ad else ""
+    baslik = "🇺🇸 ABD PİYASASI" if is_us else "GÜNÜN PLANI"
+    lines = [f"<b>{baslik}</b>{ad} — {now:%d.%m %H:%M}"]
 
+    if not valid:
+        lines.append("")
+        lines.append("Bugün net bir sinyal yok. Aksiyon: BEKLE.")
+        return "\n".join(lines)
+
+    # Genel piyasa durumu (1-2 cümle)
+    lines.append(_esc(_plan_cumlesi(overview, now, is_us)))
+    # Bugün PPK varsa kritik hatırlatma (tek satır)
+    if not is_us:
+        try:
+            from src.news.macro import bugun_ppk_mi
+            if bugun_ppk_mi(now.date()):
+                lines.append("🟡 Bugün PPK var — faiz kararı 14:00'te. "
+                             "Önemli kararları sonrasına bırak.")
+        except Exception:
+            pass
+
+    # PORTFÖY (her zaman göster)
     pf_rows = [r for r in valid if _in_pf(r)]
-    firsat = [r for r in valid if not _in_pf(r) and r["final_decision"] == "AL"]
-    uyari = [r for r in valid if not _in_pf(r)
-             and r["final_decision"] in ("SAT", "GUCLU_SAT", "AZALT", "VETO")]
-
-    # Portfoyundeki hisseler: karar ne olursa olsun her zaman goster (kisisel bolum)
+    lines.append("")
+    lines.append("<b>PORTFÖY</b>")
     if pf_rows:
-        lines.append("")
-        lines.append("<b>💼 Portföyündeki hisseler:</b>")
+        if zarar_uyarilari:                  # zarardaki pozisyonlar önce (kritik)
+            lines += _zarar_satirlari(zarar_uyarilari)
         for r in pf_rows:
-            lines.append(_satir(r))
+            lines += _hisse_blok(r, portfoyde=True)
+    else:
+        lines.append("Takip ettiğin portföy hissesi yok.")
 
-    # Firsat / Radar: portfoy disi AL sinyalleri (web Radar'a da duser)
+    # FIRSATLAR (max 5) — portföy dışı AL sinyalleri
+    firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"]
+    firsat.sort(key=lambda r: r.get("score") or 0, reverse=True)
     if firsat:
-        firsat.sort(key=lambda r: r.get("score") or 0, reverse=True)
         lines.append("")
-        lines.append(f"<b>🟢 Fırsat / Radar ({len(firsat)})</b>")
-        for r in firsat[:6]:
-            lines.append(_satir(r, "🟢"))
-        if len(firsat) > 6:
-            lines.append(f"<i>+{len(firsat) - 6} hisse daha — web Radar'da</i>")
+        lines.append("<b>FIRSATLAR</b>")
+        for r in firsat[:5]:
+            lines += _hisse_blok(r, portfoyde=False)
 
-    # Bildirim: portfoy disi SAT/risk sinyalleri (web Bildirimler'e de duser)
-    if uyari:
-        uyari.sort(key=lambda r: r.get("score") or 0)
+    # BUGÜN TAKİP — 2-3 şartlı senaryo
+    if senaryolar:
         lines.append("")
-        lines.append(f"<b>🔴 Bildirim ({len(uyari)})</b>")
-        for r in uyari[:6]:
-            lines.append(_satir(r, "🔴"))
-        if len(uyari) > 6:
-            lines.append(f"<i>+{len(uyari) - 6} hisse daha — web Bildirimler'de</i>")
+        lines.append("<b>BUGÜN TAKİP</b>")
+        for s in senaryolar[:3]:
+            metin = s.get("metin") if isinstance(s, dict) else str(s)
+            if metin:
+                lines.append(f"• {_esc(metin)}")
 
-    if tut:
-        lines.append(f"\n⚪ TUT ({len(tut)}): " + ", ".join(
-            _esc(r.get("ticker")) for r in tut[:14]))
-    # Profil guven skoru dusukse nazik hatirlatma (onboarding tamamlanmamis)
     if profil_uyari:
         lines.append("")
         lines.append(profil_uyari)
+
     msg = "\n".join(lines)
-    if len(msg) > 2800:                       # Telegram guvenli ust sinir (4096 limit)
-        msg = msg[:2780].rsplit("\n", 1)[0] + "\n…"
+    if len(msg) > 3500:
+        msg = msg[:3480].rsplit("\n", 1)[0] + "\n…"
     return msg
 
 
@@ -387,7 +343,8 @@ def _record_briefing_memory(results):
     from src.db import database as db
     notable = [r for r in (results or [])
                if not r.get("skipped")
-               and r.get("final_decision") in ("AL", "SAT", "GUCLU_SAT", "VETO")]
+               and r.get("final_decision") in ("AL", "SAT", "GUCLU_SAT", "VETO",
+                                               "AZALT", "UZAK_DUR")]
     if not notable:
         return
     users = [u for u in db.list_users()]
@@ -477,6 +434,29 @@ def main(market="bist"):
     except Exception as e:
         print(f"  hafiza kaydi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
+    # 6.5) BUGÜN TAKİP: şartlı senaryolar üret + senaryo_takip.json'a kaydet (yalniz BIST)
+    senaryolar = []
+    if not is_us:
+        try:
+            from src.ai import senaryo
+            from src.news.macro import get_macro
+            macro = get_macro()
+            notable = [r.get("ticker") for r in results
+                       if not r.get("skipped")
+                       and r.get("final_decision") in ("AL", "AZALT", "UZAK_DUR")]
+            gundem = []
+            try:
+                from src.news.rss_source import RSSNewsSource
+                gundem = [f"[{e['kaynak']}] {e['baslik']}"
+                          for e in RSSNewsSource()._all_entries()[:6]]
+            except Exception:
+                gundem = []
+            senaryolar = senaryo.uret(notable, gundem, macro, overview)
+            senaryo.kaydet(senaryolar, now.date().isoformat(), macro=macro, overview=overview)
+            print(f"  senaryolar: {len(senaryolar)} uretildi/kaydedildi")
+        except Exception as e:
+            print(f"  senaryo uretimi atlandi: {type(e).__name__}: {str(e)[:80]}")
+
     # 7) KISISEL gonderim: ortak piyasa/haber govdesi + her kullanicinin kendi
     #    portfoyune ozel "Portföyündeki hisseler" bolumu. DB'de telegram_id'si olan
     #    her kullaniciya kendi mesaji; DB disi env alicilara birlesik mesaj.
@@ -511,7 +491,8 @@ def main(market="bist"):
             zarar_uy = []
         msg = build_message(results, sel, now, overview=overview,
                             portfolio=pf, kullanici_ad=u.get("ad"),
-                            profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy)
+                            profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
+                            senaryolar=senaryolar)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
@@ -519,7 +500,8 @@ def main(market="bist"):
             sonuc[str(tg)] = f"hata:{type(e).__name__}"
         gonderilen.add(str(tg))
     # DB'de kullanici olarak olmayan env alicilari (TELEGRAM_CHAT_ID/IDS) -> birlesik
-    genel = build_message(results, sel, now, overview=overview)   # portfolio=tum birlesik
+    genel = build_message(results, sel, now, overview=overview,
+                          senaryolar=senaryolar)   # portfolio=tum birlesik
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:
             continue

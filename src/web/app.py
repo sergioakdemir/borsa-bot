@@ -153,7 +153,7 @@ def _classify(decision: str) -> tuple[str, str]:
     d = (decision or "").upper()
     if "VETO" in d:
         return "VETO", "yellow"
-    if "SAT" in d:               # SAT, GUCLU_SAT
+    if "SAT" in d or "UZAK" in d or "AZALT" in d:   # SAT, GUCLU_SAT, UZAK_DUR, AZALT
         return "SAT", "red"
     if "AL" in d:                # AL, AL_TEMKINLI
         return "AL", "green"
@@ -1307,7 +1307,8 @@ def get_karne() -> dict:
 
 def _karar_label(karar: str) -> str:
     return {"AL": "AL", "AL_TEMKINLI": "AL (temkinli)", "TUT": "TUT",
-            "SAT": "SAT", "GUCLU_SAT": "Güçlü SAT", "VETO": "VETO"}.get(
+            "SAT": "SAT", "GUCLU_SAT": "Güçlü SAT", "VETO": "VETO",
+            "AZALT": "AZALT", "UZAK_DUR": "UZAK DUR", "BEKLE": "BEKLE"}.get(
         (karar or "").upper(), karar or "—")
 
 
@@ -1501,6 +1502,7 @@ def _karar5(fd: str):
         "TUT": ("TUT", "yellow"), "BEKLE": ("BEKLE", "yellow"),
         "VETO": ("BEKLE", "yellow"),
         "SAT": ("AZALT", "red"), "GUCLU_SAT": ("SAT", "red"),
+        "AZALT": ("AZALT", "red"), "UZAK_DUR": ("SAT", "red"),
     }.get(d, ("TUT", "yellow"))
 
 

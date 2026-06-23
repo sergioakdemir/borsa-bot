@@ -86,7 +86,7 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
             acilan += 1
             if verbose:
                 print(f"  [model] AL  {ticker} @ {fiyat:.2f} TL x {adet} ({para_birimi})")
-        elif karar in ("SAT", "GUCLU_SAT", "AZALT"):
+        elif karar in ("SAT", "GUCLU_SAT", "AZALT", "UZAK_DUR"):
             if not acik:
                 continue
             giris = acik["alis_fiyati"] or 0.0

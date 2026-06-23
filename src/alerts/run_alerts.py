@@ -31,12 +31,59 @@ def _load_dotenv():
 _load_dotenv()
 
 from src.watchlist import load_watchlist
-from src.alerts.engine import intraday_change, classify, level_rank
+from src.alerts.engine import intraday_change, level_rank
 from src.notify import telegram
 from src.db import database as db
+from src.ai.decision import karar_kelime, karar_emoji, aksiyon_metni
 
-_EMOJI = {"ACIL": "\U0001F6A8", "IZLE": "\U0001F440", "HABER": "\U0001F4F0",
-          "HACIM": "\U0001F4CA"}
+# Gün içi tekrar-bildirim eşikleri (mutlak yüzde hareket)
+PORTF_ESIK = 2.5     # portföy hissesi
+RADAR_ESIK = 3.0     # radar (portföy dışı) hissesi
+ANI_ESIK = 5.0       # ani büyük gelişme (kendi mesaj tipi)
+
+_COMMENTARY_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_commentary.json"
+_KARAR_MAP = None
+
+
+def _portfolio_set():
+    """Tüm portföylerdeki benzersiz hisse kodları (normalize)."""
+    try:
+        return {(r.get("ticker") or "").upper().replace(".IS", "")
+                for r in db.list_portfolio() if r.get("ticker")}
+    except Exception:
+        return set()
+
+
+def _karar_map():
+    """ai_commentary.json'dan {TICKER: final_decision} (bir kez yükle)."""
+    global _KARAR_MAP
+    if _KARAR_MAP is None:
+        _KARAR_MAP = {}
+        try:
+            import json
+            data = json.loads(_COMMENTARY_PATH.read_text(encoding="utf-8"))
+            for rec in (data if isinstance(data, list) else []):
+                t = (rec.get("ticker") or "").upper()
+                if t:
+                    _KARAR_MAP.setdefault(t, rec.get("final_decision"))
+        except Exception:
+            pass
+    return _KARAR_MAP
+
+
+def _son_karar(ticker):
+    """Hissenin son AI kararı (final_decision) — gün içi 'KARAR' satırı için."""
+    return _karar_map().get((ticker or "").upper())
+
+
+def _seviye(change_abs, portfoyde):
+    """Hareketi içsel uyarı seviyesine indirger: 'ACIL' (ani), 'IZLE' (dikkat) veya None.
+    Eşik listeye göre: portföy %2.5, radar %3; %5+ ani."""
+    if change_abs >= ANI_ESIK:
+        return "ACIL"
+    if change_abs >= (PORTF_ESIK if portfoyde else RADAR_ESIK):
+        return "IZLE"
+    return None
 
 
 def _kap_key(disclosure_id, baslik) -> str:
@@ -230,73 +277,115 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
             hits.append({"ticker": ticker, "change": info["change"],
                          "item": it, "yorum": yorum})
 
+    # Taze KAP başlıkları -> şartlı senaryo kontrolü (haber tetikleyici)
+    _senaryo_kontrol_ve_bildir(now, basliklar=[h["item"].title or "" for h in hits])
+
     if not hits:
         print(f"[{now:%Y-%m-%d %H:%M}] Fiyatlanmamis yeni KAP haberi yok "
               f"({checked} hisse tarandi).")
         return 0
 
-    lines = [f"<b>\U0001F4F0 FIYATLANMAMIS HABER</b> — {now:%Y-%m-%d %H:%M}",
-             "<i>Son 30 dk'da KAP bildirimi cikti, fiyat henuz oynamadi (firsat penceresi)</i>",
-             ""]
+    bloklar = []
     for h in hits:
         it = h["item"]
         url = getattr(it, "url", None)
-        baslik = it.title or "(baslik yok)"
+        baslik = it.title or "(başlık yok)"
         if url:
             baslik = f'<a href="{url}">{baslik}</a>'
-        lines.append(f"⚡ <b>{h['ticker']}</b> ({h['change']:+}%): {baslik} "
-                     f"<i>[{it.published_at:%H:%M}]</i>")
+        blok = [f"📰 <b>{h['ticker']}</b> — yeni KAP bildirimi <i>[{it.published_at:%H:%M}]</i>",
+                baslik]
         if h.get("yorum"):
-            lines.append(f"     💡 {h['yorum']}")
-    sonuc = telegram.broadcast("\n".join(lines))
+            blok.append(h["yorum"])
+        blok.append("Aksiyon: Haber fiyatlanmadan değerlendir.")
+        bloklar.append("\n".join(blok))
+    bas = (f"<b>GÜN İÇİ DİKKAT</b> — {now:%H:%M}\n"
+           "<i>KAP bildirimi çıktı, fiyat henüz oynamadı.</i>")
+    sonuc = telegram.broadcast(bas + "\n\n" + "\n\n".join(bloklar))
     ok = [c for c, s in sonuc.items() if s == "ok"]
     print(f"[{now:%Y-%m-%d %H:%M}] {len(hits)} fiyatlanmamis KAP haberi -> "
           f"{len(ok)}/{len(sonuc)} aliciya gonderildi.")
     return 0
 
 
-def build_message(price_alerts, news_alerts, vol_alerts, now):
-    acil = [a for a in price_alerts if a["seviye"] == "ACIL"]
-    izle = [a for a in price_alerts if a["seviye"] == "IZLE"]
-    lines = [f"<b>\U0001F525 Sicak Uyari</b> — {now:%Y-%m-%d %H:%M}", ""]
+def _yon_kelime(change):
+    return "yükseldi" if change > 0 else "düştü"
 
-    def fmt(a):
-        arrow = "\U0001F4C8" if a["change"] > 0 else "\U0001F4C9"
-        sign = "+" if a["change"] > 0 else ""
-        line = (f"{arrow} <b>{a['ticker']}</b>  {sign}{a['change']}%  "
-                f"({a['prev_close']} → {a['last_close']} TL)")
+
+def build_ani_message(ani_alerts, now):
+    """ANİ BÜYÜK GELİŞME mesajı (her biri tek blok): ⚡ ANİ GELİŞME / ne oldu /
+    etkilenen hisse / Aksiyon: hisse — karar. Boşsa '' döner."""
+    if not ani_alerts:
+        return ""
+    bloklar = []
+    for a in ani_alerts:
+        kelime = karar_kelime(a.get("karar")) or "BEKLE"
+        blok = ["⚡ <b>ANİ GELİŞME</b>",
+                f"{a['ticker']} %{abs(a['change']):.1f} {_yon_kelime(a['change'])} "
+                f"({a['prev_close']}→{a['last_close']} TL)."]
         if a.get("sebep"):
-            line += f"\n     💡 {a['sebep']}"
-        return line
+            blok.append(a["sebep"])
+        blok.append(f"Aksiyon: {a['ticker']} — {kelime}")
+        bloklar.append("\n".join(blok))
+    return "\n\n".join(bloklar)
 
-    if acil:
-        lines.append(f"{_EMOJI['ACIL']} <b>ACIL</b>")
-        lines += ["  " + fmt(a) for a in acil]
-        lines.append("")
-    if izle:
-        lines.append(f"{_EMOJI['IZLE']} <b>IZLE</b>")
-        lines += ["  " + fmt(a) for a in izle]
-        lines.append("")
-    if vol_alerts:
-        # son 5 gun ortalamasinin 3 katindan fazla -> COK YUKSEK hacim
-        lines.append(f"{_EMOJI['HACIM']} <b>COK YUKSEK HACIM</b> "
-                     "<i>(5 gun ortalamasinin 3x+ usti)</i>")
-        for a in vol_alerts:
-            sign = "+" if a.get("change", 0) > 0 else ""
-            lines.append(f"  ⚡ <b>{a['ticker']}</b> hacim {a['kat']}x "
-                         f"(fiyat {sign}{a['change']}%)")
-        lines.append("")
-    if news_alerts:
-        # KAP haberi var ama fiyat henuz oynamamis -> firsat penceresi
-        lines.append(f"{_EMOJI['HABER']} <b>ACIL · FIYATLANMAMIS HABER</b> "
-                     "<i>(fiyat henuz oynamadi)</i>")
-        for a in news_alerts:
-            h = a["haber"]
-            lines.append(f"  ⚡ <b>{a['ticker']}</b> ({a['change']:+}%): "
-                         f"{h.get('baslik')} <i>[{h.get('tarih')}]</i>")
-            if a.get("yorum"):
-                lines.append(f"     💡 {a['yorum']}")
-    return "\n".join(lines).rstrip()
+
+def build_message(price_alerts, news_alerts, vol_alerts, now):
+    """GÜN İÇİ DİKKAT mesajı (yalnızca yeni bilgi). Hisse formatı:
+    [emoji] HİSSE — KARAR / gelişme / Aksiyon. Boşsa '' döner."""
+    dikkat = [a for a in price_alerts if a["seviye"] == "IZLE"]
+    bloklar = []
+
+    for a in dikkat:
+        karar = a.get("karar")
+        kelime = karar_kelime(karar) or "BEKLE"
+        emoji = karar_emoji(karar)
+        blok = [f"{emoji} <b>{a['ticker']} — {kelime}</b>",
+                f"%{abs(a['change']):.1f} {_yon_kelime(a['change'])} "
+                f"({a['prev_close']}→{a['last_close']} TL)."]
+        if a.get("sebep"):
+            blok.append(a["sebep"])
+        blok.append(f"Aksiyon: {aksiyon_metni(karar, a.get('portfoyde'))}")
+        bloklar.append("\n".join(blok))
+
+    # Fiyatlanmamış KAP haberi (📰) — fırsat penceresi
+    for a in news_alerts:
+        h = a["haber"]
+        blok = [f"📰 <b>{a['ticker']}</b> — yeni KAP bildirimi",
+                f"{h.get('baslik')}"]
+        if a.get("yorum"):
+            blok.append(a["yorum"])
+        blok.append("Aksiyon: Haber fiyatlanmadan değerlendir.")
+        bloklar.append("\n".join(blok))
+
+    # Yüksek hacim (kısa, 🟡)
+    for a in vol_alerts:
+        sign = "+" if a.get("change", 0) > 0 else ""
+        bloklar.append(f"🟡 <b>{a['ticker']}</b> — yüksek hacim "
+                       f"({a['kat']}x, fiyat {sign}{a['change']}%)")
+
+    if not bloklar:
+        return ""
+    return f"<b>GÜN İÇİ DİKKAT</b> — {now:%H:%M}\n\n" + "\n\n".join(bloklar)
+
+
+def _senaryo_kontrol_ve_bildir(now, basliklar=None):
+    """Bekleyen şartlı senaryoları kontrol eder; gerçekleşeni ⚡ ile bildirir."""
+    try:
+        from src.ai import senaryo
+        usd = None
+        try:
+            from src.news.macro import get_macro
+            usd = get_macro().get("usdtry")
+        except Exception:
+            usd = None
+        tetik = senaryo.kontrol_et(basliklar=basliklar or [], guncel_usdtry=usd)
+        if tetik:
+            telegram.broadcast("\n\n".join(s["bildirim"] for s in tetik))
+            print(f"[{now:%Y-%m-%d %H:%M}] {len(tetik)} senaryo gerçekleşti -> bildirildi.")
+        return len(tetik)
+    except Exception as e:
+        print(f"[senaryo] kontrol hatasi: {type(e).__name__}")
+        return 0
 
 
 def main():
@@ -310,6 +399,7 @@ def main():
     news_src, _ = get_news_source(verbose=False)
 
     today = now.date().isoformat()
+    portfolio = _portfolio_set()
     price_alerts, news_alerts, vol_alerts = [], [], []
     checked = 0
     for ticker in load_watchlist():
@@ -317,9 +407,11 @@ def main():
         if not info or not info["is_today"]:
             continue
         checked += 1
-        level = classify(info["change"])
+        portfoyde = (ticker or "").upper().replace(".IS", "") in portfolio
+        # Eşik listeye göre: portföy %2.5, radar %3; %5+ ani gelişme.
+        level = _seviye(abs(info["change"]), portfoyde)
         if level:
-            # FIYAT uyarisi (%2+ IZLE / %5+ ACIL) — spam onleme
+            # Spam onleme: ayni/daha dusuk seviyede tekrar gonderme
             sent = max((level_rank(l) for l in db.alert_levels_today(ticker, today)),
                        default=0)
             if level_rank(level) > sent:
@@ -331,7 +423,8 @@ def main():
                     haberler = []
                 sebep = _hareket_sebebi(ticker, info["change"], haberler, now=now)
                 price_alerts.append({"ticker": ticker, "seviye": level,
-                                     "sebep": sebep, **info})
+                                     "sebep": sebep, "portfoyde": portfoyde,
+                                     "karar": _son_karar(ticker), **info})
         else:
             # Fiyat oynamamis -> KAP'ta taze fiyatlanmamis haber var mi? -> ACIL
             haber = unpriced_fresh_news(ticker, news_src)
@@ -355,14 +448,26 @@ def main():
             vol_alerts.append({"ticker": ticker, "kat": va.get("kat"),
                                "change": info["change"]})
 
+    # Şartlı senaryo kontrolü (makro: usdtry; gün içi her taramada)
+    _senaryo_kontrol_ve_bildir(now)
+
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")
         return 0
 
-    sonuc = telegram.broadcast(build_message(price_alerts, news_alerts, vol_alerts, now))
-    ok = [c for c, s in sonuc.items() if s == "ok"]
-    print(f"[{now:%Y-%m-%d %H:%M}] {len(price_alerts)} fiyat + {len(news_alerts)} haber + "
-          f"{len(vol_alerts)} hacim uyarisi -> {len(ok)}/{len(sonuc)} aliciya gonderildi.")
+    gonderilen = 0
+    # 1) ANİ BÜYÜK GELİŞME (%5+) — kendi mesaj tipi
+    ani = [a for a in price_alerts if a["seviye"] == "ACIL"]
+    ani_msg = build_ani_message(ani, now)
+    if ani_msg:
+        gonderilen += sum(1 for s in telegram.broadcast(ani_msg).values() if s == "ok")
+    # 2) GÜN İÇİ DİKKAT (dikkat + fiyatlanmamış haber + hacim)
+    dikkat_msg = build_message(price_alerts, news_alerts, vol_alerts, now)
+    if dikkat_msg:
+        gonderilen += sum(1 for s in telegram.broadcast(dikkat_msg).values() if s == "ok")
+
+    print(f"[{now:%Y-%m-%d %H:%M}] {len(ani)} ani + {len(price_alerts) - len(ani)} dikkat + "
+          f"{len(news_alerts)} haber + {len(vol_alerts)} hacim uyarisi gonderildi.")
     return 0
 
 

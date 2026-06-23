@@ -31,7 +31,7 @@ WINDOW = 10                   # on-sinyal penceresi (canli sistemle ayni)
 HORIZON = 21                  # ileri ufuk (~1 ay islem gunu)
 BAND = 5.0                    # TUT icin yatay band (+/- %)
 AL_K = ("AL", "AL_TEMKINLI")
-SAT_K = ("SAT", "GUCLU_SAT")
+SAT_K = ("SAT", "GUCLU_SAT", "AZALT", "UZAK_DUR")
 OUT = Path(__file__).resolve().parents[2] / "data" / "backtest_results.json"
 
 

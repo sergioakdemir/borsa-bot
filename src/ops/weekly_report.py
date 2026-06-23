@@ -47,7 +47,7 @@ def _bucket(karar: str):
         return None
     if "AL" in k:
         return "AL"
-    if "SAT" in k or "AZALT" in k:
+    if "SAT" in k or "AZALT" in k or "UZAK" in k:
         return "SAT"
     if "TUT" in k or "BEKLE" in k:
         return "TUT"

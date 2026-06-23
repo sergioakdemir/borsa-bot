@@ -7,7 +7,7 @@ VERI KAYNAKLARI
 
 AI YORUMU
   Tum veri birlestirilip Claude'a (claude-sonnet-4-6, max_tokens=1000) gonderilir.
-  Cikti: karar (AL/TUT/SAT), puan(1-10), risk(1-10), eminlik(Dusuk/Orta/Yuksek),
+  Cikti: karar (AL/TUT/BEKLE/AZALT/UZAK_DUR), puan(1-10), risk(1-10), eminlik(Dusuk/Orta/Yuksek),
   gerekce, neden_simdi, fiyatlanmis_mi.
   Risk ajani: risk 9+ ve karar AL ise -> VETO.
 
@@ -120,15 +120,23 @@ SYSTEM = (
     "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. Direkt ve "
     "net karar verirsin, gereksiz yumusatmazsin; piyasayi iyi okur, kullaniciyi "
     "korur, gerektiginde sert uyarirsin. Kendini tanitma, dogrudan ise gir. Jargon "
-    "kullanma (RSI/MACD yasak). Net karar ver: AL/TUT/SAT/BEKLE. Gerekceni 2-3 "
-    "cumlede soyle. Veri yoksa yorum yapma. Hata yaparsan kabul et.\n"
+    "kullanma (RSI/MACD yasak). Net karar ver. SADECE su 5 karardan BIRINI kullan: "
+    "AL, TUT, BEKLE, AZALT, UZAK_DUR. Baska karar kelimesi YASAK (SAT, EKLE, NOTR, "
+    "IZLE, RADARDA, 'risk 5', 'skor 8/10' gibi ifadeler gerekcede de kullanilmaz). "
+    "'sade_yorum' alani KULLANICIYA gosterilir: 1-2 kisa cumle, gunluk dil, HICBIR "
+    "sayi/oran/yuzde/analist sayisi icermez (ROE, F/K, MA10, MA50, RSI YASAK); teknik "
+    "rakamlari yalniz 'gerekce'de tut. "
+    "Anlamlar: AL=al / pozisyon ac; TUT=elindekini koru; BEKLE=teyit/katalizor bekle; "
+    "AZALT=pozisyonu kismen kucult; UZAK_DUR=bu hisseden uzak dur (elinde varsa sat, "
+    "yoksa girme). Gerekceni 2-3 cumlede soyle. Veri yoksa yorum yapma. Hata yaparsan "
+    "kabul et.\n"
     "AL CESARETI: Guclu teknik sinyal + olumlu temel veri bir arada ise AL karari "
     "vermekten cekinme. Temkinli olmak iyidir ama surekli TUT demek de bir hata "
     "turudur. Puan 7 ve uzerinde guclu bir gorunum varsa AL'i dusun; her seyin "
     "mukemmel hizalanmasini bekleme.\n"
     "BEKLE karari: SADECE gercekten belirsiz durumlarda (yon belirsiz, kritik bir "
     "veri/katalizor bekleniyor ya da sinyal olgunlasmadiysa) BEKLE de; diger tum "
-    "durumlarda AL/TUT/SAT'tan birini tercih et. BEKLE secersen 'tekrar_bak_kosulu' "
+    "durumlarda AL/TUT/AZALT/UZAK_DUR'dan birini tercih et. BEKLE secersen 'tekrar_bak_kosulu' "
     "alanina hangi "
     "somut kosul olusunca tekrar bakilmasi gerektigini yaz (orn. 'fiyat 50 gunluk "
     "ortalamayi yukari gecerse' veya 'bilanco aciklaninca'). Diger kararlarda bu alan bos.\n\n"
@@ -151,7 +159,7 @@ SYSTEM = (
     "etki_buyuklugu (dusuk/orta/yuksek) ve etki_yonu (yukari/asagi/belirsiz) alanlarina "
     "BAK. Yuksek etkili OLUMLU haber (olumlu_mu=true, etki_buyuklugu='yuksek') varsa AL "
     "kararina YAKLAS. Yuksek etkili OLUMSUZ haber (olumlu_mu=false, etki_buyuklugu="
-    "'yuksek') varsa SAT/AZALT dusun. Dusuk etkili veya belirsiz haberleri kararda asiri "
+    "'yuksek') varsa AZALT/UZAK_DUR dusun. Dusuk etkili veya belirsiz haberleri kararda asiri "
     "agirliklandirma.\n\n"
     "ANALIST KONSENSUSU: Veride 'analist_konsensus' varsa dikkate al (kac kurum, "
     "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
@@ -553,11 +561,16 @@ from pydantic import BaseModel, Field
 
 
 class Verdict(BaseModel):
-    karar: Literal["AL", "TUT", "SAT", "BEKLE"] = Field(description="Net karar")
+    karar: Literal["AL", "TUT", "BEKLE", "AZALT", "UZAK_DUR"] = Field(
+        description="Net karar (sadece bu 5'ten biri)")
     puan: int = Field(description="1-10 puan; 10 en olumlu")
     risk: int = Field(description="1-10 risk; 10 en riskli")
     eminlik: Literal["Düşük", "Orta", "Yüksek"] = Field(description="Yorum eminligi")
     gerekce: str = Field(description="2-3 cumle gerekce; sadece verilen veriden")
+    sade_yorum: str = Field(
+        description="Kullaniciya gosterilecek 1-2 KISA cumle, gunluk dille. HICBIR "
+                    "teknik oran/sayi olmadan (ROE, F/K, MA10, MA50, yuzde, analist "
+                    "sayisi YAZMA). Orn: 'Bilanco saglam ve trend yukari, gorunum olumlu.'")
     neden_simdi: str = Field(description="Bu durum neden BUGUN dikkate deger")
     fiyatlanmis_mi: bool = Field(description="Haber/durum fiyata yansimis mi")
     tekrar_bak_kosulu: str = Field(
@@ -578,7 +591,8 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
     return resp.parsed_output
 
 
-_LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT", "BEKLE": "BEKLE"}
+_LABEL = {"AL": "AL", "TUT": "TUT", "BEKLE": "BEKLE", "AZALT": "AZALT",
+          "UZAK_DUR": "UZAK DUR"}
 
 
 # Verdict pydantic semasinin Batch API icin acik JSON-schema karsiligi
@@ -586,8 +600,9 @@ _LABEL = {"AL": "AL", "TUT": "TUT", "SAT": "SAT", "BEKLE": "BEKLE"}
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
-        "karar": {"type": "string", "enum": ["AL", "TUT", "SAT", "BEKLE"],
-                  "description": "Net karar"},
+        "karar": {"type": "string",
+                  "enum": ["AL", "TUT", "BEKLE", "AZALT", "UZAK_DUR"],
+                  "description": "Net karar (sadece bu 5'ten biri)"},
         "puan": {"type": "integer",
                  "description": "1-10 arasi puan; 10 en olumlu (kesinlikle 1-10)"},
         "risk": {"type": "integer",
@@ -596,6 +611,10 @@ VERDICT_SCHEMA = {
                     "description": "Yorum eminligi"},
         "gerekce": {"type": "string",
                     "description": "2-3 cumle gerekce; sadece verilen veriden"},
+        "sade_yorum": {"type": "string",
+                       "description": "Kullaniciya gosterilecek 1-2 KISA cumle, gunluk "
+                                      "dille; HICBIR teknik oran/sayi olmadan (ROE, F/K, "
+                                      "MA10, MA50, yuzde, analist sayisi YAZMA)"},
         "neden_simdi": {"type": "string",
                         "description": "Bu durum neden BUGUN dikkate deger"},
         "fiyatlanmis_mi": {"type": "boolean",
@@ -604,8 +623,8 @@ VERDICT_SCHEMA = {
                               "description": "Karar BEKLE ise hangi kosulda tekrar "
                                              "bakilmali; diger kararlarda bos string"},
     },
-    "required": ["karar", "puan", "risk", "eminlik", "gerekce", "neden_simdi",
-                 "fiyatlanmis_mi", "tekrar_bak_kosulu"],
+    "required": ["karar", "puan", "risk", "eminlik", "gerekce", "sade_yorum",
+                 "neden_simdi", "fiyatlanmis_mi", "tekrar_bak_kosulu"],
     "additionalProperties": False,
 }
 
@@ -765,7 +784,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     tekrar_bak_kosulu = (getattr(v, "tekrar_bak_kosulu", "") or "").strip()
     if final_decision == "AL" and v.risk >= 7:
         aksiyon = "Kademeli gir, tek seferde değil"
-    elif final_decision in ("SAT", "GUCLU_SAT"):
+    elif final_decision in ("AZALT", "UZAK_DUR", "SAT", "GUCLU_SAT"):
         aksiyon = "Kademeli çık (özellikle büyük pozisyonda)"
     elif final_decision == "BEKLE":
         aksiyon = tekrar_bak_kosulu or "Koşullar netleşince tekrar değerlendir"
@@ -785,6 +804,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "risk_ai": v.risk,
         "eminlik": v.eminlik,
         "gerekce": v.gerekce,
+        "sade_yorum": getattr(v, "sade_yorum", "") or "",
         "neden_simdi": v.neden_simdi,
         "fiyatlanmis_mi": v.fiyatlanmis_mi,
         # --- web arayuzu uyumlu alanlar ---

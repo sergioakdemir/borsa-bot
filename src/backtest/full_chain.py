@@ -94,7 +94,11 @@ def _aylik_indeksler(dates):
 
 
 def _bucket(d):
-    return "AL" if d == "AL" else "SAT" if d == "SAT" else "TUT"
+    if d == "AL":
+        return "AL"
+    if d in ("SAT", "GUCLU_SAT", "AZALT", "UZAK_DUR"):
+        return "SAT"
+    return "TUT"
 
 
 def _dogru(b, fwd):

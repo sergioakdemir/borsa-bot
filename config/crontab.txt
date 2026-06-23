@@ -9,6 +9,8 @@ CRON_TZ=Europe/Istanbul
 */15 10-18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts kap >> /root/borsa-bot/logs/alerts.log 2>&1
 # Gunluk portfoy takibi: hafta ici 18:15
 15 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.portfolio.run_portfolio >> /root/borsa-bot/logs/portfolio.log 2>&1
+# Gun sonu ozeti (borsa kapanisi): hafta ici 18:20 (portfoy guncellendikten sonra)
+20 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.gun_sonu >> /root/borsa-bot/logs/gun_sonu.log 2>&1
 # Haftalik ozet: Pazar 20:00
 0 20 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.weekly_summary >> /root/borsa-bot/logs/alerts.log 2>&1
 # Karar sonuclarini doldur (hafiza/ogrenme): her gece 23:30

@@ -14,7 +14,7 @@ from ..ai.risk import assess_risk
 from .scorer import deterministic_score
 
 AL_KARARLARI = ("AL", "AL_TEMKINLI")
-SAT_KARARLARI = ("SAT", "GUCLU_SAT")
+SAT_KARARLARI = ("SAT", "GUCLU_SAT", "AZALT", "UZAK_DUR")
 
 
 def _bars_from_df(df, require_volume=True):

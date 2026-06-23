@@ -8,9 +8,9 @@ Yanlis cikan kararlar icin ucuz Haiku ile kisa 'neden yanlis' analizi yapilir
 
 Kazanma kurali (karar yonune gore):
   AL / AL_TEMKINLI : fiyat yukseldiyse DOGRU
-  SAT / GUCLU_SAT  : fiyat dustuyse DOGRU
-  TUT              : fiyat ~yatay kaldiysa (|degisim| <= %5) DOGRU
-  VETO             : islemden kacinildi; fiyat yukselmediyse (<= 0) DOGRU
+  SAT / GUCLU_SAT / AZALT : fiyat dustuyse DOGRU
+  TUT / BEKLE      : fiyat ~yatay kaldiysa (|degisim| <= %5) DOGRU
+  VETO / UZAK_DUR  : islemden kacinildi; fiyat yukselmediyse (<= 0) DOGRU
 """
 import sys
 from datetime import datetime, timedelta
@@ -32,7 +32,7 @@ def _kapanis_gun(karar: str) -> int:
     """Karar tipine gore kac ISLEM gunu sonra degerlendirilecegini doner.
     AL=5, SAT=3, TUT=10, BEKLE=5 (AZALT -> SAT penceresi)."""
     k = (karar or "").upper()
-    if "SAT" in k or "AZALT" in k:
+    if "SAT" in k or "AZALT" in k or "UZAK" in k:   # UZAK_DUR de SAT penceresi (3 ig)
         return _KAPANIS_GUN["SAT"]
     if "BEKLE" in k:
         return _KAPANIS_GUN["BEKLE"]
@@ -45,9 +45,9 @@ def _kapanis_gun(karar: str) -> int:
 
 def _verdict(karar: str, degisim: float) -> bool:
     k = (karar or "").upper()
-    if "VETO" in k:
+    if "VETO" in k or "UZAK" in k:   # VETO / UZAK_DUR: girilmedi -> yukselmediyse dogru
         return degisim <= 0
-    if "SAT" in k:          # SAT, GUCLU_SAT
+    if "SAT" in k or "AZALT" in k:   # SAT, GUCLU_SAT, AZALT
         return degisim < 0
     if "AL" in k:           # AL, AL_TEMKINLI
         return degisim > 0

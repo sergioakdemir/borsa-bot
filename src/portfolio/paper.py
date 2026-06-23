@@ -71,7 +71,7 @@ def record_from_results(results, tarih=None, verbose: bool = False) -> dict:
             if verbose:
                 print(f"  [paper] AL  {ticker} @ {fiyat_tl:.2f} TL x {adet} "
                       f"({para_birimi}{' kur '+str(round(kur,2)) if is_us else ''})")
-        elif karar in ("SAT", "GUCLU_SAT", "AZALT"):
+        elif karar in ("SAT", "GUCLU_SAT", "AZALT", "UZAK_DUR"):
             if not acik:
                 continue
             giris = acik["fiyat"] or 0.0
