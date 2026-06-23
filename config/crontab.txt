@@ -1,6 +1,12 @@
 CRON_TZ=Europe/Istanbul
 # Sabah brifingi: hafta ici 09:00 (kisisel + hareketli)
 0 9 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.briefing.morning >> /root/borsa-bot/logs/briefing.log 2>&1
+# Haftalik ozet raporu: Pazartesi 08:30 (sabah brifinginden once)
+30 8 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.weekly_report >> /root/borsa-bot/logs/weekly_report.log 2>&1
+# ABD brifingi: hafta ici 15:30 (ABD acilisindan once, sadece ABD hisseleri)
+30 15 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.briefing.morning us >> /root/borsa-bot/logs/briefing_us.log 2>&1
+# PPK gunu politika faizi otomasyonu: her gun 14:30 (PPK degilse sessiz cikar)
+30 14 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_politika_faizi >> /root/borsa-bot/logs/politika_faizi.log 2>&1
 # Sicak uyari: hafta ici 10:00-17:30 her 30 dk
 0,30 10-17 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts >> /root/borsa-bot/logs/alerts.log 2>&1
 # Sicak uyari: hafta ici 18:00 (kapanis)
@@ -9,14 +15,10 @@ CRON_TZ=Europe/Istanbul
 */15 10-18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts kap >> /root/borsa-bot/logs/alerts.log 2>&1
 # Gunluk portfoy takibi: hafta ici 18:15
 15 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.portfolio.run_portfolio >> /root/borsa-bot/logs/portfolio.log 2>&1
-# Gun sonu ozeti (borsa kapanisi): hafta ici 18:20 (portfoy guncellendikten sonra)
-20 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.gun_sonu >> /root/borsa-bot/logs/gun_sonu.log 2>&1
 # Haftalik ozet: Pazar 20:00
 0 20 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.weekly_summary >> /root/borsa-bot/logs/alerts.log 2>&1
 # Karar sonuclarini doldur (hafiza/ogrenme): her gece 23:30
 30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_decisions >> /root/borsa-bot/logs/decisions.log 2>&1
-# Gunluk portfoy degeri snapshot'i (getiri takibi): her gece 23:30
-30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_portfoy_snapshot >> /root/borsa-bot/logs/portfoy_snapshot.log 2>&1
 # Paper trading acik pozisyonlarin k/z guncelle: her gece 23:35
 35 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_paper_trades >> /root/borsa-bot/logs/paper.log 2>&1
 # Haber-fiyat etkisi (30dk/2saat/1gun) doldur: her gece 23:40
@@ -29,3 +31,7 @@ CRON_TZ=Europe/Istanbul
 0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
 # Telegram komut yoklayici: her dakika
 * * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.telegram_bot.poller >> /root/borsa-bot/logs/poller.log 2>&1
+# Gunluk portfoy degeri snapshot'i (getiri takibi): her gece 23:30
+30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_portfoy_snapshot >> /root/borsa-bot/logs/portfoy_snapshot.log 2>&1
+# Gun sonu ozeti (borsa kapanisi): hafta ici 18:20 (portfoy guncellendikten sonra)
+20 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.gun_sonu >> /root/borsa-bot/logs/gun_sonu.log 2>&1
