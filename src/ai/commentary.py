@@ -34,6 +34,9 @@ OUT_PATH = ROOT / "data" / "ai_commentary.json"
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1000
 HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
+# Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
+_BATCH_FIYAT_INPUT = 1.50 / 1_000_000
+_BATCH_FIYAT_OUTPUT = 7.50 / 1_000_000
 
 # Her haberin bu hisseye etkisini etiketleyen ucuz Haiku cagrisi semasi
 _HABER_ETKI_SCHEMA = {
@@ -968,6 +971,7 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                 print(f"  [batch] {waited}s · durum={status}")
 
         # 3) Sonuclari topla (sira garantisi yok -> custom_id ile esle)
+        toplam_input = toplam_output = 0
         if status == "ended":
             for res in client.messages.batches.results(batch.id):
                 cid = res.custom_id
@@ -977,6 +981,10 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                 if res.result.type == "succeeded":
                     try:
                         msg = res.result.message
+                        usage = getattr(msg, "usage", None)
+                        if usage is not None:        # her hisse icin token topla
+                            toplam_input += getattr(usage, "input_tokens", 0) or 0
+                            toplam_output += getattr(usage, "output_tokens", 0) or 0
                         text = next((b.text for b in msg.content if b.type == "text"), "")
                         v = Verdict(**json.loads(text))
                         final[cid] = _finalize_record(ctx, v)
@@ -986,6 +994,14 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                 else:
                     final[cid] = {"ticker": ctx["ticker"], "skipped": True,
                                   "reason": f"Batch {res.result.type}"}
+
+        # Tum batch bitti -> token/maliyet ozeti (log dosyasina dusen stdout).
+        # TR brifingi -> briefing.log, US brifingi -> briefing_us.log (cron yonlendirmesi).
+        maliyet = (toplam_input * _BATCH_FIYAT_INPUT
+                   + toplam_output * _BATCH_FIYAT_OUTPUT)
+        tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
+        print(f"[{tarih}] TOKEN OZET: toplam_input={toplam_input}, "
+              f"toplam_output={toplam_output}, tahmini_maliyet=${maliyet:.4f}")
 
     # Hala sonuc gelmeyenler (timeout vb.) -> skipped
     for cid, ctx in ctxs.items():
