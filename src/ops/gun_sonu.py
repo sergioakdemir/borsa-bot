@@ -109,23 +109,36 @@ def _yarin_bakilacaklar(now):
     return maddeler[:3]
 
 
-def _gun_degisim(ticker):
-    """Hissenin bugünkü yüzde değişimi (yoksa None)."""
+def _gun_degisim(ticker, birim="TL"):
+    """Hissenin bugünkü yüzde değişimi + son fiyat. USD hisseler .IS eki OLMADAN
+    ABD piyasasından çekilir. Döner: (degisim_%, son_fiyat) | (None, None)."""
     try:
         from src.alerts.engine import intraday_change
-        info = intraday_change(ticker)
-        return info["change"] if info else None
+        if (birim or "TL").upper() == "USD":
+            from src.markets.us import US
+            info = intraday_change(ticker, market=US())
+        else:
+            info = intraday_change(ticker)
+        if not info:
+            return None, None
+        return info["change"], info["last_close"]
     except Exception:
-        return None
+        return None, None
 
 
-def _hisse_satiri(rec, ticker):
+def _hisse_satiri(rec, ticker, birim="TL"):
     fd = rec.get("final_decision") if rec else None
     kelime = karar_kelime(fd) or "TUT"
     emoji = karar_emoji(fd)
-    chg = _gun_degisim(ticker)
-    yon = f" %{chg:+.1f}" if chg is not None else ""
-    satir = f"{emoji} <b>{_esc(ticker)} — {kelime}</b>{yon}"
+    usd = (birim or "TL").upper() == "USD"
+    chg, fiyat = _gun_degisim(ticker, birim)
+    if chg is not None:
+        parca = f" %{chg:+.1f}"
+        if usd and fiyat is not None:        # ABD hissesi: fiyatı USD olarak göster
+            parca += f" · {fiyat:g}$"
+    else:
+        parca = " (USD)" if usd else ""
+    satir = f"{emoji} <b>{_esc(ticker)} — {kelime}</b>{parca}"
     yorum = _kisa((rec or {}).get("sade_yorum") or (rec or {}).get("gerekce")) if rec else ""
     if yorum:
         satir += f"\n<i>{_esc(yorum)}</i>"
@@ -136,10 +149,11 @@ def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None):
     ad = f" · {str(kullanici_ad).capitalize()}" if kullanici_ad else ""
     lines = [f"<b>GÜN SONU</b>{ad} — {now:%d.%m %H:%M}", _esc(_genel_ozet(overview))]
     lines += ["", "<b>PORTFÖY</b>"]
+    # portfolio: {ticker: para_birimi} (TL/USD)
     pf = sorted(portfolio)
     if pf:
         for tkr in pf:
-            lines.append(_hisse_satiri(kmap.get(tkr), tkr))
+            lines.append(_hisse_satiri(kmap.get(tkr), tkr, portfolio.get(tkr, "TL")))
     else:
         lines.append("Takip ettiğin portföy hissesi yok.")
     lines += ["", "<b>YARIN BAKILACAKLAR</b>"]
@@ -179,10 +193,11 @@ def run():
         if not tg:
             continue
         try:
-            pf = {(p.get("ticker") or "").upper().replace(".IS", "")
+            pf = {(p.get("ticker") or "").upper().replace(".IS", ""):
+                  (p.get("para_birimi") or "TL").upper()
                   for p in db.list_portfolio(u["id"]) if p.get("ticker")}
         except Exception:
-            pf = set()
+            pf = {}
         msg = build_message(pf, kmap, overview, yarin, now, kullanici_ad=u.get("ad"))
         try:
             telegram.send_message(msg, chat_id=tg)
@@ -193,10 +208,13 @@ def run():
 
     # DB dışı env alıcıları -> tüm portföyler birleşik
     try:
-        birlesik = {(r.get("ticker") or "").upper().replace(".IS", "")
-                    for r in db.list_portfolio() if r.get("ticker")}
+        birlesik = {}
+        for r in db.list_portfolio():
+            t = (r.get("ticker") or "").upper().replace(".IS", "")
+            if t:
+                birlesik.setdefault(t, (r.get("para_birimi") or "TL").upper())
     except Exception:
-        birlesik = set()
+        birlesik = {}
     genel = build_message(birlesik, kmap, overview, yarin, now)
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:

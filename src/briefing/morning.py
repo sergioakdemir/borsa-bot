@@ -199,7 +199,7 @@ def evaluate_all(targets, overview=None, learning=None):
         return commentary.run_batch(targets, save=True, verbose=True,
                                     overview=overview, learning=learning)
     except Exception as e:
-        print(f"  [batch] basarisiz ({type(e).__name__}: {str(e)[:80]}); "
+        print(f"  [batch] basarisiz ({type(e).__name__}: {str(e)[:300]}); "
               "tek-tek calistiriliyor")
         return commentary.run(targets, save=True, verbose=True,
                               overview=overview, learning=learning)

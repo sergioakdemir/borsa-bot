@@ -915,7 +915,11 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
         t, _, mk = str(raw).partition(":")
         t = t.strip()
         market = (mk.strip().lower() or "bist")
-        cid = f"{i}-{t.upper().replace('.IS', '')}"
+        # Batch custom_id yalniz [A-Za-z0-9_-] olabilir; ticker'daki '.' (orn.
+        # GMSTR.F) gecersiz -> tum batch 400 verirdi. Gecersiz karakterleri temizle.
+        safe = "".join(c if (c.isalnum() or c in "_-") else "_"
+                       for c in t.upper().replace(".IS", ""))
+        cid = f"{i}-{safe}"
         order.append((cid, t))
         try:
             kill, payload, ctx = _prepare_payload(
