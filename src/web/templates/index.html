@@ -903,7 +903,8 @@ function karneGenelHTML(k){
   const br=karneOranRenk(g.basari_orani);
   const tipPart=["AL","TUT","SAT"].map(b=>{const v=t[b]||{};
     return`<span class="chip ${karneOranRenk(v.oran)}">${b}: ${v.oran==null?"—":"%"+v.oran}</span>`}).join(" ");
-  return`<div class="sec-title">📊 Genel İstatistik</div>
+  const az=k.yeterli_veri===false?`<div class="card" style="border:1px solid var(--amber-bg);background:var(--amber-bg)"><div class="tick" style="line-height:1.5;color:var(--amber)">Bot 22 Haziran'dan itibaren gerçek kararlar veriyor. Veriler birikmekte…</div></div>`:"";
+  return`<div class="sec-title">📊 Genel İstatistik</div>${az}
     <div class="card">
       <div class="krow">
         <div class="kbox"><div class="kbig">${g.toplam}</div><div class="ksub">Toplam karar</div></div>

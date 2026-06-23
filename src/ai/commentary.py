@@ -222,7 +222,19 @@ SYSTEM = (
     "kosullarda (faiz/TL/petrol) gecmiste hangi yonde ve hangi olasilikla hareket "
     "ettigini gosterir. Bunu bir egilim/taban olasilik olarak kullan; guncel veri "
     "bu egilimi destekliyorsa eminligi artir, celisiyorsa nedenini belirt. Olasiliklari "
-    "kesin gercek gibi sunma ('gecmiste cogunlukla ... egilimindeydi' de)."
+    "kesin gercek gibi sunma ('gecmiste cogunlukla ... egilimindeydi' de).\n\n"
+    "KARAR MOTORU — her karar icin su alanlari doldur (bos birakma):\n"
+    "- giris_seviyesi: AL kararinda, su anki fiyatin %2-3 alti makul giris noktasi "
+    "(orn. 'Portfoyde yoksa 95 TL altinda al'). Diger kararlarda bos.\n"
+    "- stop_loss: AL/TUT kararinda, su anki fiyatin -%8 ile -%12 arasi bir seviye "
+    "(riske gore; risk yuksekse daha genis degil DAHA SIKI tut) (orn. '88 TL altina "
+    "duserse cik'). Diger kararlarda bos.\n"
+    "- hedef_fiyat: AL kararinda, teknik direnc veya %15-25 hedef (orn. '120 TL'a "
+    "ulasirsa sat'). Diger kararlarda bos.\n"
+    "- tetikleyici_kosul: TUM kararlarda, bu karari degistirecek en onemli gelisme "
+    "(1 cumle, orn. 'Bilanco beklentinin altinda gelirse karar AZALT'a doner').\n"
+    "Fiyat seviyelerini verideki guncel fiyat (son_kapanis) uzerinden hesapla; "
+    "para birimini dogru kullan (BIST: TL, ABD: $)."
 )
 
 # SYSTEM her cagride tekrar gonderilir; cache_control ile bir kez yazilip
@@ -592,6 +604,17 @@ class Verdict(BaseModel):
     tekrar_bak_kosulu: str = Field(
         default="", description="Karar BEKLE ise: hangi kosul olusunca tekrar bakilmali "
                                "(orn. 'fiyat 50 gunluk ortalamayi gecerse'). Diger kararlarda bos.")
+    giris_seviyesi: str = Field(
+        default="", description="AL kararinda: 'Portfoyde yoksa X TL/$ altinda al' "
+                               "(su anki fiyatin %2-3 alti). Diger kararlarda bos.")
+    stop_loss: str = Field(
+        default="", description="AL/TUT kararinda: 'Y TL/$ altina duserse cik' "
+                               "(su anki fiyatin -%8 ile -%12 arasi, riske gore). Diger kararlarda bos.")
+    hedef_fiyat: str = Field(
+        default="", description="AL kararinda: 'Z TL/$'a ulasirsa sat' (teknik direnc "
+                               "veya %15-25 hedef). Diger kararlarda bos.")
+    tetikleyici_kosul: str = Field(
+        default="", description="TUM kararlarda: bu karari degistirecek en onemli gelisme (1 cumle).")
 
 
 def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
@@ -638,9 +661,22 @@ VERDICT_SCHEMA = {
         "tekrar_bak_kosulu": {"type": "string",
                               "description": "Karar BEKLE ise hangi kosulda tekrar "
                                              "bakilmali; diger kararlarda bos string"},
+        "giris_seviyesi": {"type": "string",
+                           "description": "AL kararinda: 'Portfoyde yoksa X TL/$ altinda al' "
+                                          "(su anki fiyatin %2-3 alti); diger kararlarda bos string"},
+        "stop_loss": {"type": "string",
+                      "description": "AL/TUT kararinda: 'Y TL/$ altina duserse cik' "
+                                     "(su anki fiyatin -%8..-%12 arasi, riske gore); diger kararlarda bos string"},
+        "hedef_fiyat": {"type": "string",
+                        "description": "AL kararinda: 'Z TL/$'a ulasirsa sat' (teknik direnc "
+                                       "veya %15-25 hedef); diger kararlarda bos string"},
+        "tetikleyici_kosul": {"type": "string",
+                              "description": "TUM kararlarda: bu karari degistirecek en "
+                                             "onemli gelisme (1 cumle)"},
     },
     "required": ["karar", "puan", "risk", "eminlik", "gerekce", "sade_yorum",
-                 "neden_simdi", "fiyatlanmis_mi", "tekrar_bak_kosulu"],
+                 "neden_simdi", "fiyatlanmis_mi", "tekrar_bak_kosulu",
+                 "giris_seviyesi", "stop_loss", "hedef_fiyat", "tetikleyici_kosul"],
     "additionalProperties": False,
 }
 
@@ -833,6 +869,11 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "aksiyon": aksiyon,
         "stop_loss_seviyesi": stop_loss_seviyesi,
         "tekrar_bak_kosulu": tekrar_bak_kosulu or None,
+        # --- Karar motoru: AI'nin metinsel giris/stop/hedef/tetikleyici alanlari ---
+        "giris_seviyesi": (getattr(v, "giris_seviyesi", "") or "").strip(),
+        "stop_loss": (getattr(v, "stop_loss", "") or "").strip(),
+        "hedef_fiyat": (getattr(v, "hedef_fiyat", "") or "").strip(),
+        "tetikleyici_kosul": (getattr(v, "tetikleyici_kosul", "") or "").strip(),
         "gozlemler": gozlemler,
         "haber_sayisi": len(news["haberler"]),
         "haberler": news["haberler"],

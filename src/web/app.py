@@ -340,6 +340,13 @@ def _stock_card(rec: dict) -> dict:
         "son_haber": _son_haber(rec),
         "firsat_neden": _firsat_neden(rec),
         "analist": rec.get("analist"),
+        # Karar motoru: AI'nin giris/stop/hedef/tetikleyici metinleri
+        "karar_motoru": {
+            "giris": rec.get("giris_seviyesi", ""),
+            "hedef": rec.get("hedef_fiyat", ""),
+            "stop": rec.get("stop_loss", ""),
+            "tetikleyici": rec.get("tetikleyici_kosul", ""),
+        },
         "has_data": True,
     }
     card["aciklama"] = _aciklama(card)
@@ -1266,6 +1273,12 @@ def get_haber_etki() -> dict:
     return {"kategoriler": kategoriler, "satirlar": satirlar, "mesaj": mesaj}
 
 
+# Bot 22 Haziran 2026'dan itibaren "gercek" karar veriyor; karne sadece bu tarih
+# ve sonrasini hesaplar. Eski kararlar DB'de kalir (silinmez), karneye girmez.
+KARNE_BASLANGIC = "2026-06-22"
+KARNE_MIN_KARAR = 20            # bu kadar degerlendirilmis karar yoksa "birikmekte" notu
+
+
 def _karne_bucket(karar: str):
     """Karar tipini AL / TUT / SAT kovasina indirger (update_decisions/_classify uyumlu).
     AZALT/UZAK_DUR -> SAT (kacinma); VETO/KILL -> None (tip dagiliminda sayilmaz)."""
@@ -1301,7 +1314,9 @@ def get_karne(kullanici: str | None = None) -> dict:
     try:
         with sqlite3.connect(DB_PATH) as c:
             c.row_factory = sqlite3.Row
-            rows = [dict(r) for r in c.execute("SELECT * FROM decisions ORDER BY id DESC")]
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM decisions WHERE tarih >= ? ORDER BY id DESC",
+                (KARNE_BASLANGIC,))]
     except sqlite3.Error:
         rows = []
 
@@ -1373,6 +1388,8 @@ def get_karne(kullanici: str | None = None) -> dict:
 
     return {
         "kullanici": kullanici,
+        "baslangic_tarihi": KARNE_BASLANGIC,
+        "yeterli_veri": degerlendirilmis >= KARNE_MIN_KARAR,
         "genel": {"toplam": toplam, "degerlendirilmis": degerlendirilmis,
                   "dogru": dogru, "basari_orani": _oran(dogru, degerlendirilmis)},
         "tip_basari": tip_basari,
@@ -2861,6 +2878,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
             "bot_puan": r.get("score"),
             "bot_risk": (r.get("risk") or {}).get("score"),
             "bot_gerekce": _ilk_cumleler(r.get("gerekce", ""), 2),
+            # karar motoru: giris/stop/hedef/tetikleyici (bos olabilir)
+            "giris_seviyesi": r.get("giris_seviyesi") or "",
+            "stop_loss": r.get("stop_loss") or "",
+            "hedef_fiyat": r.get("hedef_fiyat") or "",
+            "tetikleyici_kosul": r.get("tetikleyici_kosul") or "",
         })
     # tum izlenen hisseler (sahip olunmayan hisse sorulari icin kisa baglam)
     piyasa = []
@@ -2869,7 +2891,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
             continue
         piyasa.append({"hisse": t, "karar": r.get("final_decision"),
                        "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
-                       "not": _ilk_cumleler(r.get("gerekce", ""), 1)})
+                       "not": _ilk_cumleler(r.get("gerekce", ""), 1),
+                       "giris_seviyesi": r.get("giris_seviyesi") or "",
+                       "stop_loss": r.get("stop_loss") or "",
+                       "hedef_fiyat": r.get("hedef_fiyat") or "",
+                       "tetikleyici_kosul": r.get("tetikleyici_kosul") or ""})
 
     # GUNLUK PLAN: radardaki firsatlar (AL sinyalleri, puana gore en iyi 3)
     radar_firsatlar = []
@@ -3020,7 +3046,12 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "etmek / ortalama dusurmek / beklemek).\n"
         f"Net aksiyon icin su karar tiplerinden uygun olani kullan: {KARAR_TIPLERI}. "
         "Profili belli olmayan kullaniciya genel konus ve 'seni daha iyi tanirsam "
-        "daha isabetli yorum yaparim' diye nazikce hatirlat.\n\n"
+        "daha isabetli yorum yaparim' diye nazikce hatirlat.\n"
+        "KARAR MOTORU: Bir hissenin kararini konusurken, baglamda o hisse icin "
+        "giris_seviyesi/stop_loss/hedef_fiyat/tetikleyici_kosul DOLU ise bunlari "
+        "kullaniciya soyle. AL kararinda 'Giris: X | Hedef: Y | Stop: Z' biciminde; "
+        "TUT kararinda 'Stop: Z | Tetikleyici: ...' biciminde; her kararda "
+        "tetikleyici_kosul'u belirt. Bu alanlar bossa uydurma, atla.\n\n"
         "ARAYUZ DEGISIKLIGI: Kullanici arayuz degisikligi isterse (renk, buton, "
         "baslik, yazi, sekme vb.): 1) Ne yapacagini acikla, 2) Onay bekle, "
         "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "

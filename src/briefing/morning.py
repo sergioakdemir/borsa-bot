@@ -228,8 +228,31 @@ def _risk_kelime(r):
     return "düşük risk"
 
 
+def _karar_motoru_satirlari(r):
+    """Karar motoru alanlari: AL'da Giris/Hedef/Stop; TUT'ta Stop; hepsinde Tetikleyici."""
+    fd = (r.get("final_decision") or "").upper()
+    giris = (r.get("giris_seviyesi") or "").strip()
+    hedef = (r.get("hedef_fiyat") or "").strip()
+    stop = (r.get("stop_loss") or "").strip()
+    tetik = (r.get("tetikleyici_kosul") or "").strip()
+    out = []
+    if fd == "AL":
+        p = []
+        if giris: p.append(f"Giriş: {giris}")
+        if hedef: p.append(f"Hedef: {hedef}")
+        if stop: p.append(f"Stop: {stop}")
+        if p:
+            out.append(" | ".join(p))
+    elif fd == "TUT" and stop:
+        out.append(f"Stop: {stop}")
+    if tetik:                            # tetikleyici TUM kararlarda
+        out.append(f"Tetikleyici: {tetik}")
+    return out
+
+
 def _hisse_blok(r, portfoyde=False):
-    """Tek hisse blogu: '<emoji> TICKER — KARAR' + sade yorum + 'Aksiyon: ...'."""
+    """Tek hisse blogu: '<emoji> TICKER — KARAR' + sade yorum + 'Aksiyon: ...'
+    + karar motoru (giris/hedef/stop/tetikleyici)."""
     fd = r.get("final_decision")
     kelime = karar_kelime(fd)
     if not kelime:                       # KILL_SWITCH vb. -> kullaniciya gosterme
@@ -242,6 +265,8 @@ def _hisse_blok(r, portfoyde=False):
             yorum = f"{yorum} (yüksek risk)"
         blok.append(f"<i>{_esc(yorum)}</i>")
     blok.append(f"Aksiyon: {_esc(aksiyon_metni(fd, portfoyde))}")
+    for satir in _karar_motoru_satirlari(r):
+        blok.append(f"<i>{_esc(satir)}</i>")
     return blok
 
 
