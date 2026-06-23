@@ -96,6 +96,15 @@
   .sec-title:first-child{margin-top:2px}
   .sec-row{display:flex;align-items:center;justify-content:space-between;margin:18px 2px 9px}
   .sec-row .sec-title{margin:0}
+  /* ---- Karne ---- */
+  .krow{display:flex;gap:8px}
+  .kbox{flex:1;background:rgba(255,255,255,.04);border-radius:12px;padding:12px 6px;text-align:center}
+  .kbig{font-size:24px;font-weight:800;line-height:1.1}
+  .ksub{font-size:11px;color:var(--muted);margin-top:3px}
+  .krline{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 15px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer}
+  .krline:last-child{border-bottom:none}
+  .krl-meta{display:flex;align-items:center;gap:10px;font-size:13px;white-space:nowrap}
   .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
   .card{background:var(--card);border:1px solid var(--border);border-radius:22px;padding:16px;margin-bottom:11px}
 
@@ -755,7 +764,7 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
         <div class="grid"><div><div class="lbl">Yatırım</div><b>${money(o.maliyet)}</b></div>
           <div><div class="lbl">Toplam K/Z</div><b class="${signCls(o.kz)}">${money(o.kz)}</b></div></div>
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;
-    const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">Karne · Backtest →</button>`;
+    const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">📊 Karne →</button>`;
     if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.")+karne;fillOverview();return}
     h+=pieHTML(d.pozisyonlar);
     const gr={bist:"BIST Hisselerim",abd:"ABD Hisselerim",kripto:"Kripto Varlıklarım"};
@@ -869,35 +878,58 @@ function modelPortfoyHTML(mp){
   }
   return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [dr,btr,pr,her,agr,mp]=await Promise.all([
-        fetch("/api/decisions").then(r=>r.json()).catch(()=>({})),
+  try{const [k,btr,pr,her,agr]=await Promise.all([
+        fetch("/api/karne"+uq()).then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
         fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
         fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({})),
-        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false})),
-        fetch("/api/model-portfoy").then(r=>r.json()).catch(()=>({var:false}))]);
-    const rows=dr.satirlar||[];DEC_INDEX={};
-    let h=`<h2 style="font-size:21px;font-weight:700">Karne</h2>
-      <div class="tick" style="margin-bottom:6px">Backtest performansı ve botun verdiği kararlar</div>`;
-    h+=modelPortfoyHTML(mp);
-    // Backtest dosyalari yoksa gercek-karar mesaji goster
-    if((!agr||!agr.var)&&(!btr||!btr.var)){
-      h+=`<div class="sec-title">Backtest</div>`+
-         `<div class="card"><div class="tick" style="line-height:1.5">Henüz yeterli gerçek karar verisi yok. Pazartesi'den itibaren botun gerçek kararları burada birikecek.</div></div>`;
-    }else{
-      h+=aggressiveHTML(agr);
-      h+=backtestHTML(btr);
-    }
+        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false}))]);
+    let h=`<h2 style="font-size:21px;font-weight:700">📊 Karne</h2>
+      <div class="tick" style="margin-bottom:6px">Botun gerçek kararları ve isabet performansı</div>`;
+    h+=karneGenelHTML(k);
+    h+=karneSonKararlarHTML(k);
+    h+=karneSektorHTML(k);
+    h+=modelPortfoyHTML(k.model_portfoy||{var:false});
+    if((agr&&agr.var)||(btr&&btr.var)){h+=aggressiveHTML(agr);h+=backtestHTML(btr);}
     h+=paperHTML(pr);
     h+=haberEtkiHTML(her);
-    h+=`<div class="sec-title">Geçmiş Kararlar</div>`;
-    h+=rows.length?rows.map(r=>{DEC_INDEX[r.id]=r;const mk=r.durum==="dogru"?"✓":r.durum==="yanlis"?"✕":"•";
-      const sc=r.durum==="dogru"?"green":r.durum==="yanlis"?"red":"gray";
-      return`<div class="card" onclick="openDecision(${r.id})"><div class="row"><div class="name">${esc(r.ticker)} ${pill(r.karar_label,r.renk)}</div>
-        <span class="chip ${sc}">${mk} ${r.durum==="dogru"?"doğru":r.durum==="yanlis"?"yanıldı":"bekliyor"}</span></div>
-        <div class="pline">${esc(r.tarih)} · ${esc(r.eminlik||"")}</div></div>`}).join(""):empty("Henüz karar kaydı yok");
     document.getElementById("ov-body").innerHTML=h;
   }catch(e){document.getElementById("ov-body").innerHTML=empty("Yüklenemedi")}}
+
+function karneOranRenk(o){return o==null?"gray":(o>=60?"green":(o>=40?"amber":"red"))}
+function karneGenelHTML(k){
+  if(!k||!k.genel)return"";
+  const g=k.genel,t=k.tip_basari||{},pk=k.piyasa_karsi;
+  const br=karneOranRenk(g.basari_orani);
+  const tipPart=["AL","TUT","SAT"].map(b=>{const v=t[b]||{};
+    return`<span class="chip ${karneOranRenk(v.oran)}">${b}: ${v.oran==null?"—":"%"+v.oran}</span>`}).join(" ");
+  return`<div class="sec-title">📊 Genel İstatistik</div>
+    <div class="card">
+      <div class="krow">
+        <div class="kbox"><div class="kbig">${g.toplam}</div><div class="ksub">Toplam karar</div></div>
+        <div class="kbox"><div class="kbig">${g.degerlendirilmis}</div><div class="ksub">Değerlendirilmiş</div></div>
+        <div class="kbox"><div class="kbig ${br==='green'?'pos':br==='red'?'neg':br==='amber'?'flat':''}">${g.basari_orani==null?"—":"%"+g.basari_orani}</div><div class="ksub">Başarı oranı</div></div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">${tipPart}</div>
+      ${pk?`<div class="row" style="margin-top:12px"><span class="muted">Piyasaya karşı (model vs BIST-100)</span><b class="${signCls(pk['fark_%'])}">${pk['fark_%']==null?"—":pct(pk['fark_%'])}</b></div>`:""}
+      ${k.en_iyi?`<div class="row" style="margin-top:8px"><span class="muted">En iyi karar</span><b class="pos">${esc(k.en_iyi.ticker)} ${pct(k.en_iyi.degisim)}</b></div>`:""}
+      ${k.en_kotu?`<div class="row" style="margin-top:8px"><span class="muted">En kötü karar</span><b class="neg">${esc(k.en_kotu.ticker)} ${pct(k.en_kotu.degisim)}</b></div>`:""}
+    </div>`}
+function karneSonKararlarHTML(k){
+  const rows=(k&&k.son_kararlar)||[];
+  if(!rows.length)return"";
+  return`<div class="sec-title">Son Kararlar</div><div class="card" style="padding:4px 0">`+
+    rows.map(r=>{const mk=r.durum==="dogru"?"✅":r.durum==="yanlis"?"❌":"•";
+      return`<div class="krline" onclick="openStock('${esc(r.ticker)}')">
+        <div>${pill(r.karar_label,r.renk)} <b>${esc(r.ticker)}</b></div>
+        <div class="krl-meta"><span class="muted">${esc(r.tarih||"")}</span>${r.puan!=null?`<span class="muted">${r.puan}/10</span>`:""}<span>${mk}</span><span class="${signCls(r.degisim)}">${r.degisim==null?"":pct(r.degisim)}</span></div>
+      </div>`}).join("")+`</div>`}
+function karneSektorHTML(k){
+  const s=(k&&k.sektor)||[];
+  if(!s.length)return"";
+  return`<div class="sec-title">Sektör Performansı</div><div class="card">`+
+    s.map(x=>`<div class="row" style="margin:8px 0"><span>${esc(x.sektor)} <span class="muted">· ${x.toplam} karar</span></span><span class="chip ${karneOranRenk(x.oran)}">${x.oran==null?"—":"%"+x.oran}</span></div>`).join("")+
+    `</div>`}
 function openDecision(id){const r=DEC_INDEX[id];if(!r)return;
   document.getElementById("ov-body").innerHTML=`<div class="row"><div><h2 style="font-size:21px;font-weight:700">${esc(r.isim)}</h2><div class="tick">${esc(r.ticker)} · ${esc(r.tarih)}</div></div>${pill(r.karar_label,r.renk)}</div>
     <div class="sec-title">Neden bu karar</div><div class="quote">${esc(r.neden)}</div>

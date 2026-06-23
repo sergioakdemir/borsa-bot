@@ -1266,43 +1266,123 @@ def get_haber_etki() -> dict:
     return {"kategoriler": kategoriler, "satirlar": satirlar, "mesaj": mesaj}
 
 
-def get_karne() -> dict:
-    """Defter mantigi: her hisse icin 'karar -> sonuc' satiri.
+def _karne_bucket(karar: str):
+    """Karar tipini AL / TUT / SAT kovasina indirger (update_decisions/_classify uyumlu).
+    AZALT/UZAK_DUR -> SAT (kacinma); VETO/KILL -> None (tip dagiliminda sayilmaz)."""
+    k = (karar or "").upper()
+    if "KILL" in k or "VETO" in k:
+        return None
+    if "AL" in k:
+        return "AL"
+    if "SAT" in k or "AZALT" in k or "UZAK" in k:
+        return "SAT"
+    if "TUT" in k or "BEKLE" in k:
+        return "TUT"
+    return None
 
-    Gercek karar logu gelene kadar backtest.json ozetinden turetilir.
-    Bir hisse stratejisi al-tut'u gectiyse ✅, gectiyse degilse ❌.
+
+def _karne_degisim(sonuc: str):
+    """decisions.sonuc ('+3.2% · DOGRU') icinden yuzde degisimi cikarir (yoksa None)."""
+    m = re.search(r"([+-]?\d+(?:\.\d+)?)%", sonuc or "")
+    return float(m.group(1)) if m else None
+
+
+def get_karne(kullanici: str | None = None) -> dict:
+    """KARNE — botun GERCEK karar takibi (decisions tablosu).
+
+    Basari, decisions.sonuc icindeki DOGRU/YANLIS'a dayanir; bu sonuc
+    update_decisions.py tarafindan su kriterlerle hesaplanir (uyumlu):
+      AL=fiyat yukseldi, TUT=|deg|<=%5, SAT/AZALT=fiyat dustu,
+      UZAK_DUR/VETO=fiyat yukselmedi.
+    NOT: decisions tablosu kullanici bazli degildir; karar istatistikleri bot
+    geneldir. kullanici parametresi baglam/ileri kullanim icin kabul edilir.
     """
-    bt = _read_json(DATA / "backtest.json", {"hisseler": [], "ozet": {}, "ayar": {}})
-    ayar = bt.get("ayar", {})
-    son = (ayar.get("end") or "")
+    from src.ai.learning import _outcome_wrong
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute("SELECT * FROM decisions ORDER BY id DESC")]
+    except sqlite3.Error:
+        rows = []
 
-    satirlar = []
-    for h in bt.get("hisseler", []):
-        tkr = (h.get("symbol") or "").replace(".IS", "").upper()
-        strat = h.get("strateji_getiri_%")
-        altut = h.get("al_tut_getiri_%")
-        basari = h.get("basari_orani_%")
-        kazandi = (strat is not None and altut is not None and strat >= altut)
-        kd = h.get("karar_dagilimi", {}) or {}
-        # en cok verilen yonlu karar
-        baskin = max(((k, v) for k, v in kd.items() if k != "VETO" and k != "TUT"),
-                     key=lambda kv: kv[1], default=("AL", 0))[0]
-        etiket, renk = _classify(baskin)
-        satirlar.append({
-            "ticker": tkr,
-            "isim": company_name(tkr),
-            "tarih": _tarih_kisa(son),
-            "etiket": etiket,
-            "renk": renk,
-            "kazandi": kazandi,
-            "getiri": strat,
-            "altut": altut,
-            "basari": basari,
-            "sebep": (f"strateji {strat:+.1f}% vs al-tut {altut:+.1f}%"
-                      if strat is not None and altut is not None else ""),
+    toplam = len(rows)
+    degerlendirilmis = dogru = 0
+    tip = {b: {"toplam": 0, "dogru": 0} for b in ("AL", "TUT", "SAT")}
+    en_iyi = en_kotu = None
+    for r in rows:
+        w = _outcome_wrong(r.get("sonuc"))      # None=bekliyor, False=dogru, True=yanlis
+        if w is None:
+            continue
+        degerlendirilmis += 1
+        if not w:
+            dogru += 1
+        b = _karne_bucket(r.get("karar"))
+        if b in tip:
+            tip[b]["toplam"] += 1
+            if not w:
+                tip[b]["dogru"] += 1
+        deg = _karne_degisim(r.get("sonuc"))
+        if deg is not None:
+            tkr = (r.get("ticker") or "").upper()
+            if not w and (en_iyi is None or deg > en_iyi["degisim"]):
+                en_iyi = {"ticker": tkr, "karar": r.get("karar"),
+                          "karar_label": _karar_label(r.get("karar")),
+                          "degisim": deg, "tarih": r.get("tarih")}
+            if w and (en_kotu is None or deg < en_kotu["degisim"]):
+                en_kotu = {"ticker": tkr, "karar": r.get("karar"),
+                           "karar_label": _karar_label(r.get("karar")),
+                           "degisim": deg, "tarih": r.get("tarih")}
+
+    son_kararlar = []
+    for r in rows[:10]:                          # rows DESC -> en yeni 10 karar
+        w = _outcome_wrong(r.get("sonuc"))
+        durum = "bekliyor" if w is None else ("yanlis" if w else "dogru")
+        tkr = (r.get("ticker") or "").upper()
+        _, renk = _classify(r.get("karar"))
+        son_kararlar.append({
+            "id": r.get("id"), "ticker": tkr, "isim": company_name(tkr),
+            "karar": r.get("karar"), "karar_label": _karar_label(r.get("karar")),
+            "renk": renk, "puan": r.get("puan"), "durum": durum,
+            "degisim": _karne_degisim(r.get("sonuc")), "tarih": r.get("tarih"),
         })
 
-    return {"satirlar": satirlar, "ozet": bt.get("ozet", {}), "ayar": ayar}
+    def _oran(d, t):
+        return round(d / t * 100) if t else None
+
+    tip_basari = {b: {"toplam": v["toplam"], "dogru": v["dogru"],
+                      "oran": _oran(v["dogru"], v["toplam"])}
+                  for b, v in tip.items()}
+
+    try:                                          # sektor bazli basari (learning.py)
+        from src.ai.learning import sector_success_rates
+        sek = sector_success_rates()
+    except Exception:
+        sek = {}
+    sektor = [{"sektor": s, "toplam": a["toplam"], "dogru": a["dogru"],
+               "oran": a.get("oran_%")}
+              for s, a in sorted(sek.items(),
+                                 key=lambda kv: (kv[1].get("oran_%") or 0), reverse=True)]
+
+    mp = get_model_portfoy()                      # model portfoy + BIST-100 kiyasi
+    piyasa = None
+    if mp.get("var"):
+        o = mp.get("ozet") or {}
+        piyasa = {"model_getiri_%": o.get("getiri_yuzde"),
+                  "bist100_getiri_%": o.get("bist100_getiri_yuzde"),
+                  "fark_%": o.get("bist100_fark_yuzde")}
+
+    return {
+        "kullanici": kullanici,
+        "genel": {"toplam": toplam, "degerlendirilmis": degerlendirilmis,
+                  "dogru": dogru, "basari_orani": _oran(dogru, degerlendirilmis)},
+        "tip_basari": tip_basari,
+        "sektor": sektor,
+        "son_kararlar": son_kararlar,
+        "en_iyi": en_iyi,
+        "en_kotu": en_kotu,
+        "model_portfoy": mp,
+        "piyasa_karsi": piyasa,
+    }
 
 
 def _karar_label(karar: str) -> str:
@@ -3224,7 +3304,7 @@ def api_portfolio():
 
 @app.route("/api/karne")
 def api_karne():
-    return jsonify(get_karne())
+    return jsonify(get_karne(request.args.get("kullanici")))
 
 
 @app.route("/api/paper-trading")
