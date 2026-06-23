@@ -1,5 +1,9 @@
-"""Haftalik ozet (cron: Pazar 20:00). Watchlist haftalik degisim + bu haftaki
-uyari sayilari -> tek Telegram mesaji.
+"""Haftalik PIYASA ozeti (cron: Pazar 20:00). Watchlist haftalik fiyat degisimi
++ bu haftaki uyari sayilari -> tek Telegram mesaji.
+
+NOT: src/ops/weekly_report.py'den FARKLI gorevdir. Bu dosya PIYASA odaklidir
+(fiyat hareketleri + uyari sayisi). weekly_report ise PERFORMANS odaklidir
+(karar isabeti, portfoy K/Z, ogrenme). Ikisi farkli baslik kullanir.
 """
 import os
 import sys
@@ -34,7 +38,8 @@ from src.db import database as db
 
 
 def build_message(rows, alerts, now):
-    lines = [f"<b>\U0001F4C5 Haftalik Ozet</b> — {now:%Y-%m-%d}", ""]
+    lines = [f"<b>\U0001F4C5 Haftalik Piyasa Ozeti</b> — {now:%Y-%m-%d}",
+             "<i>Watchlist haftalik fiyat hareketleri + uyari sayilari</i>", ""]
     for r in sorted(rows, key=lambda x: x["change"], reverse=True):
         sign = "+" if r["change"] > 0 else ""
         arrow = "\U0001F4C8" if r["change"] > 0 else ("\U0001F4C9" if r["change"] < 0 else "▪")

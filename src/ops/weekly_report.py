@@ -1,4 +1,8 @@
-"""Haftalik ozet raporu (cron: Pazartesi 08:30, sabah brifinginden ONCE).
+"""Haftalik PERFORMANS raporu (cron: Pazartesi 08:30, sabah brifinginden ONCE).
+
+NOT: src/alerts/weekly_summary.py'den FARKLI gorevdir. Bu dosya PERFORMANS
+odaklidir (karar isabeti, portfoy K/Z, ogrenme). weekly_summary ise PIYASA
+odaklidir (watchlist fiyat hareketleri + uyari sayisi). Ikisi farkli baslik kullanir.
 
 Gecen haftanin (son 7 gun) ozetini tek Telegram mesaji olarak gonderir:
   - Verilen kararlar: kaç AL / TUT / SAT
@@ -191,7 +195,8 @@ def build_message(now, basla, bit):
     bist = _bist100_hafta()
     og = _ogrenme_ozet(basla, bit)
 
-    L = [f"<b>📅 Haftalık Özet</b> — {basla} → {bit}", ""]
+    L = [f"<b>📅 Haftalık Performans Raporu</b> — {basla} → {bit}",
+         "<i>Karar isabeti · portföy · öğrenme</i>", ""]
 
     s = dec["sayim"]
     L.append(f"📊 <b>Kararlar:</b> {s.get('AL',0)} AL · {s.get('TUT',0)} TUT · {s.get('SAT',0)} SAT")

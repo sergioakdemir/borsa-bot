@@ -37,6 +37,9 @@ HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
 # Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
 _BATCH_FIYAT_INPUT = 1.50 / 1_000_000
 _BATCH_FIYAT_OUTPUT = 7.50 / 1_000_000
+# Prompt caching: cache YAZMA = 1.25x input, cache OKUMA (hit) = 0.10x input
+_BATCH_FIYAT_CACHE_WRITE = _BATCH_FIYAT_INPUT * 1.25
+_BATCH_FIYAT_CACHE_READ = _BATCH_FIYAT_INPUT * 0.10
 
 # Her haberin bu hisseye etkisini etiketleyen ucuz Haiku cagrisi semasi
 _HABER_ETKI_SCHEMA = {
@@ -221,6 +224,11 @@ SYSTEM = (
     "bu egilimi destekliyorsa eminligi artir, celisiyorsa nedenini belirt. Olasiliklari "
     "kesin gercek gibi sunma ('gecmiste cogunlukla ... egilimindeydi' de)."
 )
+
+# SYSTEM her cagride tekrar gonderilir; cache_control ile bir kez yazilip
+# sonraki cagrilarda %90 ucuz okunur (cache hit). Batch icinde de gecerlidir.
+_SYSTEM_CACHED = [{"type": "text", "text": SYSTEM,
+                   "cache_control": {"type": "ephemeral"}}]
 
 # --- Sektor bazli statik notlar (hangi faktorler kritik) ---
 SEKTOR_NOTLARI = {
@@ -590,7 +598,7 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
     import anthropic
     client = client or anthropic.Anthropic()
     resp = client.messages.parse(
-        model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM,
+        model=MODEL, max_tokens=MAX_TOKENS, system=_SYSTEM_CACHED,
         messages=[{"role": "user", "content": (
             f"{ticker} hissesini degerlendir. Yalnizca asagidaki veriyi kullan, "
             "veri uydurma:\n\n" + json.dumps(payload, ensure_ascii=False, indent=2))}],
@@ -946,7 +954,7 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
         requests.append(Request(
             custom_id=cid,
             params=MessageCreateParamsNonStreaming(
-                model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM,
+                model=MODEL, max_tokens=MAX_TOKENS, system=_SYSTEM_CACHED,
                 messages=[{"role": "user", "content": _user_prompt(ctx["ticker"], payload)}],
                 output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}},
             )))
@@ -972,6 +980,7 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
 
         # 3) Sonuclari topla (sira garantisi yok -> custom_id ile esle)
         toplam_input = toplam_output = 0
+        toplam_cache_read = toplam_cache_write = 0
         if status == "ended":
             for res in client.messages.batches.results(batch.id):
                 cid = res.custom_id
@@ -985,6 +994,8 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                         if usage is not None:        # her hisse icin token topla
                             toplam_input += getattr(usage, "input_tokens", 0) or 0
                             toplam_output += getattr(usage, "output_tokens", 0) or 0
+                            toplam_cache_read += getattr(usage, "cache_read_input_tokens", 0) or 0
+                            toplam_cache_write += getattr(usage, "cache_creation_input_tokens", 0) or 0
                         text = next((b.text for b in msg.content if b.type == "text"), "")
                         v = Verdict(**json.loads(text))
                         final[cid] = _finalize_record(ctx, v)
@@ -997,11 +1008,16 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
 
         # Tum batch bitti -> token/maliyet ozeti (log dosyasina dusen stdout).
         # TR brifingi -> briefing.log, US brifingi -> briefing_us.log (cron yonlendirmesi).
+        # input = cache'siz tam ucretli; cache_read = %90 ucuz okuma (hit);
+        # cache_write = ilk yazim (1.25x). Cache sayesinde SYSTEM bir kez yazilir.
         maliyet = (toplam_input * _BATCH_FIYAT_INPUT
-                   + toplam_output * _BATCH_FIYAT_OUTPUT)
+                   + toplam_output * _BATCH_FIYAT_OUTPUT
+                   + toplam_cache_write * _BATCH_FIYAT_CACHE_WRITE
+                   + toplam_cache_read * _BATCH_FIYAT_CACHE_READ)
         tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
-        print(f"[{tarih}] TOKEN OZET: toplam_input={toplam_input}, "
-              f"toplam_output={toplam_output}, tahmini_maliyet=${maliyet:.4f}")
+        print(f"[{tarih}] TOKEN OZET: input={toplam_input}, output={toplam_output}, "
+              f"cache_hit={toplam_cache_read}, cache_write={toplam_cache_write}, "
+              f"tahmini_maliyet=${maliyet:.4f}")
 
     # Hala sonuc gelmeyenler (timeout vb.) -> skipped
     for cid, ctx in ctxs.items():
