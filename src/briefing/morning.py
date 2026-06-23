@@ -399,7 +399,8 @@ def main(market="bist"):
     try:
         from src.ops import update_decisions
         guncellenen = update_decisions.run(verbose=False)
-        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi: {guncellenen} sonuc guncellendi.")
+        mini = update_decisions.mini_update(verbose=False)   # AL/SAT 1.gun degisimi
+        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi: {guncellenen} sonuc + {mini} 1.gun guncellendi.")
     except Exception as e:
         print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi: {type(e).__name__}: {str(e)[:80]}")
 

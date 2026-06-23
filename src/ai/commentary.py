@@ -126,9 +126,10 @@ SYSTEM = (
     "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. Direkt ve "
     "net karar verirsin, gereksiz yumusatmazsin; piyasayi iyi okur, kullaniciyi "
     "korur, gerektiginde sert uyarirsin. Kendini tanitma, dogrudan ise gir. Jargon "
-    "kullanma (RSI/MACD yasak). Net karar ver. SADECE su 5 karardan BIRINI kullan: "
-    "AL, TUT, BEKLE, AZALT, UZAK_DUR. Baska karar kelimesi YASAK (SAT, EKLE, NOTR, "
-    "IZLE, RADARDA, 'risk 5', 'skor 8/10' gibi ifadeler gerekcede de kullanilmaz). "
+    "kullanma (RSI/MACD yasak). Net karar ver. SADECE su 5 karardan BIRINI ver: "
+    "AL, TUT, BEKLE, AZALT, UZAK_DUR. SAT, GUCLU_SAT, NOTR, IZLE, EKLE, RADARDA gibi "
+    "eski/baska kodlar YASAK (gerekcede de bu kelimeler ve 'risk 5', 'skor 8/10' "
+    "gibi ifadeler kullanilmaz). "
     "'sade_yorum' alani KULLANICIYA gosterilir: 1-2 kisa cumle, gunluk dil, HICBIR "
     "sayi/oran/yuzde/analist sayisi icermez (ROE, F/K, MA10, MA50, RSI YASAK); teknik "
     "rakamlari yalniz 'gerekce'de tut. "
@@ -233,6 +234,9 @@ SYSTEM = (
     "ulasirsa sat'). Diger kararlarda bos.\n"
     "- tetikleyici_kosul: TUM kararlarda, bu karari degistirecek en onemli gelisme "
     "(1 cumle, orn. 'Bilanco beklentinin altinda gelirse karar AZALT'a doner').\n"
+    "- tahmini_sure: TUT kararinda, kac ISLEM GUNU tutulmali? PPK/bilanco tarihi "
+    "yakinsa kisa (5-7 gun), teknik hedef uzaksa uzun (15-20 gun). 5-30 arasi "
+    "integer. Diger kararlarda 0.\n"
     "Fiyat seviyelerini verideki guncel fiyat (son_kapanis) uzerinden hesapla; "
     "para birimini dogru kullan (BIST: TL, ABD: $)."
 )
@@ -615,9 +619,12 @@ class Verdict(BaseModel):
                                "veya %15-25 hedef). Diger kararlarda bos.")
     tetikleyici_kosul: str = Field(
         default="", description="TUM kararlarda: bu karari degistirecek en onemli gelisme (1 cumle).")
+    tahmini_sure: int = Field(
+        default=0, description="TUT kararinda kac ISLEM GUNU tutulmali (5-30 arasi integer); "
+                              "PPK/bilanco yakinsa kisa, teknik hedef uzaksa uzun. Diger kararlarda 0.")
 
 
-def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
+def _ai_verdict(ticker: str, payload: dict, client=None, usage_acc=None) -> Verdict:
     import anthropic
     client = client or anthropic.Anthropic()
     resp = client.messages.parse(
@@ -627,6 +634,12 @@ def _ai_verdict(ticker: str, payload: dict, client=None) -> Verdict:
             "veri uydurma:\n\n" + json.dumps(payload, ensure_ascii=False, indent=2))}],
         output_format=Verdict,
     )
+    u = getattr(resp, "usage", None)            # token toplama (run fallback loglamasi)
+    if usage_acc is not None and u is not None:
+        usage_acc["input"] += getattr(u, "input_tokens", 0) or 0
+        usage_acc["output"] += getattr(u, "output_tokens", 0) or 0
+        usage_acc["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+        usage_acc["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
     return resp.parsed_output
 
 
@@ -673,10 +686,15 @@ VERDICT_SCHEMA = {
         "tetikleyici_kosul": {"type": "string",
                               "description": "TUM kararlarda: bu karari degistirecek en "
                                              "onemli gelisme (1 cumle)"},
+        "tahmini_sure": {"type": "integer",
+                         "description": "TUT kararinda kac ISLEM GUNU tutulmali (5-30 arasi); "
+                                        "PPK/bilanco yakinsa kisa, teknik hedef uzaksa uzun. "
+                                        "Diger kararlarda 0"},
     },
     "required": ["karar", "puan", "risk", "eminlik", "gerekce", "sade_yorum",
                  "neden_simdi", "fiyatlanmis_mi", "tekrar_bak_kosulu",
-                 "giris_seviyesi", "stop_loss", "hedef_fiyat", "tetikleyici_kosul"],
+                 "giris_seviyesi", "stop_loss", "hedef_fiyat", "tetikleyici_kosul",
+                 "tahmini_sure"],
     "additionalProperties": False,
 }
 
@@ -874,6 +892,8 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "stop_loss": (getattr(v, "stop_loss", "") or "").strip(),
         "hedef_fiyat": (getattr(v, "hedef_fiyat", "") or "").strip(),
         "tetikleyici_kosul": (getattr(v, "tetikleyici_kosul", "") or "").strip(),
+        # TUT degerlendirme penceresi (AI tahmini, islem gunu); diger kararlarda 0
+        "tahmini_sure": getattr(v, "tahmini_sure", 0) or 0,
         "gozlemler": gozlemler,
         "haber_sayisi": len(news["haberler"]),
         "haberler": news["haberler"],
@@ -886,18 +906,19 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
 
 
 def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
-                  context=None, market: str = "bist", learning_note=None) -> dict:
+                  context=None, market: str = "bist", learning_note=None,
+                  usage_acc=None) -> dict:
     """Tek hisse icin tam zincir (tek AI cagrisi). Web uyumlu kayit dondurur.
 
     market='bist' (varsayilan) veya 'us'/'abd'. ABD'de KAP/Turkce haber, analist
     konsensusu ve sektor korelasyon tablosu uygulanmaz.
-    """
+    usage_acc: token toplama sozlugu (run fallback TOKEN OZET icin)."""
     kill, payload, ctx = _prepare_payload(
         ticker, news_src=news_src, rss_src=rss_src, context=context,
         market=market, learning_note=learning_note)
     if kill is not None:
         return kill
-    v = _ai_verdict(ctx["ticker"], payload, client=client)
+    v = _ai_verdict(ctx["ticker"], payload, client=client, usage_acc=usage_acc)
     return _finalize_record(ctx, v)
 
 
@@ -918,7 +939,8 @@ def _persist(results, save: bool, verbose: bool):
                 db.record_decision(
                     ticker=r["ticker"], karar=r["final_decision"],
                     puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
-                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today)
+                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today,
+                    tahmini_sure=(r.get("tahmini_sure") or None))
         except Exception as e:
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")
@@ -1100,6 +1122,7 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
     client = anthropic.Anthropic()
     today = datetime.now(_TZ).date().isoformat()
 
+    usage_acc = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     results = []
     for raw in tickers:
         # "TICKER" (bist) veya "TICKER:us"/"TICKER:abd" formatini destekle
@@ -1109,7 +1132,8 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
         try:
             r = analyze_stock(t, news_src=news_src, rss_src=rss_src,
                               client=client, context=context, market=market,
-                              learning_note=learning.get(t.upper().replace(".IS", "")))
+                              learning_note=learning.get(t.upper().replace(".IS", "")),
+                              usage_acc=usage_acc)
         except Exception as e:
             if verbose:
                 print(f"  [{t}] HATA: {type(e).__name__}: {str(e)[:100]}")
@@ -1135,13 +1159,24 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
                 db.record_decision(
                     ticker=r["ticker"], karar=r["final_decision"],
                     puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
-                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today)
+                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today,
+                    tahmini_sure=(r.get("tahmini_sure") or None))
         except Exception as e:
             if verbose:
                 print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
 
     if save:
         _save_results(results, verbose=verbose)
+
+    # TOKEN OZET (batch ile ayni format) — fallback tek-tek cagri yolunda da
+    maliyet = (usage_acc["input"] * _BATCH_FIYAT_INPUT
+               + usage_acc["output"] * _BATCH_FIYAT_OUTPUT
+               + usage_acc["cache_write"] * _BATCH_FIYAT_CACHE_WRITE
+               + usage_acc["cache_read"] * _BATCH_FIYAT_CACHE_READ)
+    tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
+    print(f"[{tarih}] TOKEN OZET: input={usage_acc['input']}, output={usage_acc['output']}, "
+          f"cache_hit={usage_acc['cache_read']}, cache_write={usage_acc['cache_write']}, "
+          f"tahmini_maliyet=${maliyet:.4f}")
     return results
 
 

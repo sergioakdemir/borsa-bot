@@ -901,21 +901,32 @@ function karneGenelHTML(k){
   if(!k||!k.genel)return"";
   const g=k.genel,t=k.tip_basari||{},pk=k.piyasa_karsi;
   const br=karneOranRenk(g.basari_orani);
-  const tipPart=["AL","TUT","SAT"].map(b=>{const v=t[b]||{};
-    return`<span class="chip ${karneOranRenk(v.oran)}">${b}: ${v.oran==null?"—":"%"+v.oran}</span>`}).join(" ");
+  // Genel basari = AL + SAT (TUT haric); chip'lerde yalniz bu ikisi
+  const tipPart=["AL","SAT"].map(b=>{const v=t[b]||{};
+    return`<span class="chip ${karneOranRenk(v.oran)}">${b}: ${v.oran==null?"—":"%"+v.oran}${v.toplam?` <span style="opacity:.7">(${v.toplam})</span>`:""}</span>`}).join(" ");
+  const tut=k.tut_basari||{},tc=karneOranRenk(tut.oran);
+  const ig=(k.ilk_gun&&k.ilk_gun.AL)||{};
   const az=k.yeterli_veri===false?`<div class="card" style="border:1px solid var(--amber-bg);background:var(--amber-bg)"><div class="tick" style="line-height:1.5;color:var(--amber)">Bot 22 Haziran'dan itibaren gerçek kararlar veriyor. Veriler birikmekte…</div></div>`:"";
+  // BIST-100 kiyaslamasi (belirgin)
+  const pkBlok=pk?`<div class="card" style="background:var(--blue-bg)">
+      <div class="ksub" style="margin-bottom:6px">Bot kararlarını takip etseydin</div>
+      <div class="row"><b class="${signCls(pk['model_getiri_%'])}">Bot: ${pct(pk['model_getiri_%'])}</b>
+        <b class="muted">BIST-100: ${pct(pk['bist100_getiri_%'])}</b>
+        <b class="${signCls(pk['fark_%'])}">Fark: ${pct(pk['fark_%'])}</b></div>
+    </div>`:"";
   return`<div class="sec-title">📊 Genel İstatistik</div>${az}
     <div class="card">
       <div class="krow">
         <div class="kbox"><div class="kbig">${g.toplam}</div><div class="ksub">Toplam karar</div></div>
         <div class="kbox"><div class="kbig">${g.degerlendirilmis}</div><div class="ksub">Değerlendirilmiş</div></div>
-        <div class="kbox"><div class="kbig ${br==='green'?'pos':br==='red'?'neg':br==='amber'?'flat':''}">${g.basari_orani==null?"—":"%"+g.basari_orani}</div><div class="ksub">Başarı oranı</div></div>
+        <div class="kbox"><div class="kbig ${br==='green'?'pos':br==='red'?'neg':br==='amber'?'flat':''}">${g.basari_orani==null?"—":"%"+g.basari_orani}</div><div class="ksub">Başarı (AL+SAT)</div></div>
       </div>
       <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">${tipPart}</div>
-      ${pk?`<div class="row" style="margin-top:12px"><span class="muted">Piyasaya karşı (model vs BIST-100)</span><b class="${signCls(pk['fark_%'])}">${pk['fark_%']==null?"—":pct(pk['fark_%'])}</b></div>`:""}
+      <div class="row" style="margin-top:10px"><span class="muted">TUT (tahmini süre bazlı)</span><b class="${tc==='green'?'pos':tc==='red'?'neg':'flat'}">${tut.oran==null?"—":"%"+tut.oran}${tut.toplam?` (${tut.toplam})`:""}</b></div>
+      ${ig.ort!=null?`<div class="row" style="margin-top:8px"><span class="muted">AL kararlarının 1. gün ortalaması</span><b class="${signCls(ig.ort)}">${pct(ig.ort)}</b></div>`:""}
       ${k.en_iyi?`<div class="row" style="margin-top:8px"><span class="muted">En iyi karar</span><b class="pos">${esc(k.en_iyi.ticker)} ${pct(k.en_iyi.degisim)}</b></div>`:""}
       ${k.en_kotu?`<div class="row" style="margin-top:8px"><span class="muted">En kötü karar</span><b class="neg">${esc(k.en_kotu.ticker)} ${pct(k.en_kotu.degisim)}</b></div>`:""}
-    </div>`}
+    </div>${pkBlok}`}
 function karneSonKararlarHTML(k){
   const rows=(k&&k.son_kararlar)||[];
   if(!rows.length)return"";

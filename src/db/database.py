@@ -225,6 +225,10 @@ def _migrate(c) -> None:
     cols_d = {r["name"] for r in c.execute("PRAGMA table_info(decisions)")}
     if "yanlis_sebep" not in cols_d:
         c.execute("ALTER TABLE decisions ADD COLUMN yanlis_sebep TEXT")
+    if "tahmini_sure" not in cols_d:        # TUT degerlendirme penceresi (AI tahmini, islem gunu)
+        c.execute("ALTER TABLE decisions ADD COLUMN tahmini_sure INTEGER")
+    if "ilk_gun_degisim" not in cols_d:     # AL/SAT 1. islem gunu fiyat degisimi (%)
+        c.execute("ALTER TABLE decisions ADD COLUMN ilk_gun_degisim REAL")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -467,17 +471,27 @@ def list_portfoy_snapshots(kullanici_id, limit: int = 90) -> list[dict]:
 
 # ---- karar gunlugu (decisions) ----
 def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
-                    gerekce=None, tarih=None, sonuc=None) -> int:
-    """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None)."""
+                    gerekce=None, tarih=None, sonuc=None, tahmini_sure=None) -> int:
+    """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None).
+    tahmini_sure: TUT kararinda AI'nin tahmin ettigi tutma penceresi (islem gunu)."""
     init_db()
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
-            """INSERT INTO decisions (ticker, karar, puan, risk, eminlik, gerekce, tarih, sonuc)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
+                                      tarih, sonuc, tahmini_sure)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
-             eminlik, gerekce, tarih, sonuc))
+             eminlik, gerekce, tarih, sonuc, tahmini_sure))
         return cur.lastrowid
+
+
+def set_decision_ilk_gun(decision_id, ilk_gun_degisim) -> None:
+    """AL/SAT kararinin 1. islem gunu fiyat degisimini (%) kaydeder (mini_update)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE decisions SET ilk_gun_degisim=? WHERE id=?",
+                  (ilk_gun_degisim, decision_id))
 
 
 def list_decisions(limit: int = 100) -> list[dict]:

@@ -28,9 +28,10 @@ _KAPANIS_GUN = {"SAT": 3, "AL": 5, "BEKLE": 5, "TUT": 10}
 KAPANIS_GUN_VARSAYILAN = 5
 
 
-def _kapanis_gun(karar: str) -> int:
+def _kapanis_gun(karar: str, tahmini_sure=None) -> int:
     """Karar tipine gore kac ISLEM gunu sonra degerlendirilecegini doner.
-    AL=5, SAT=3, TUT=10, BEKLE=5 (AZALT -> SAT penceresi)."""
+    AL=5, SAT=3, BEKLE=5 (AZALT -> SAT penceresi). TUT'ta AI'nin tahmini_sure'si
+    varsa onu kullan (5-30 ile sinirli), yoksa sabit 10."""
     k = (karar or "").upper()
     if "SAT" in k or "AZALT" in k or "UZAK" in k:   # UZAK_DUR de SAT penceresi (3 ig)
         return _KAPANIS_GUN["SAT"]
@@ -39,6 +40,8 @@ def _kapanis_gun(karar: str) -> int:
     if "AL" in k:                       # AL, AL_TEMKINLI
         return _KAPANIS_GUN["AL"]
     if "TUT" in k:
+        if isinstance(tahmini_sure, (int, float)) and tahmini_sure:
+            return max(5, min(30, int(tahmini_sure)))   # AI tahmini (5-30 islem gunu)
         return _KAPANIS_GUN["TUT"]
     return KAPANIS_GUN_VARSAYILAN
 
@@ -184,7 +187,7 @@ def run(verbose: bool = True) -> int:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)}")
     guncellenen = 0
     for r in rows:
-        kg = _kapanis_gun(r["karar"])            # karar tipine gore islem-gunu penceresi
+        kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))   # TUT'ta AI tahmini sure
         deg = _price_change(r["ticker"], r["tarih"], kg)
         if deg is None:
             if verbose:
@@ -210,5 +213,40 @@ def run(verbose: bool = True) -> int:
     return guncellenen
 
 
+def mini_update(verbose: bool = True) -> int:
+    """1 GUNLUK MINI DEGERLENDIRME: AL ve SAT/AZALT/UZAK_DUR kararlarinin karar
+    tarihinden 1 ISLEM GUNU sonraki fiyat degisimini (ilk_gun_degisim) doldurur.
+    Sadece ilk_gun_degisim'i bos olan yonlu kararlar; bugun/gelecek tarihliler haric.
+    Ana sonuc degerlendirmesini (run) ETKILEMEZ; ayri/hizli geri bildirimdir."""
+    from src.db import database as db
+    db.init_db()
+    today = datetime.now(_TZ).date().isoformat()
+    with db.get_conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM decisions WHERE ilk_gun_degisim IS NULL AND tarih < ? "
+            "ORDER BY id", (today,))]
+    guncellenen = 0
+    for r in rows:
+        k = (r.get("karar") or "").upper()
+        yonlu = k.startswith("AL") or "SAT" in k or "AZALT" in k or "UZAK" in k
+        if not yonlu:                       # TUT/BEKLE/VETO/KILL -> 1.gun bakilmaz
+            continue
+        deg = _price_change(r["ticker"], r["tarih"], 1)   # 1 islem gunu sonrasi
+        if deg is None:
+            continue                         # 1 islem gunu dolmadi / veri yok -> bekle
+        db.set_decision_ilk_gun(r["id"], deg)
+        guncellenen += 1
+        if verbose:
+            print(f"  [mini] {r['ticker']:7} {k:11} {r['tarih']} -> 1.gun {deg:+.1f}%")
+    if verbose:
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] mini_update: {guncellenen} karar "
+              f"1.gun degisimi dolduruldu.")
+    return guncellenen
+
+
 if __name__ == "__main__":
-    run()
+    import sys as _sys
+    if len(_sys.argv) > 1 and _sys.argv[1] == "mini":
+        mini_update()
+    else:
+        run()

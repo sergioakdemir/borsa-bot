@@ -1321,17 +1321,19 @@ def get_karne(kullanici: str | None = None) -> dict:
         rows = []
 
     toplam = len(rows)
-    degerlendirilmis = dogru = 0
+    degerlendirilmis = 0                          # tum degerlendirilmis (bilgi amacli)
     tip = {b: {"toplam": 0, "dogru": 0} for b in ("AL", "TUT", "SAT")}
+    ilk_gun = {"AL": [], "SAT": []}               # 1.gun degisim (mini_update)
     en_iyi = en_kotu = None
     for r in rows:
-        w = _outcome_wrong(r.get("sonuc"))      # None=bekliyor, False=dogru, True=yanlis
+        b = _karne_bucket(r.get("karar"))
+        ig = r.get("ilk_gun_degisim")             # sonuctan bagimsiz (mini_update doldurur)
+        if b in ilk_gun and isinstance(ig, (int, float)):
+            ilk_gun[b].append(ig)
+        w = _outcome_wrong(r.get("sonuc"))        # None=bekliyor, False=dogru, True=yanlis
         if w is None:
             continue
         degerlendirilmis += 1
-        if not w:
-            dogru += 1
-        b = _karne_bucket(r.get("karar"))
         if b in tip:
             tip[b]["toplam"] += 1
             if not w:
@@ -1368,6 +1370,15 @@ def get_karne(kullanici: str | None = None) -> dict:
                       "oran": _oran(v["dogru"], v["toplam"])}
                   for b, v in tip.items()}
 
+    # GENEL BASARI = sadece AL + SAT/AZALT (TUT haric; TUT ayri 'tahmini sure bazli')
+    genel_eval = tip["AL"]["toplam"] + tip["SAT"]["toplam"]
+    genel_dogru = tip["AL"]["dogru"] + tip["SAT"]["dogru"]
+
+    def _ort(lst):
+        return round(sum(lst) / len(lst), 2) if lst else None
+    ilk_gun_ozet = {"AL": {"ort": _ort(ilk_gun["AL"]), "adet": len(ilk_gun["AL"])},
+                    "SAT": {"ort": _ort(ilk_gun["SAT"]), "adet": len(ilk_gun["SAT"])}}
+
     try:                                          # sektor bazli basari (learning.py)
         from src.ai.learning import sector_success_rates
         sek = sector_success_rates()
@@ -1389,10 +1400,14 @@ def get_karne(kullanici: str | None = None) -> dict:
     return {
         "kullanici": kullanici,
         "baslangic_tarihi": KARNE_BASLANGIC,
-        "yeterli_veri": degerlendirilmis >= KARNE_MIN_KARAR,
-        "genel": {"toplam": toplam, "degerlendirilmis": degerlendirilmis,
-                  "dogru": dogru, "basari_orani": _oran(dogru, degerlendirilmis)},
+        "yeterli_veri": genel_eval >= KARNE_MIN_KARAR,
+        # GENEL: basari AL+SAT bazli; degerlendirilmis = AL+SAT degerlendirilen
+        "genel": {"toplam": toplam, "degerlendirilmis": genel_eval,
+                  "degerlendirilmis_tum": degerlendirilmis,
+                  "dogru": genel_dogru, "basari_orani": _oran(genel_dogru, genel_eval)},
         "tip_basari": tip_basari,
+        "tut_basari": tip_basari["TUT"],          # TUT ayri (tahmini sure bazli)
+        "ilk_gun": ilk_gun_ozet,                  # AL/SAT 1.gun ortalamasi (mini_update)
         "sektor": sektor,
         "son_kararlar": son_kararlar,
         "en_iyi": en_iyi,
