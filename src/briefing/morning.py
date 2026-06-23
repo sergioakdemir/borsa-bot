@@ -442,10 +442,13 @@ def main(market="bist"):
 
     # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
     try:
-        from src.ai.learning import build_learning_notes
+        from src.ai.learning import build_learning_notes, weak_sector_warnings
         learning = build_learning_notes(sel["targets"])
         if learning:
             print(f"  karar gecmisi notu: {list(learning.keys())}")
+        zayif = weak_sector_warnings()           # L3: zayif sektor uyarilari (notlara katildi)
+        if zayif:
+            print(f"  zayif sektorler (temkin): {list(zayif.keys())}")
     except Exception as e:
         print(f"  karar gecmisi notu alinamadi: {type(e).__name__}")
         learning = {}

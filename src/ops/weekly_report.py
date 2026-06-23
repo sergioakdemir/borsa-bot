@@ -147,11 +147,49 @@ def _bist100_hafta():
         return None
 
 
+def _ogrenme_ozet(basla, bit):
+    """Haftanin degerlendirilmis kararlarindan sektor bazli ogrenme ozeti (L5)."""
+    try:
+        from src.ai.learning import _sektor_of, _outcome_wrong
+    except Exception:
+        return None
+    with db.get_conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM decisions WHERE tarih >= ? AND tarih <= ? "
+            "AND sonuc IS NOT NULL", (basla, bit))]
+    sek_agg, tic_yanlis, toplam, dogru = {}, Counter(), 0, 0
+    for r in rows:
+        w = _outcome_wrong(r.get("sonuc"))
+        if w is None:
+            continue
+        toplam += 1
+        if not w:
+            dogru += 1
+        else:
+            tic_yanlis[r.get("ticker")] += 1
+        sek = _sektor_of(r.get("ticker"))
+        if sek:
+            a = sek_agg.setdefault(sek, {"toplam": 0, "dogru": 0})
+            a["toplam"] += 1
+            if not w:
+                a["dogru"] += 1
+    zayif = None
+    for sek, a in sek_agg.items():
+        if a["toplam"] >= 2:
+            oran = a["dogru"] / a["toplam"]
+            if zayif is None or oran < zayif[1]:
+                zayif = (sek, oran, a)
+    en_yanlis = tic_yanlis.most_common(1)[0] if tic_yanlis else None
+    return {"toplam": toplam, "dogru": dogru, "sektorler": sek_agg,
+            "zayif": zayif, "en_yanlis_ticker": en_yanlis}
+
+
 def build_message(now, basla, bit):
     dec = _decisions_ozet(basla, bit)
     mp = _model_portfoy_hafta(basla, bit)
     kp = _kullanici_portfoy()
     bist = _bist100_hafta()
+    og = _ogrenme_ozet(basla, bit)
 
     L = [f"<b>📅 Haftalık Özet</b> — {basla} → {bit}", ""]
 
@@ -168,6 +206,25 @@ def build_message(now, basla, bit):
     if dec["en_kotu"] and dec["en_kotu"]["deg"] is not None and dec["en_kotu"] is not dec["en_iyi"]:
         e = dec["en_kotu"]
         L.append(f"⚠️ <b>En kötü:</b> {e['ticker']} ({e['bucket']}, {e['deg']:+g}%)")
+
+    # L5: Ogrenme ozeti (genel + sektor bazli + en cok yanlis)
+    if og and og["toplam"]:
+        L.append("")
+        L.append(f"🧠 <b>Öğrenme:</b> {og['toplam']} karar değerlendirildi, "
+                 f"{og['dogru']}/{og['toplam']} doğru "
+                 f"(%{round(og['dogru'] / og['toplam'] * 100)})")
+        sek_parts = [f"{sek} {a['dogru']}/{a['toplam']}"
+                     for sek, a in sorted(og["sektorler"].items(),
+                                          key=lambda kv: kv[1]["dogru"] / kv[1]["toplam"])]
+        if sek_parts:
+            L.append("   <i>Sektör: " + " · ".join(sek_parts[:4]) + "</i>")
+        if og["zayif"]:
+            sek, _, a = og["zayif"]
+            L.append(f"⚠️ <b>Bu hafta dikkat:</b> {sek} hisselerinde "
+                     f"{a['toplam'] - a['dogru']}/{a['toplam']} yanlış")
+        elif og["en_yanlis_ticker"]:
+            t, n = og["en_yanlis_ticker"]
+            L.append(f"⚠️ <b>En çok yanlış:</b> {t} ({n} karar)")
 
     if mp:
         L.append("")

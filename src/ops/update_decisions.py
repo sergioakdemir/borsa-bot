@@ -1,8 +1,10 @@
 """Karar sonuclarini otomatik doldurur (hafiza/ogrenme).
 
-Her gece calisir (cron 23:30). 3 gunden eski ve sonucu HENUZ BOS olan kararlar
-icin, karar gunundeki kapanis ile bugunku kapanis arasindaki yuzde degisimi
+Her gece calisir (cron 23:30). Sonucu HENUZ BOS olan kararlar icin, karar gunundeki
+kapanis ile KARAR TIPINE GORE N ISLEM GUNU sonraki kapanis arasindaki yuzde degisimi
 hesaplar ve karara gore 'DOGRU/YANLIS' verir; decisions.sonuc kolonunu gunceller.
+Yanlis cikan kararlar icin ucuz Haiku ile kisa 'neden yanlis' analizi yapilir
+(decisions.yanlis_sebep). Degerlendirme penceresi: AL=5, SAT=3, TUT=10, BEKLE=5 islem gunu.
 
 Kazanma kurali (karar yonune gore):
   AL / AL_TEMKINLI : fiyat yukseldiyse DOGRU
@@ -18,10 +20,27 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
-KAPANIS_GUN = 3          # ISLEM GUNU bazinda karsilastirma ufku (takvim gunu DEGIL)
 TUT_BANT = 5.0           # TUT icin yatay sayilan +/- yuzde bandi
-MIN_ISLEM_GUNU = 1       # en az bu kadar ISLEM gunu gecmeden karar degerlendirilmez
-                         # (hafta sonu kararinin ayni bar ile karsilastirilip %0 cikmasini onler)
+HABER_MODEL = "claude-haiku-4-5"   # 'neden yanlis' analizi: ucuz + hizli
+
+# Karar tipine gore ISLEM GUNU bazli degerlendirme penceresi (sabit KAPANIS_GUN kaldirildi)
+_KAPANIS_GUN = {"SAT": 3, "AL": 5, "BEKLE": 5, "TUT": 10}
+KAPANIS_GUN_VARSAYILAN = 5
+
+
+def _kapanis_gun(karar: str) -> int:
+    """Karar tipine gore kac ISLEM gunu sonra degerlendirilecegini doner.
+    AL=5, SAT=3, TUT=10, BEKLE=5 (AZALT -> SAT penceresi)."""
+    k = (karar or "").upper()
+    if "SAT" in k or "AZALT" in k:
+        return _KAPANIS_GUN["SAT"]
+    if "BEKLE" in k:
+        return _KAPANIS_GUN["BEKLE"]
+    if "AL" in k:                       # AL, AL_TEMKINLI
+        return _KAPANIS_GUN["AL"]
+    if "TUT" in k:
+        return _KAPANIS_GUN["TUT"]
+    return KAPANIS_GUN_VARSAYILAN
 
 
 def _verdict(karar: str, degisim: float) -> bool:
@@ -35,16 +54,16 @@ def _verdict(karar: str, degisim: float) -> bool:
     return abs(degisim) <= TUT_BANT   # TUT
 
 
-def _price_change(ticker: str, karar_tarihi: str):
-    """Karar gunundeki kapanis -> ~KAPANIS_GUN ISLEM GUNU sonraki kapanis yuzde degisimi.
+def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
+    """Karar gunundeki kapanis -> kapanis_gun ISLEM GUNU sonraki kapanis yuzde degisimi.
 
     TAKVIM gunu degil ISLEM gunu bazlidir: yfinance yalniz islem gunlerini dondurdugu
     icin hafta sonu/tatil otomatik atlanir.
       - Baz bar  = karar tarihinde VEYA oncesindeki SON islem gunu kapanisi
                    (botun karar aninda gordugu fiyat; Cumartesi karari icin Cuma kapanisi).
-      - Hedef bar = baz + KAPANIS_GUN islem gunu (eldeki veriyle sinirli).
-      - Henuz MIN_ISLEM_GUNU islem gunu gecmediyse None doner (bekle) -> boylece karar
-        bari ile hedef bar AYNI olup %0 cikmaz.
+      - Hedef bar = baz + kapanis_gun islem gunu (karar tipine gore: AL=5, SAT=3, TUT=10...).
+      - Tam pencere (kapanis_gun islem gunu) HENUZ dolmadiysa None doner (bekle) -> boylece
+        karar bari ile hedef bar AYNI olup %0 cikmaz ve karar tipinin penceresine uyulur.
     Veri yoksa None.
     """
     from src.data.factory import get_data_source
@@ -53,7 +72,8 @@ def _price_change(ticker: str, karar_tarihi: str):
 
     symbol = BIST().to_symbol(ticker)
     # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
-    start = (datetime.fromisoformat(karar_tarihi).date() - timedelta(days=12)).isoformat()
+    start = (datetime.fromisoformat(karar_tarihi).date()
+             - timedelta(days=12)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
     except Exception:
@@ -71,15 +91,58 @@ def _price_change(ticker: str, karar_tarihi: str):
     if i0 is None:
         i0 = 0
     son = len(dates) - 1
-    gecen_islem_gunu = son - i0
-    if gecen_islem_gunu < MIN_ISLEM_GUNU:        # yeterli islem gunu gecmedi -> bekle
+    if son - i0 < kapanis_gun:                   # tam pencere dolmadi -> bekle
         return None
-    i_eval = min(i0 + KAPANIS_GUN, son)          # KAPANIS_GUN islem gunu sonrasi (veriyle sinirli)
+    i_eval = i0 + kapanis_gun                     # kapanis_gun islem gunu sonraki kapanis
     baz = float(df["Close"].iloc[i0])
     hedef = float(df["Close"].iloc[i_eval])
     if not baz:
         return None
     return round((hedef - baz) / baz * 100, 2)
+
+
+# --- L2: 'Neden yanlis cikti?' kisa Haiku analizi ---
+_YANLIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kategori": {"type": "string",
+                     "enum": ["haber", "teknik", "makro", "belirsiz"]},
+        "aciklama": {"type": "string",
+                     "description": "Tek cumle, kisa (en fazla ~12 kelime) Turkce sebep"},
+    },
+    "required": ["kategori", "aciklama"],
+    "additionalProperties": False,
+}
+
+
+def _yanlis_analiz(ticker, karar, gerekce, degisim, client=None):
+    """Yanlis cikan kararin sebebini ucuz Haiku ile kategorize eder.
+    Doner: 'kategori: aciklama' veya None (anahtar yok/hata)."""
+    import os
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        import anthropic
+        client = client or anthropic.Anthropic()
+        sistem = (
+            "Sen bir borsa kararlarini denetleyen analistsin. Verilen karar GERCEKTE "
+            "YANLIS cikti (fiyat beklenenin tersine gitti). Kararin gerekcesine ve "
+            "gerceklesen fiyat degisimine bakarak hatanin ASIL kaynagini sec: 'haber' "
+            "(beklenmedik/yanlis okunan haber), 'teknik' (teknik sinyal yaniltti), "
+            "'makro' (genel piyasa/makro ortam) veya 'belirsiz'. aciklama tek kisa cumle.")
+        icerik = (f"Hisse: {ticker}\nKarar: {karar}\nGerceklesen degisim: "
+                  f"%{degisim:+g}\nKararin gerekcesi: {gerekce or '(yok)'}")
+        resp = client.messages.create(
+            model=HABER_MODEL, max_tokens=200, system=sistem,
+            messages=[{"role": "user", "content": icerik}],
+            output_config={"format": {"type": "json_schema", "schema": _YANLIS_SCHEMA}})
+        import json
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        d = json.loads(text)
+        kat, ac = d.get("kategori", "belirsiz"), (d.get("aciklama") or "").strip()
+        return f"{kat}: {ac}" if ac else kat
+    except Exception:
+        return None
 
 
 def run(verbose: bool = True) -> int:
@@ -100,17 +163,26 @@ def run(verbose: bool = True) -> int:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)}")
     guncellenen = 0
     for r in rows:
-        deg = _price_change(r["ticker"], r["tarih"])
+        kg = _kapanis_gun(r["karar"])            # karar tipine gore islem-gunu penceresi
+        deg = _price_change(r["ticker"], r["tarih"], kg)
         if deg is None:
             if verbose:
-                print(f"  {r['ticker']} ({r['tarih']}): fiyat verisi yok, atlandi")
+                print(f"  {r['ticker']} ({r['tarih']}, {r['karar']}): "
+                      f"{kg} islem gunu dolmadi / veri yok -> bekliyor")
             continue
         dogru = _verdict(r["karar"], deg)
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
-        db.set_decision_outcome(r["id"], sonuc)
+        # L2: yanlis cikan kararlar icin kisa Haiku sebep analizi
+        yanlis_sebep = None
+        if not dogru:
+            yanlis_sebep = _yanlis_analiz(r["ticker"], r["karar"],
+                                          r.get("gerekce"), deg)
+        db.set_decision_outcome(r["id"], sonuc, yanlis_sebep=yanlis_sebep)
         guncellenen += 1
         if verbose:
-            print(f"  {r['ticker']:7} {r['karar']:11} {r['tarih']} -> {sonuc}")
+            ek = f"  · sebep: {yanlis_sebep}" if yanlis_sebep else ""
+            print(f"  {r['ticker']:7} {r['karar']:11} {r['tarih']} "
+                  f"({kg}ig) -> {sonuc}{ek}")
 
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} karar sonucu guncellendi.")

@@ -2644,6 +2644,40 @@ def _sektor_yakala(soru):
     return {"ok": True, "cevap": res["ozet"]} if res else None
 
 
+# --- Kullanici geri bildirimi: "THYAO karari yanlisti" / "bu karar hataliydi" ---
+_GERIBILDIRIM_KW = ("yanlıştı", "yanlistı", "yanlıstı", "hatalıydı", "hataliydi",
+                    "yanlış karar", "yanlis karar", "kararı yanlış", "karari yanlis",
+                    "karar yanlıştı", "hatalı karar", "hatali karar", "yanlış verdin",
+                    "yanlis verdin", "kötü karar", "kotu karar", "yanlış çıktı")
+
+
+def _geri_bildirim_yakala(soru):
+    """Kullanici bir karari yanlis buldu -> ilgili hissenin son kararini YANLIS isaretle."""
+    s = soru or ""
+    low = s.lower()
+    if not any(k in low for k in _GERIBILDIRIM_KW):
+        return None
+    from src.db import database as db
+    ts = _detect_tickers(s, limit=1)
+    ticker = ts[0] if ts else None
+    if ticker:
+        res = db.mark_last_decision_wrong(ticker, "kullanici_bildirimi")
+        if not res:
+            return {"ok": True, "cevap": (
+                f"{ticker} için kayıtlı bir kararım yok ama geri bildirimini not aldım, teşekkürler.")}
+        return {"ok": True, "cevap": (
+            f"Geri bildirim için teşekkürler 🙏 — {ticker} için verdiğim "
+            f"{res['karar']} kararını yanlış olarak işaretledim, bunu öğrendim.")}
+    # Hisse belirtilmemis ('bu karar hataliydi') -> en son karar
+    last = db.last_decision_any()
+    if last:
+        db.mark_last_decision_wrong(last["ticker"], "kullanici_bildirimi")
+        return {"ok": True, "cevap": (
+            f"Geri bildirim için teşekkürler 🙏 — en son verdiğim {last['ticker']} "
+            f"{last['karar']} kararını yanlış olarak işaretledim, bunu öğrendim.")}
+    return {"ok": True, "cevap": "Geri bildirim için teşekkürler, bunu öğrendim."}
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
@@ -2670,6 +2704,14 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         sektor_res = _sektor_yakala(soru)
         if sektor_res is not None:
             return sektor_res
+    except Exception:
+        pass
+
+    # --- KULLANICI GERI BILDIRIMI: "X kararı yanlıştı" (AI anahtari gerekmez) ---
+    try:
+        gb_res = _geri_bildirim_yakala(soru)
+        if gb_res is not None:
+            return gb_res
     except Exception:
         pass
 

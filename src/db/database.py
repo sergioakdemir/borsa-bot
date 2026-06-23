@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     eminlik   TEXT,
     gerekce   TEXT,
     tarih     TEXT NOT NULL,
-    sonuc     TEXT
+    sonuc     TEXT,
+    yanlis_sebep TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_ticker_tarih ON decisions(ticker, tarih);
 CREATE TABLE IF NOT EXISTS paper_trades (
@@ -221,6 +222,9 @@ def _migrate(c) -> None:
     cols_p = {r["name"] for r in c.execute("PRAGMA table_info(portfoy)")}
     if "para_birimi" not in cols_p:
         c.execute("ALTER TABLE portfoy ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    cols_d = {r["name"] for r in c.execute("PRAGMA table_info(decisions)")}
+    if "yanlis_sebep" not in cols_d:
+        c.execute("ALTER TABLE decisions ADD COLUMN yanlis_sebep TEXT")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -483,10 +487,39 @@ def list_decisions(limit: int = 100) -> list[dict]:
             "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))]
 
 
-def set_decision_outcome(decision_id, sonuc) -> None:
+def set_decision_outcome(decision_id, sonuc, yanlis_sebep=None) -> None:
     init_db()
     with get_conn() as c:
-        c.execute("UPDATE decisions SET sonuc=? WHERE id=?", (sonuc, decision_id))
+        if yanlis_sebep is not None:
+            c.execute("UPDATE decisions SET sonuc=?, yanlis_sebep=? WHERE id=?",
+                      (sonuc, yanlis_sebep, decision_id))
+        else:
+            c.execute("UPDATE decisions SET sonuc=? WHERE id=?", (sonuc, decision_id))
+
+
+def mark_last_decision_wrong(ticker, yanlis_sebep="kullanici_bildirimi"):
+    """Bir hissenin EN SON kararini YANLIS olarak isaretler (kullanici geri bildirimi).
+    Guncellenen kararin (id, karar) bilgisini doner; karar yoksa None."""
+    init_db()
+    t = str(ticker or "").upper().replace(".IS", "")
+    with get_conn() as c:
+        row = c.execute("SELECT id, karar FROM decisions WHERE ticker=? "
+                        "ORDER BY id DESC LIMIT 1", (t,)).fetchone()
+        if not row:
+            return None
+        c.execute("UPDATE decisions SET sonuc=?, yanlis_sebep=? WHERE id=?",
+                  ("kullanıcı: YANLIS", yanlis_sebep, row["id"]))
+        return {"id": row["id"], "karar": row["karar"], "ticker": t}
+
+
+def last_decision_any():
+    """DB'deki en son karari (id, ticker, karar) doner; yoksa None.
+    'Bu karar yanlisti' gibi hissesi belirtilmeyen geri bildirimde kullanilir."""
+    init_db()
+    with get_conn() as c:
+        row = c.execute("SELECT id, ticker, karar FROM decisions "
+                        "WHERE karar NOT LIKE 'KILL%' ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
 
 
 def recent_decisions_for(ticker, limit: int = 10) -> list[dict]:
