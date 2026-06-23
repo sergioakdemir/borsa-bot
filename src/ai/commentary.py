@@ -577,6 +577,11 @@ def market_context(rss_src=None, overview=None) -> dict:
                 gundem.append(f"[{e['kaynak']}] {e['baslik']}")
         except Exception:
             pass
+        # Global makro/jeopolitik basliklar (BBC/Al Jazeera/FT/Google News) - makro baglam
+        try:
+            gundem += rss_src.macro_headlines(limit=6)
+        except Exception:
+            pass
     try:
         makro = get_macro()
     except Exception:

@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS portfoy (
     ticker        TEXT NOT NULL,
     adet          REAL NOT NULL,
     alim_fiyati   REAL NOT NULL,
-    alim_tarihi   TEXT,
+    alim_tarihi   TEXT DEFAULT CURRENT_DATE,
     notlar        TEXT,
     para_birimi   TEXT DEFAULT 'TL'
 );
@@ -358,6 +358,8 @@ def get_user_by_telegram_id(telegram_id):
 def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None,
                  notlar="", para_birimi="TL"):
     init_db()
+    # Tarih verilmezse bugun (alim_tarihi NULL kalmasin -> 'son guncelleme' calissin)
+    alim_tarihi = alim_tarihi or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         c.execute(
             """INSERT INTO portfoy

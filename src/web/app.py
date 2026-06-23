@@ -1100,8 +1100,11 @@ def portfolio_add(d: dict) -> dict:
     uid = _db.user_id_by_ad(kullanici)
     if uid is None:
         return {"ok": False, "hata": f"Kullanıcı bulunamadı: {kullanici}"}
+    # Tarih verilmezse add_position bugünü kullanır (alim_tarihi NULL kalmaz)
+    tarih = (str(d.get("tarih") or d.get("alim_tarihi") or "").strip() or None)
     try:
-        _db.add_position(uid, ticker, adet, fiyat, para_birimi=para_birimi)
+        _db.add_position(uid, ticker, adet, fiyat, alim_tarihi=tarih,
+                         para_birimi=para_birimi)
     except Exception as e:
         return {"ok": False, "hata": f"Eklenemedi: {type(e).__name__}"}
     try:

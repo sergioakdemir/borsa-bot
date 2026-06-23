@@ -19,12 +19,28 @@ from ..markets.bist import BIST
 
 _TZ = ZoneInfo("Europe/Istanbul")
 
-# Varsayilan RSS kaynaklari (ad, url). Mynet RSS su an 403/404 donebilir;
-# erisilemezse sessizce bos doner (URL/erisim duzeldiginde otomatik calisir).
+# Varsayilan RSS kaynaklari (ad, url). Erisilemeyen feed sessizce bos doner
+# (URL/erisim duzeldiginde otomatik calisir). Bunlar hisseye gore (mentions)
+# filtrelenir VE genel piyasa gundemine (_all_entries) katki verir.
 DEFAULT_FEEDS = [
     {"ad": "BloombergHT", "url": "https://www.bloomberght.com/rss"},
     {"ad": "Investing", "url": "https://tr.investing.com/rss/news.rss"},
     {"ad": "Mynet", "url": "https://finans.mynet.com/borsa/rss/"},
+    {"ad": "Dünya", "url": "https://www.dunya.com/rss/gundem.xml"},
+    {"ad": "Dünya Ekonomi", "url": "https://www.dunya.com/rss/ekonomi.xml"},
+    {"ad": "ParaAnaliz", "url": "https://www.paraanaliz.com/feed/"},
+    {"ad": "Borsa Gündem", "url": "https://www.borsagundem.com/rss"},
+    {"ad": "Webrazzi", "url": "https://webrazzi.com/feed/"},   # teknoloji sirketleri
+]
+
+# Global makro/jeopolitik kaynaklar (Ingilizce). Hisseye gore FILTRELENMEZ;
+# yalnizca genel makro baglama (market_context piyasa_gundemi) katki verir.
+MACRO_FEEDS = [
+    {"ad": "BBC Business", "url": "http://feeds.bbci.co.uk/news/business/rss.xml"},
+    {"ad": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    {"ad": "Financial Times", "url": "https://www.ft.com/rss/home"},
+    # Reuters RSS kapandi -> Google News (borsa/piyasa aramasi) ile ikame
+    {"ad": "Google News", "url": "https://news.google.com/rss/search?q=stock+market&hl=en"},
 ]
 
 # ticker -> haber metninde aranacak ayirt edici anahtar kelimeler (kod + kisa ad).
@@ -101,7 +117,8 @@ def _fetch(url: str, timeout: int = 18):
         return None
     for proxies in (None, _proxies()):
         try:
-            r = creq.get(url, impersonate="chrome", proxies=proxies, timeout=timeout)
+            r = creq.get(url, impersonate="chrome", proxies=proxies, timeout=timeout,
+                         max_redirects=5)
             if r.status_code == 200 and r.text:
                 return r.text
         except Exception:
@@ -127,11 +144,13 @@ class RSSNewsSource(NewsSource):
 
     IS_SAMPLE = False
 
-    def __init__(self, feeds=None, within_hours: int = 24):
+    def __init__(self, feeds=None, within_hours: int = 24, macro_feeds=None):
         self.feeds = feeds or DEFAULT_FEEDS
+        self.macro_feeds = macro_feeds if macro_feeds is not None else MACRO_FEEDS
         self.within_hours = within_hours
         self.market = BIST()
-        self._entries = None      # surec ici onbellek: tum feed girdileri
+        self._entries = None       # surec ici onbellek: tum feed girdileri (TR, hisse-filtreli)
+        self._macro = None         # surec ici onbellek: makro/jeopolitik basliklar
 
     def _all_entries(self) -> list[dict]:
         if self._entries is not None:
@@ -187,3 +206,30 @@ class RSSNewsSource(NewsSource):
     def recent_count(self) -> int:
         """Toplam cekilen (24s) haber sayisi - teshis icin."""
         return len(self._all_entries())
+
+    def macro_headlines(self, limit: int = 8) -> list[str]:
+        """Global makro/jeopolitik basliklar (BBC/Al Jazeera/FT/Google News), son 24s.
+        Hisseye gore FILTRELENMEZ; market_context'in makro gundemine girer.
+        '[Kaynak] Baslik' formatinda liste doner (en yeni once)."""
+        if self._macro is None:
+            import feedparser
+            cutoff = datetime.now(_TZ) - timedelta(hours=self.within_hours)
+            rows = []
+            for feed in self.macro_feeds:
+                text = _fetch(feed["url"])
+                if not text:
+                    continue
+                try:
+                    parsed = feedparser.parse(text)
+                except Exception:
+                    continue
+                for e in parsed.entries:
+                    dt = _parse_dt(e)
+                    if dt < cutoff:
+                        continue
+                    title = (e.get("title") or "").strip()
+                    if title:
+                        rows.append((dt, f"[{feed['ad']}] {title}"))
+            rows.sort(key=lambda x: x[0], reverse=True)
+            self._macro = [t for _, t in rows]
+        return self._macro[:limit]

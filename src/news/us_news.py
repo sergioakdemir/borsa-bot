@@ -20,12 +20,19 @@ _TZ = ZoneInfo("Europe/Istanbul")
 _YAHOO_TICKER = ("https://feeds.finance.yahoo.com/rss/2.0/headline"
                  "?s={sym}&region=US&lang=en-US")
 
-# Genel ABD piyasa akislari (24 saatlik gundem icin). feeds.reuters.com Reuters
-# tarafindan kapatildi; erisilemezse sessizce atlanir, digerleri devreye girer.
-_MARKET_FEEDS = [
-    {"ad": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex"},
-    {"ad": "Reuters", "url": "https://feeds.reuters.com/reuters/businessNews"},
+# Yahoo Finance genel akisi (yalniz market_news icin; hisse adi tasimaz).
+_YAHOO_GENERAL = {"ad": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex"}
+
+# Genel ABD finans akislari. HEM market_news (24s gundem) HEM ticker_news
+# (hisse adi gecenler) icin kullanilir. Erisilemeyen feed sessizce atlanir.
+# feeds.reuters.com Reuters tarafindan kapatildi -> yerine CNBC/MarketWatch vb.
+_GENERAL_FEEDS = [
     {"ad": "Investing", "url": "https://www.investing.com/rss/news.rss"},
+    {"ad": "CNBC", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml"
+                          "?partnerId=wrss01&id=10000664"},
+    {"ad": "MarketWatch", "url": "https://feeds.marketwatch.com/marketwatch/topstories"},
+    {"ad": "Seeking Alpha", "url": "https://seekingalpha.com/market_currents.xml"},
+    {"ad": "Benzinga", "url": "https://www.benzinga.com/feed"},
 ]
 
 # Hisse-bazli ek (sembol disinda) arama icin kisa sirket adlari.
@@ -44,7 +51,7 @@ def _fetch(url: str, timeout: int = 15):
     except ImportError:
         return None
     try:
-        r = creq.get(url, impersonate="chrome", timeout=timeout)
+        r = creq.get(url, impersonate="chrome", timeout=timeout, max_redirects=5)
         if r.status_code == 200 and r.text:
             return r.text
     except Exception:
@@ -113,17 +120,19 @@ def ticker_news(ticker: str, within_days: int = 7, limit: int = 12) -> list[dict
         seen.add(key)
         out.append(_rec(e, "Yahoo Finance"))
 
-    # 2) Investing.com EN genel akis -> yalniz hisse adi gecenler
-    for e in _entries("https://www.investing.com/rss/news.rss"):
-        if e["tarih"] < cutoff:
-            continue
-        if not _mentions(f"{e['baslik']} {e['ozet']}", ticker):
-            continue
-        key = e["baslik"].lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(_rec(e, "Investing"))
+    # 2) Genel ABD finans akislari (Investing/CNBC/MarketWatch/SeekingAlpha/Benzinga)
+    #    -> yalniz hisse adi/kodu gecen haberler
+    for feed in _GENERAL_FEEDS:
+        for e in _entries(feed["url"]):
+            if e["tarih"] < cutoff:
+                continue
+            if not _mentions(f"{e['baslik']} {e['ozet']}", ticker):
+                continue
+            key = e["baslik"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(_rec(e, feed["ad"]))
 
     return out[:limit]
 
@@ -145,7 +154,7 @@ def market_news(within_hours: int = 24, limit: int = 8) -> list[dict]:
     [{baslik, kaynak, tarih, url}]. Erisilemeyen feed atlanir."""
     cutoff = datetime.now(_TZ) - timedelta(hours=within_hours)
     seen, out = set(), []
-    for feed in _MARKET_FEEDS:
+    for feed in [_YAHOO_GENERAL] + _GENERAL_FEEDS:
         for e in _entries(feed["url"]):
             if e["tarih"] < cutoff:
                 continue
