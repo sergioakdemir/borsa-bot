@@ -1915,6 +1915,20 @@ def get_chat_suggestions(kullanici=None) -> list[str]:
             break
         if s not in sorular:
             sorular.append(s)
+
+    # Profil tamamlama: eksik alan (kayip toleransi) varsa tamamlama sorusunu en basa al
+    try:
+        uid = _uid(kullanici)
+        if uid:
+            from src.db import database as db
+            prof = db.get_profile(uid) or {}
+            if prof.get("kayip_toleransi_yuzde") is None:
+                q = "Kayıp toleransın nedir? (örn: %10)"
+                if q in sorular:
+                    sorular.remove(q)
+                sorular.insert(0, q)
+    except Exception:
+        pass
     return sorular[:5]
 
 
@@ -2384,10 +2398,75 @@ def _yf_single_price(sym: str) -> dict | None:
     return None
 
 
+# Kullanici basina bekleyen profil tamamlama sorusu (or. 'kayip_toleransi_yuzde')
+_PROFIL_BEKLEYEN: dict = {}
+
+
+def _profil_tamamla(kullanici, soru):
+    """Profil tamamlama akisi (Bota Sor icinde).
+
+    - Kullanici 'Kayip toleransin nedir?' onerisini gonderirse: oran ister ve bekler.
+    - Sonraki mesajda bir yuzde verirse: profili gunceller (upsert_profile).
+    Bu akisa girilmezse None doner (normal sohbet devam eder)."""
+    if not kullanici:
+        return None
+    from src.db import database as db
+    uid = _uid(kullanici)
+    if not uid:
+        return None
+    s = (soru or "").strip()
+    low = s.lower()
+
+    # 1) Bekleyen bir profil sorusu varsa ve cevapta oran varsa -> kaydet.
+    #    (Sorunun KENDISI tekrar gonderilirse — icinde 'tolerans'/ornek %10 gecer —
+    #    bunu cevap sanma; asagidaki adim 2'ye dusur.)
+    if _PROFIL_BEKLEYEN.get(uid) == "kayip_toleransi_yuzde" and "tolerans" not in low:
+        m = re.search(r"%?\s*(\d{1,3})(?:[.,]\d+)?\s*%?", s)
+        if m:
+            try:
+                val = int(m.group(1))
+            except ValueError:
+                val = None
+            if val is not None and 1 <= val <= 100:
+                db.upsert_profile(uid, kayip_toleransi_yuzde=val)
+                _PROFIL_BEKLEYEN.pop(uid, None)
+                p = db.get_profile(uid) or {}
+                guven = p.get("profil_guven_skoru")
+                ek = f" Profil güven skorun %{int(guven)} oldu." if guven else ""
+                return {"ok": True, "cevap": (
+                    f"Kaydettim ✅ Kayıp toleransın %{val} olarak profiline işlendi."
+                    f"{ek} Artık önerilerimi buna göre ayarlayacağım.")}
+        # oran bulunamadi -> tek satir tekrar iste (akistan cikma)
+        return {"ok": True, "cevap": (
+            "Kayıp toleransını bir yüzde olarak yazar mısın? Örnek: %10 ya da %20.")}
+
+    # 2) Kullanici 'kayip toleransi' tamamlama sorusunu gonderdi mi?
+    if "kayıp tolerans" in low or "kayip tolerans" in low:
+        prof = db.get_profile(uid) or {}
+        if prof.get("kayip_toleransi_yuzde") is not None:
+            return {"ok": True, "cevap": (
+                f"Kayıp toleransın zaten kayıtlı: %{int(prof['kayip_toleransi_yuzde'])}. "
+                "Değiştirmek istersen yeni oranı yaz (örn: %15).")}
+        _PROFIL_BEKLEYEN[uid] = "kayip_toleransi_yuzde"
+        return {"ok": True, "cevap": (
+            "Bir hissede en fazla yüzde kaç değer kaybına tahammül edebilirsin? "
+            "Örnek: %10 ya da %20 yaz, profiline kaydedip önerilerimi ona göre ayarlayayım.")}
+    return None
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
         return {"ok": False, "cevap": "Bir soru yaz."}
+
+    # --- PROFIL TAMAMLAMA: kayip toleransi soru/cevap akisi (AI anahtari gerekmez) ---
+    try:
+        prof_res = _profil_tamamla(kullanici, soru)
+        if prof_res is not None:
+            return prof_res
+    except Exception:
+        pass
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
 
@@ -2405,6 +2484,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         if kullanici and ("geri al" in norm or "geri-al" in norm) and \
                 soru.lower().strip() in ("geri al", "geri-al", "geri alın", "geri al onayla"):
             return code_mode.revert_last(kullanici)
+        # HATA DUZELTME MODU: arayuz hatasi bildirimi -> teshis + otomatik fix + restart
+        if kullanici and code_mode.is_error_report(soru) and not code_mode.is_approval(soru):
+            import anthropic
+            return code_mode.fix_error(kullanici, soru, client=anthropic.Anthropic())
         if kullanici and code_mode.is_ui_request(soru) and not code_mode.is_approval(soru):
             import anthropic
             return code_mode.propose(kullanici, soru, client=anthropic.Anthropic())

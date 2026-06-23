@@ -242,6 +242,94 @@ def propose(kullanici, soru, client=None) -> dict:
         "Vazgeçersen başka bir şey yaz.")}
 
 
+# --------------------------------------------------------------------------
+# HATA DUZELTME MODU: kullanici bir arayuz hatasi bildirince otomatik teshis+fix.
+_ERROR_STRONG = ("çalışmıyor", "calismiyor", "traceback", "exception",
+                 "açılmıyor", "acilmiyor", "bozuldu", "bozuk", "patladı", "patladi",
+                 "hata veriyor", "hata alıyorum", "hata aliyorum", "ekran kaymış")
+_ERROR_CONTEXT = ("sayfa", "buton", "ekran", "uygulama", "site", "grafik",
+                  "arayüz", "arayuz", "menü", "menu", "kart", "liste", "görsel",
+                  "gorsel", "css", "js", "javascript", "html")
+
+_FIX_SYSTEM = (
+    "Sen bir frontend HATA DUZELTME asistanisin. Kullanici, tek sayfalik bir Flask "
+    "uygulamasinin arayuzunde (index.html — HTML+CSS+JS) bir hata/bozukluk bildirdi. "
+    "Sana hata raporu ve index.html'in tam icerigi verilir.\n"
+    "Gorevin: hatayi TESHIS et ve duzelten MINIMAL bir find/replace uret. old_string "
+    "dosyada AYNEN ve BENZERSIZ gecsin; new_string duzeltilmis halidir. Sadece "
+    "HTML/CSS/JS duzelt. EGER hata arayuzde degil de backend/Python/veri/sunucu "
+    "(or. 500, Python traceback, API hatasi) kaynakliysa 'yapilabilir=false' isaretle "
+    "ve old/new alanlarini bos birak; aciklama alanina hatanin nerede oldugunu yaz. "
+    "Degisiklik kucuk ve guvenli olsun."
+)
+
+
+def is_error_report(soru: str) -> bool:
+    """Mesaj bir arayuz hatasi raporu mu? (yanlis-pozitifi azaltmak icin baglam guardli)"""
+    s = (soru or "").lower()
+    if any(k in s for k in _ERROR_STRONG):
+        return True
+    # 'hata'/'error'/'500' tek basina muglak -> arayuz baglami kelimesi de gerek
+    if any(k in s for k in ("hata", "error", "500", "exception")) and \
+            any(c in s for c in _ERROR_CONTEXT):
+        return True
+    return False
+
+
+def fix_error(kullanici, soru, client=None) -> dict:
+    """Hata raporunu teshis eder, frontend duzeltmesini UYGULAR, servisi yeniler."""
+    import anthropic
+    client = client or anthropic.Anthropic()
+    try:
+        html = TEMPLATE.read_text(encoding="utf-8")
+    except Exception:
+        return {"ok": False, "cevap": "Arayüz dosyası okunamadı."}
+    try:
+        resp = client.messages.create(
+            model=_CHAT_MODEL, max_tokens=2000, system=_FIX_SYSTEM,
+            messages=[{"role": "user", "content":
+                       f"Hata raporu: {soru}\n\nindex.html içeriği:\n{html}"}],
+            output_config={"format": {"type": "json_schema", "schema": _EDIT_SCHEMA}})
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        d = json.loads(text)
+    except Exception as e:
+        return {"ok": False, "cevap": f"Hatayı analiz edemedim ({type(e).__name__})."}
+
+    if not d.get("yapilabilir"):
+        return {"ok": True, "cevap": (
+            "Bunu otomatik düzeltemedim — arayüz (HTML/CSS/JS) kaynaklı görünmüyor "
+            "(muhtemelen sunucu/Python tarafı). Güvenlik gereği yalnız arayüz "
+            "dosyalarını değiştirebiliyorum. Tespitim: "
+            + (d.get("aciklama") or "kaynağı belirleyemedim") + ".")}
+
+    target = _resolve_target(d.get("hedef_dosya"))
+    if target is None:
+        return {"ok": False, "cevap": (
+            "Düzeltmeyi yalnız index.html veya static CSS/JS dosyalarına uygulayabilirim.")}
+    old, new = d.get("old_string") or "", d.get("new_string") or ""
+    if target.exists():
+        current = target.read_text(encoding="utf-8")
+        if not old or old not in current:
+            return {"ok": False, "cevap": "Hatayı tam yerinde bulamadım; biraz daha açık tarif eder misin?"}
+        if current.count(old) != 1:
+            return {"ok": False, "cevap": "Düzeltme birden fazla yere uyuyor; daha belirgin söyler misin?"}
+    elif not new.strip():
+        return {"ok": False, "cevap": "Düzeltme içeriği üretemedim."}
+    if _line_count(old) > MAX_LINES or _line_count(new) > MAX_LINES:
+        return {"ok": False, "cevap": f"Düzeltme çok büyük (max {MAX_LINES} satır)."}
+
+    # pending kur ve hemen uygula (apply_pending: dogrulama + git + servis restart)
+    _PENDING[kullanici] = {"aciklama": d.get("aciklama") or "hata düzeltmesi",
+                           "old": old, "new": new, "target": str(target),
+                           "yeni_dosya": not target.exists()}
+    res = apply_pending(kullanici)
+    if res.get("ok"):
+        return {"ok": True, "cevap": (
+            f"🔧 Düzelttim: {d.get('aciklama')}. Servis birkaç saniye içinde "
+            "yenilenecek — sonra sayfayı yenileyip test et. Olmadıysa 'geri al' yaz.")}
+    return res
+
+
 def apply_pending(kullanici) -> dict:
     """Onaylanan bekleyen değişikliği güvenle uygular."""
     pend = _PENDING.get(kullanici)
