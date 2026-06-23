@@ -1,7 +1,7 @@
 """Puan -> karar esik tablosu.
 
-8-10 = AL
-6-7  = AL (temkinli)
+7-10 = AL          (AL esigi 8'den 7'ye indirildi: bot daha az temkinli)
+6    = AL (temkinli)
 4-5  = TUT
 2-3  = SAT
 1    = Guclu SAT
@@ -10,7 +10,7 @@
 
 def decision_from_score(score: int) -> tuple[str, str]:
     """(kod, etiket) dondurur."""
-    if score >= 8:
+    if score >= 7:                     # AL esigi 7 (onceden 8)
         return "AL", "AL"
     if score >= 6:
         return "AL_TEMKINLI", "AL (temkinli)"

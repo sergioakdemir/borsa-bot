@@ -33,6 +33,67 @@ OUT_PATH = ROOT / "data" / "ai_commentary.json"
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1000
+HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
+
+# Her haberin bu hisseye etkisini etiketleyen ucuz Haiku cagrisi semasi
+_HABER_ETKI_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "analizler": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "olumlu_mu": {"type": "boolean",
+                                  "description": "Haber bu hisse icin olumlu mu"},
+                    "etki_buyuklugu": {"type": "string",
+                                       "enum": ["dusuk", "orta", "yuksek"]},
+                    "etki_yonu": {"type": "string",
+                                  "enum": ["yukari", "asagi", "belirsiz"]},
+                },
+                "required": ["olumlu_mu", "etki_buyuklugu", "etki_yonu"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["analizler"],
+    "additionalProperties": False,
+}
+
+
+def _haber_etki_analizi(ticker: str, haberler: list, client=None) -> list:
+    """Her haberi UCUZ Haiku cagrisiyla bu hisse acisindan etiketler:
+    olumlu_mu (bool), etki_buyuklugu (dusuk/orta/yuksek), etki_yonu (yukari/asagi/belirsiz).
+    Alanlar haber dict'lerine eklenir. Hata/anahtar yoksa haberler degismeden doner."""
+    if not haberler:
+        return haberler
+    try:
+        import anthropic
+        client = client or anthropic.Anthropic()
+        ozet_liste = [{"no": i + 1, "baslik": h.get("baslik"),
+                       "ozet": (h.get("ozet") or "")[:300]}
+                      for i, h in enumerate(haberler)]
+        sys_p = (
+            "Sen bir finans-haberi etki siniflandiricisin. Verilen her haberi YALNIZCA "
+            f"{ticker} hissesi acisindan etiketle. Her haber icin: olumlu_mu (true/false), "
+            "etki_buyuklugu (dusuk/orta/yuksek), etki_yonu (yukari/asagi/belirsiz). "
+            "Haberlerin sirasini KORU ve her haber icin bir analiz dondur. Dolayli/zayif "
+            "iliskide 'dusuk' ve 'belirsiz' kullan; abartma.")
+        resp = client.messages.create(
+            model=HABER_MODEL, max_tokens=700, system=sys_p,
+            messages=[{"role": "user",
+                       "content": json.dumps(ozet_liste, ensure_ascii=False)}],
+            output_config={"format": {"type": "json_schema",
+                                      "schema": _HABER_ETKI_SCHEMA}})
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        analizler = json.loads(text).get("analizler", [])
+        for h, a in zip(haberler, analizler):
+            h["olumlu_mu"] = a.get("olumlu_mu")
+            h["etki_buyuklugu"] = a.get("etki_buyuklugu")
+            h["etki_yonu"] = a.get("etki_yonu")
+    except Exception:
+        pass
+    return haberler
 
 
 def _save_results(results, verbose=False):
@@ -61,8 +122,14 @@ SYSTEM = (
     "korur, gerektiginde sert uyarirsin. Kendini tanitma, dogrudan ise gir. Jargon "
     "kullanma (RSI/MACD yasak). Net karar ver: AL/TUT/SAT/BEKLE. Gerekceni 2-3 "
     "cumlede soyle. Veri yoksa yorum yapma. Hata yaparsan kabul et.\n"
-    "BEKLE karari: Yon belirsiz, kritik bir veri/katalizor bekleniyor ya da sinyal "
-    "olgunlasmadiysa BEKLE de. BEKLE secersen 'tekrar_bak_kosulu' alanina hangi "
+    "AL CESARETI: Guclu teknik sinyal + olumlu temel veri bir arada ise AL karari "
+    "vermekten cekinme. Temkinli olmak iyidir ama surekli TUT demek de bir hata "
+    "turudur. Puan 7 ve uzerinde guclu bir gorunum varsa AL'i dusun; her seyin "
+    "mukemmel hizalanmasini bekleme.\n"
+    "BEKLE karari: SADECE gercekten belirsiz durumlarda (yon belirsiz, kritik bir "
+    "veri/katalizor bekleniyor ya da sinyal olgunlasmadiysa) BEKLE de; diger tum "
+    "durumlarda AL/TUT/SAT'tan birini tercih et. BEKLE secersen 'tekrar_bak_kosulu' "
+    "alanina hangi "
     "somut kosul olusunca tekrar bakilmasi gerektigini yaz (orn. 'fiyat 50 gunluk "
     "ortalamayi yukari gecerse' veya 'bilanco aciklaninca'). Diger kararlarda bu alan bos.\n\n"
     "JEOPOLITIK/MAKRO HABER YONU: Jeopolitik haberin yonunu analiz et. Olumsuz haber "
@@ -80,6 +147,12 @@ SYSTEM = (
     "veriye dayandir.\n"
     "Gerekcede ilgili haberin yonunu ACIKCA belirt (orn. 'Hurmuz anlasmasi THY icin "
     "olumlu: yakit/guzergah riski azaliyor').\n\n"
+    "HABER ETKI ALANLARI: 'haberler_son' bolumunde her haberin olumlu_mu, "
+    "etki_buyuklugu (dusuk/orta/yuksek) ve etki_yonu (yukari/asagi/belirsiz) alanlarina "
+    "BAK. Yuksek etkili OLUMLU haber (olumlu_mu=true, etki_buyuklugu='yuksek') varsa AL "
+    "kararina YAKLAS. Yuksek etkili OLUMSUZ haber (olumlu_mu=false, etki_buyuklugu="
+    "'yuksek') varsa SAT/AZALT dusun. Dusuk etkili veya belirsiz haberleri kararda asiri "
+    "agirliklandirma.\n\n"
     "ANALIST KONSENSUSU: Veride 'analist_konsensus' varsa dikkate al (kac kurum, "
     "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
     "konsensus puani destekler; senin teknik gorusunle celisiyorsa nedenini kisaca "
@@ -561,6 +634,9 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
                 None, None)
 
     news = gather_news(ticker, news_src=news_src, rss_src=rss_src, market=market)
+    # Haber -> karar baglantisi: her taze haberi bu hisse acisindan etiketle
+    # (olumlu_mu / etki_buyuklugu / etki_yonu). Ucuz Haiku cagrisi; ana modele girer.
+    news["haberler"] = _haber_etki_analizi(ticker, news["haberler"])
     # Analist konsensusu (hedeffiyat + borsaveyatirim) - yalniz BIST
     analist = {"available": False}
     if not is_us:
@@ -663,11 +739,16 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     hacim_anom = ctx["hacim_anom"]
     sektor = ctx["sektor"]
 
-    # Risk ajani: AL + risk>=9 -> VETO
-    vetoed = (v.karar == "AL" and v.risk >= 9)
+    # Risk ajani: AL + risk>=10 -> VETO (esik 9'dan 10'a cikarildi: daha az iptal)
+    vetoed = (v.karar == "AL" and v.risk >= 10)
     if vetoed:
         final_decision = "VETO"
         final_label = f"VETO (risk {v.risk}/10) -> islem yok"
+    elif v.karar == "TUT" and (v.puan or 0) >= 7 and v.risk < 10:
+        # AL ESIGI 7: model TUT dediyse ama puan guclu (>=7) ve risk veto altindaysa
+        # AL'e cevir. Bot artik puan 7+ guclu sinyalde AL veriyor (eskiden esik 8'di).
+        final_decision = "AL"
+        final_label = _LABEL["AL"]
     else:
         final_decision = v.karar
         final_label = _LABEL[v.karar]

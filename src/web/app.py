@@ -1903,6 +1903,23 @@ def get_chat_suggestions(kullanici=None) -> list[str]:
     if al_var:
         sorular.append("Bugün alım yapılır mı?")
 
+    # Dinamik SEKTOR sorusu: kullanicinin en cok hissesi bulunan sektore gore
+    try:
+        kapsam = set(tickers)
+        wl = _load_watchlist()
+        kapsam |= {(t or "").upper().split(".")[0] for t in wl.get("kisisel", [])}
+        best, bestn = None, 0
+        for sek in _SEKTORLER.values():
+            n = len(kapsam & set(sek["tickers"]))
+            if n > bestn:
+                bestn, best = n, sek
+        if best and bestn >= 1:
+            q = f"{best['ad']} sektörü nasıl?"
+            if q not in sorular:
+                sorular.append(q)
+    except Exception:
+        pass
+
     # Kalani sabit/genel sorularla doldur (tekrar etmeden)
     varsayilan = [
         "Bugün portföyümde dikkat etmem gereken ne var?",
@@ -2545,6 +2562,88 @@ def get_alarms(kullanici) -> list[dict]:
             for a in db.list_price_alarms(kullanici_id=uid, aktif=True)]
 
 
+# --- Sektor analizi: watchlist hisselerinin son kararlarindan sektor ozeti ---
+_SEKTORLER = {
+    "bankacilik": {"ad": "Bankacılık", "kw": ("banka", "bankac", "finans"),
+                   "tickers": ["GARAN", "AKBNK", "ISCTR", "YKBNK", "HALKB", "VAKBN"]},
+    "havacilik": {"ad": "Havacılık", "kw": ("havac", "havayol", "uçak", "ucak", "havalim"),
+                  "tickers": ["THYAO", "PGSUS", "TAVHL"]},
+    "enerji": {"ad": "Enerji/Rafineri", "kw": ("enerji", "elektrik", "petrol", "rafineri", "akaryakıt", "akaryakit"),
+               "tickers": ["TUPRS", "PETKM", "AYGAZ"]},
+    "savunma": {"ad": "Savunma", "kw": ("savunma", "silah", "asker"),
+                "tickers": ["ASELS", "AGHOL"]},
+    "teknoloji": {"ad": "Teknoloji", "kw": ("teknoloji", "yazılım", "yazilim", "bilişim", "bilisim"),
+                  "tickers": ["ASELS", "LOGO", "KAREL"]},
+    "celik": {"ad": "Demir-Çelik", "kw": ("çelik", "celik", "demir", "metal"),
+              "tickers": ["EREGL", "KRDMD", "KORDS"]},
+    "gayrimenkul": {"ad": "Gayrimenkul", "kw": ("gayrimenkul", "gyo", "inşaat", "insaat", "konut", "emlak"),
+                    "tickers": ["EKGYO"]},
+    "otomotiv": {"ad": "Otomotiv", "kw": ("otomotiv", "otomobil", "araç ", "arac "),
+                 "tickers": ["TOASO", "FROTO"]},
+    "perakende": {"ad": "Perakende/Gıda", "kw": ("perakende", "market", "gıda", "gida", "tüketim", "tuketim"),
+                  "tickers": ["BIMAS", "MGROS", "ULKER", "CCOLA"]},
+    "telekom": {"ad": "Telekom", "kw": ("telekom", "iletişim", "iletisim", "gsm"),
+                "tickers": ["TCELL", "TTKOM"]},
+    "holding": {"ad": "Holding", "kw": ("holding",),
+                "tickers": ["KCHOL", "SAHOL", "DOHOL", "ENKAI"]},
+}
+
+
+def _sektor_key_from_text(s: str):
+    low = (s or "").lower()
+    for key, sek in _SEKTORLER.items():
+        if any(kw in low for kw in sek["kw"]):
+            return key
+    return None
+
+
+def get_sektor_analiz(sektor_key: str):
+    """Bir sektordeki takip edilen hisselerin son AI kararlarini ozetler."""
+    sek = _SEKTORLER.get(sektor_key)
+    if not sek:
+        return None
+    comm = _commentary_by_ticker()
+    hisseler, al, sat = [], 0, 0
+    for t in sek["tickers"]:
+        rec = comm.get(t)
+        if not rec or rec.get("skipped"):
+            continue
+        et, renk = _karar5(rec.get("final_decision"))
+        hisseler.append({"ticker": t, "karar": et, "renk": renk, "puan": rec.get("score")})
+        if et == "AL":
+            al += 1
+        elif et in ("SAT", "AZALT"):
+            sat += 1
+    if not hisseler:
+        return {"sektor": sek["ad"], "hisseler": [],
+                "ozet": f"{sek['ad']} sektöründe şu an takip ettiğim güncel analiz yok."}
+    if al >= 2 and al > sat:
+        gor = "olumlu, alım sinyalleri öne çıkıyor"
+    elif sat > al:
+        gor = "zayıf, satış/baskı ağırlıkta"
+    elif al > 0 and sat == 0:
+        gor = "ılımlı olumlu"
+    else:
+        gor = "kararsız/nötr, çoğunlukla TUT"
+    liste = ", ".join(f"{h['ticker']} {h['karar']}" for h in hisseler)
+    return {"sektor": sek["ad"], "hisseler": hisseler,
+            "ozet": f"{sek['ad']} sektöründe bu hafta: {liste} — genel görünüm {gor}."}
+
+
+def _sektor_yakala(soru):
+    """Soru bir sektor sorusuysa (sektor adi + 'nasil/durum/sektor' gibi) ozet doner."""
+    s = soru or ""
+    low = s.lower()
+    key = _sektor_key_from_text(s)
+    if not key:
+        return None
+    if not any(w in low for w in ("sektör", "sektor", "nasıl", "nasil", "durum",
+                                  "genel", "bu hafta", "görünüm", "gorunum")):
+        return None
+    res = get_sektor_analiz(key)
+    return {"ok": True, "cevap": res["ozet"]} if res else None
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
@@ -2563,6 +2662,14 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         alarm_res = _alarm_yakala(kullanici, soru)
         if alarm_res is not None:
             return alarm_res
+    except Exception:
+        pass
+
+    # --- SEKTOR ANALIZI: "Bankacılık sektörü nasıl?" (AI anahtari gerekmez) ---
+    try:
+        sektor_res = _sektor_yakala(soru)
+        if sektor_res is not None:
+            return sektor_res
     except Exception:
         pass
 
@@ -3116,6 +3223,16 @@ def api_chat_suggestions():
 @app.route("/api/alarms")
 def api_alarms():
     return jsonify({"alarmlar": get_alarms(request.args.get("kullanici"))})
+
+
+@app.route("/api/sektor-analiz")
+def api_sektor_analiz():
+    key = (request.args.get("sektor") or "").strip().lower()
+    if key not in _SEKTORLER:
+        key = _sektor_key_from_text(key) or key
+    res = get_sektor_analiz(key)
+    return jsonify(res or {"sektor": key, "hisseler": [],
+                           "ozet": "Bu sektör için analiz bulunamadı."})
 
 
 @app.route("/api/alarms/remove", methods=["POST"])
