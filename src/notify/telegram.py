@@ -8,6 +8,30 @@ import requests
 _SEND = "https://api.telegram.org/bot{token}/sendMessage"
 _GETUPD = "https://api.telegram.org/bot{token}/getUpdates"
 
+_MAX_LEN = 4096  # Telegram tek mesaj karakter siniri
+
+
+def _split_message(text: str, limit: int = _MAX_LEN) -> list:
+    """Metni Telegram limitine gore parcalara boler. Once satir sonunda,
+    olmazsa kelime arasinda, o da olmazsa sert keser. Kelime ortasinda
+    bolme yapmamaya calisir."""
+    if len(text) <= limit:
+        return [text]
+    parcalar = []
+    kalan = text
+    while len(kalan) > limit:
+        dilim = kalan[:limit]
+        kes = dilim.rfind("\n")          # tercih: satir sonu
+        if kes <= 0:
+            kes = dilim.rfind(" ")       # alternatif: kelime arasi
+        if kes <= 0:
+            kes = limit                  # son care: sert kesim
+        parcalar.append(kalan[:kes])
+        kalan = kalan[kes:].lstrip("\n") if kes < limit else kalan[kes:]
+    if kalan:
+        parcalar.append(kalan)
+    return parcalar
+
 
 class TelegramNotConfigured(RuntimeError):
     """Telegram kimlik bilgileri ayarli degil."""
@@ -22,12 +46,15 @@ def send_message(text: str, parse_mode: str = "HTML", chat_id=None, timeout: int
     chat = chat_id or os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
         raise TelegramNotConfigured("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID ayarli degil.")
-    r = requests.post(_SEND.format(token=token),
-                      json={"chat_id": chat, "text": text, "parse_mode": parse_mode,
-                            "disable_web_page_preview": True}, timeout=timeout)
-    if not r.ok:
-        raise RuntimeError(f"Telegram API hata {r.status_code}: {r.text[:200]}")
-    return r.json()
+    son = None
+    for parca in _split_message(text or ""):
+        r = requests.post(_SEND.format(token=token),
+                          json={"chat_id": chat, "text": parca, "parse_mode": parse_mode,
+                                "disable_web_page_preview": True}, timeout=timeout)
+        if not r.ok:
+            raise RuntimeError(f"Telegram API hata {r.status_code}: {r.text[:200]}")
+        son = r.json()
+    return son or {}
 
 
 def recipient_ids() -> list:

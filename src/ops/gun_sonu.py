@@ -159,10 +159,7 @@ def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None):
     lines += ["", "<b>YARIN BAKILACAKLAR</b>"]
     for m in yarin:
         lines.append(f"• {_esc(m)}")
-    msg = "\n".join(lines)
-    if len(msg) > 3500:
-        msg = msg[:3480].rsplit("\n", 1)[0] + "\n…"
-    return msg
+    return "\n".join(lines)
 
 
 def run():
