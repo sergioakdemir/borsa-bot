@@ -18,8 +18,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
-KAPANIS_GUN = 3          # bu kadar gun gecmis kararlar degerlendirilir (hizli ogrenme)
+KAPANIS_GUN = 3          # ISLEM GUNU bazinda karsilastirma ufku (takvim gunu DEGIL)
 TUT_BANT = 5.0           # TUT icin yatay sayilan +/- yuzde bandi
+MIN_ISLEM_GUNU = 1       # en az bu kadar ISLEM gunu gecmeden karar degerlendirilmez
+                         # (hafta sonu kararinin ayni bar ile karsilastirilip %0 cikmasini onler)
 
 
 def _verdict(karar: str, degisim: float) -> bool:
@@ -34,13 +36,24 @@ def _verdict(karar: str, degisim: float) -> bool:
 
 
 def _price_change(ticker: str, karar_tarihi: str):
-    """Karar gunundeki kapanis -> bugunku kapanis yuzde degisimi (yoksa None)."""
+    """Karar gunundeki kapanis -> ~KAPANIS_GUN ISLEM GUNU sonraki kapanis yuzde degisimi.
+
+    TAKVIM gunu degil ISLEM gunu bazlidir: yfinance yalniz islem gunlerini dondurdugu
+    icin hafta sonu/tatil otomatik atlanir.
+      - Baz bar  = karar tarihinde VEYA oncesindeki SON islem gunu kapanisi
+                   (botun karar aninda gordugu fiyat; Cumartesi karari icin Cuma kapanisi).
+      - Hedef bar = baz + KAPANIS_GUN islem gunu (eldeki veriyle sinirli).
+      - Henuz MIN_ISLEM_GUNU islem gunu gecmediyse None doner (bekle) -> boylece karar
+        bari ile hedef bar AYNI olup %0 cikmaz.
+    Veri yoksa None.
+    """
     from src.data.factory import get_data_source
     from src.markets.bist import BIST
     import pandas as pd
 
     symbol = BIST().to_symbol(ticker)
-    start = (datetime.fromisoformat(karar_tarihi).date() - timedelta(days=4)).isoformat()
+    # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
+    start = (datetime.fromisoformat(karar_tarihi).date() - timedelta(days=12)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
     except Exception:
@@ -53,27 +66,35 @@ def _price_change(ticker: str, karar_tarihi: str):
 
     kdate = datetime.fromisoformat(karar_tarihi).date()
     dates = [pd.Timestamp(ix).date() for ix in df.index]
-    # karar gunu veya sonraki ilk islem gunu
-    idx = next((i for i, d in enumerate(dates) if d >= kdate), None)
-    if idx is None:
+    # Baz bar: kdate'te VEYA oncesindeki SON islem gunu (yoksa eldeki ilk bar)
+    i0 = next((i for i in range(len(dates) - 1, -1, -1) if dates[i] <= kdate), None)
+    if i0 is None:
+        i0 = 0
+    son = len(dates) - 1
+    gecen_islem_gunu = son - i0
+    if gecen_islem_gunu < MIN_ISLEM_GUNU:        # yeterli islem gunu gecmedi -> bekle
         return None
-    karar_fiyat = float(df["Close"].iloc[idx])
-    son_fiyat = float(df["Close"].iloc[-1])
-    if not karar_fiyat:
+    i_eval = min(i0 + KAPANIS_GUN, son)          # KAPANIS_GUN islem gunu sonrasi (veriyle sinirli)
+    baz = float(df["Close"].iloc[i0])
+    hedef = float(df["Close"].iloc[i_eval])
+    if not baz:
         return None
-    return round((son_fiyat - karar_fiyat) / karar_fiyat * 100, 2)
+    return round((hedef - baz) / baz * 100, 2)
 
 
 def run(verbose: bool = True) -> int:
     from src.db import database as db
     db.init_db()
     today = datetime.now(_TZ).date()
-    cutoff = (today - timedelta(days=KAPANIS_GUN)).isoformat()
+    # Eligibility artik ISLEM GUNU bazli: gercek gating _price_change icinde yapilir
+    # (MIN_ISLEM_GUNU islem gunu gecmediyse None doner). Burada yalniz bugun/gelecek
+    # tarihli kararlari disla; hafta sonu kararlari da degerlendirmeye girer.
+    cutoff = today.isoformat()
 
     with db.get_conn() as c:
         rows = [dict(r) for r in c.execute(
             "SELECT * FROM decisions WHERE (sonuc IS NULL OR sonuc='') "
-            "AND tarih <= ? ORDER BY id", (cutoff,))]
+            "AND tarih < ? ORDER BY id", (cutoff,))]
 
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)}")
