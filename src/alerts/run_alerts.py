@@ -366,8 +366,86 @@ def main():
     return 0
 
 
+def _alarm_price(sym: str):
+    """Alarm kontrolu icin tek sembolun guncel fiyati (yfinance). None olabilir."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(sym)
+        h = t.history(period="1d")
+        if h is not None and not h.empty:
+            c = h["Close"].dropna()
+            if len(c):
+                return round(float(c.iloc[-1]), 4)
+        fi = t.fast_info
+        lp = fi.get("last_price") if hasattr(fi, "get") else None
+        return round(float(lp), 4) if lp else None
+    except Exception:
+        return None
+
+
+def _notify_alarm(kullanici_id, msg: str) -> bool:
+    """Alarmi ilgili kullaniciya (telegram_id varsa) gonderir; yoksa broadcast."""
+    if not telegram.is_configured():
+        return False
+    try:
+        tid = None
+        for u in db.list_users():
+            if u.get("id") == kullanici_id:
+                tid = u.get("telegram_id")
+                break
+        if tid:
+            telegram.send_message(msg, chat_id=str(tid))
+            return True
+        res = telegram.broadcast(msg)
+        return any(v == "ok" for v in res.values())
+    except Exception as e:
+        print(f"[alarm] gonderim hatasi: {type(e).__name__}")
+        return False
+
+
+def check_price_alarms(now=None) -> int:
+    """Aktif fiyat alarmlarini kontrol eder; hedef gecilmise Telegram'a bildirir ve
+    alarmi pasif yapar. (KAP taramasiyla birlikte 15 dk'da bir calisir.)"""
+    now = now or datetime.now(_TZ)
+    try:
+        alarms = db.list_price_alarms(aktif=True)
+    except Exception as e:
+        print(f"[alarm] DB hatasi: {type(e).__name__}")
+        return 0
+    if not alarms:
+        return 0
+    tetik = 0
+    for a in alarms:
+        tkr = (a.get("ticker") or "").upper()
+        usd = (a.get("para_birimi") or "TL").upper() == "USD"
+        sym = tkr if usd else f"{tkr}.IS"
+        fiyat = _alarm_price(sym)
+        if fiyat is None:
+            continue
+        hedef, yon = a["hedef_fiyat"], a["yon"]
+        vurdu = (yon == "yukari" and fiyat >= hedef) or \
+                (yon == "asagi" and fiyat <= hedef)
+        if not vurdu:
+            continue
+        birim = "$" if usd else "TL"
+        ok = ">=" if yon == "yukari" else "<="
+        yon_tr = "yükseldi" if yon == "yukari" else "düştü"
+        msg = (f"\U0001F514 <b>Fiyat Alarmı</b>\n{tkr} {yon_tr}: "
+               f"<b>{fiyat:g} {birim}</b> ({ok} {hedef:g} {birim}).")
+        if _notify_alarm(a["kullanici_id"], msg):
+            db.deactivate_price_alarm(a["id"], tetik=True)
+            tetik += 1
+            print(f"[{now:%Y-%m-%d %H:%M}] [alarm] {tkr} {fiyat} {yon} {hedef} -> bildirildi.")
+    return tetik
+
+
 if __name__ == "__main__":
     # 'kap' argumani: gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
     if len(sys.argv) > 1 and sys.argv[1].lower() == "kap":
-        sys.exit(scan_kap_unpriced())
+        rc = scan_kap_unpriced()
+        try:
+            check_price_alarms()          # ayni 15 dk'lik kosuda fiyat alarmlari
+        except Exception as e:
+            print(f"[alarm] hata: {type(e).__name__}")
+        sys.exit(rc)
     sys.exit(main())

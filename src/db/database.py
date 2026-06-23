@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS portfoy_snapshot (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_portfoy_snapshot_uid_tarih
     ON portfoy_snapshot(kullanici_id, tarih);
+CREATE TABLE IF NOT EXISTS fiyat_alarm (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id      INTEGER NOT NULL REFERENCES kullanici(id),
+    ticker            TEXT NOT NULL,
+    hedef_fiyat       REAL NOT NULL,
+    yon               TEXT NOT NULL,            -- 'yukari' (cikarsa) | 'asagi' (duserse)
+    para_birimi       TEXT DEFAULT 'TL',        -- 'TL' | 'USD'
+    aktif             INTEGER DEFAULT 1,        -- 1 aktif, 0 tetiklendi/pasif
+    olusturma_tarihi  TEXT,
+    tetiklenme_tarihi TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_fiyat_alarm_aktif ON fiyat_alarm(aktif);
 """
 
 # Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
@@ -343,6 +355,57 @@ def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None,
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (kullanici_id, str(ticker).upper().replace(".IS", ""),
              adet, alim_fiyati, alim_tarihi, notlar, (para_birimi or "TL").upper()))
+
+
+# ---- fiyat alarmi ----
+def add_price_alarm(kullanici_id, ticker, hedef_fiyat, yon, para_birimi="TL") -> int:
+    """Yeni fiyat alarmi ekler. yon: 'yukari' (cikarsa) | 'asagi' (duserse)."""
+    init_db()
+    yon = "yukari" if str(yon).lower().startswith("yuk") else "asagi"
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO fiyat_alarm
+                 (kullanici_id, ticker, hedef_fiyat, yon, para_birimi, aktif, olusturma_tarihi)
+               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+            (kullanici_id, str(ticker).upper().replace(".IS", ""),
+             float(hedef_fiyat), yon, (para_birimi or "TL").upper(), _now()))
+        return cur.lastrowid
+
+
+def list_price_alarms(kullanici_id=None, aktif=None) -> list[dict]:
+    """Fiyat alarmlarini dondurur. aktif=True yalniz aktifleri, kullanici_id verilirse o kisininkileri."""
+    init_db()
+    q = "SELECT * FROM fiyat_alarm WHERE 1=1"
+    args = []
+    if kullanici_id is not None:
+        q += " AND kullanici_id=?"
+        args.append(kullanici_id)
+    if aktif is not None:
+        q += " AND aktif=?"
+        args.append(1 if aktif else 0)
+    q += " ORDER BY id DESC"
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(q, args)]
+
+
+def deactivate_price_alarm(alarm_id, tetik=True) -> bool:
+    """Alarmi pasif yapar; tetik=True ise tetiklenme_tarihi'ni isaretler."""
+    with get_conn() as c:
+        cur = c.execute(
+            "UPDATE fiyat_alarm SET aktif=0, tetiklenme_tarihi=? WHERE id=?",
+            (_now() if tetik else None, int(alarm_id)))
+        return cur.rowcount > 0
+
+
+def delete_price_alarm(alarm_id, kullanici_id=None) -> bool:
+    """Alarmi siler. kullanici_id verilirse yalniz o kisinin alarmini siler (guvenlik)."""
+    with get_conn() as c:
+        if kullanici_id is not None:
+            cur = c.execute("DELETE FROM fiyat_alarm WHERE id=? AND kullanici_id=?",
+                            (int(alarm_id), kullanici_id))
+        else:
+            cur = c.execute("DELETE FROM fiyat_alarm WHERE id=?", (int(alarm_id),))
+        return cur.rowcount > 0
 
 
 def user_id_by_ad(ad):

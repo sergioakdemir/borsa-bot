@@ -235,6 +235,18 @@
   .sr-right{text-align:right;flex:0 0 auto}
   /* --- portfoy kartinda BELIRGIN karar etiketi --- */
   .pill.big{height:30px;padding:0 15px;font-size:15px;font-weight:800;letter-spacing:.4px}
+  /* --- gercek hisse logosu (parqet); yuklenemezse harf ikonuna doner --- */
+  .av-img{object-fit:contain;background:#fff;padding:2px;display:inline-block}
+  /* --- portfoy pasta grafigi --- */
+  .pie-wrap{background:var(--card);border:1px solid var(--border);border-radius:22px;padding:16px;margin-bottom:11px}
+  .pie-row{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  .pie-svg{flex:0 0 auto}
+  .pie-svg path{cursor:pointer;transition:opacity .15s} .pie-svg path:active{opacity:.7}
+  .pie-leg{flex:1;min-width:150px;display:flex;flex-direction:column;gap:7px}
+  .pie-li{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+  .pie-dot{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+  .pie-li .pn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pie-li .pp{font-weight:700}
   .filters{display:flex;gap:7px;margin-bottom:4px;flex-wrap:wrap}
   .filters button{flex:0 0 auto;background:var(--card);border:1px solid var(--border);color:var(--muted);
     border-radius:999px;padding:8px 15px;font-size:12.5px;font-weight:600;min-height:38px}
@@ -584,6 +596,13 @@ function pillBig(t){if(!t)return"";const u=(t||"").toLocaleUpperCase("tr");
   const cls=u.indexOf("AL")===0?"green":(u.indexOf("SAT")===0||u.indexOf("AZALT")>=0)?"red":"gray";
   return`<span class="pill big ${cls}">${esc(t)}</span>`}
 function priceBlock(s){return s.fiyat==null?"":`<div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>`}
+// Hisse logosu (parqet, ucretsiz). Turk hisseleri icin {TICKER}.IS dener;
+// yuklenemezse mevcut renkli harf ikonuna geri doner (avFallback). cls=boyut sinifi.
+function logoSym(s){const t=(s.ticker||"").toUpperCase();return (!s.market||s.market==="bist")?t+".IS":t}
+function avatar(s,cls){const t=(s.ticker||"").toUpperCase();const bg=ghAvColor(t);const ch=esc(t.slice(0,1)||"?");
+  const src=`https://assets.parqet.com/logos/symbol/${encodeURIComponent(logoSym(s))}?format=svg`;
+  return`<img class="av-img ${cls||''}" src="${src}" alt="${esc(t)}" loading="lazy" onerror="avFallback(this,'${ch}','${bg}','${(cls||'')}')">`}
+function avFallback(img,ch,bg,cls){const sp=document.createElement('span');sp.className=cls;sp.style.background=bg;sp.textContent=ch;img.replaceWith(sp)}
 function statusLine(s){return s.statusPhrase?`<div class="status c-${s.statusColor||'gray'}">${esc(s.statusPhrase)}</div>`:""}
 function key(s){return(s.market||"bist")+":"+s.ticker}
 function reg(s){STOCK_INDEX[key(s)]=s;return key(s)}
@@ -664,10 +683,10 @@ function sanalBorcHTML(){if(CUR_USER!=="ufuk")return"";
   const gun=Math.max(0,Math.floor((today-start)/86400000));const borc=gun*10;
   return`<div class="sanal-borc">💸 Sanal Borç: $${borc} (ve artmaya devam ediyor...)</div>`}
 // Takip Ettiklerim karti: renkli ikon + ticker + isim + fiyat + degisim + (varsa) karar
-function takipCard(s){const k=reg(s);const av=ghAvColor(s.ticker);
+function takipCard(s){const k=reg(s);
   return`<div class="card" onclick="openStock('${k}')" style="padding:13px 15px">
     <div class="row"><div style="display:flex;align-items:center;gap:11px;min-width:0">
-      <span class="sr-av" style="background:${av}">${esc((s.ticker||"?").slice(0,1))}</span>
+      ${avatar(s,"sr-av")}
       <div style="min-width:0"><div class="sr-tk">${esc(s.ticker)}</div><div class="sr-nm">${esc(s.isim||"")}</div></div></div>
       <div style="display:flex;align-items:center;gap:10px;flex:0 0 auto">
         <div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>
@@ -703,7 +722,7 @@ async function fillOverview(){if(!CUR_USER)return;try{const d=await(await fetch(
 function posCardHTML(p){const k=reg(p);
   const kz=p.kz!=null?` · <span class="${signCls(p.kz)}">K/Z: ${money(p.kz,p.para_birimi)} (${pct(p.kz_yuzde)})</span>`:"";
   return`<div class="card" onclick="openStock('${k}')">
-    <div class="row"><div class="name">${esc(p.isim)} ${mtag(p.market)}</div>
+    <div class="row"><div style="display:flex;align-items:center;gap:11px;min-width:0">${avatar(p,"sr-av")}<div class="name" style="min-width:0">${esc(p.isim)} ${mtag(p.market)}</div></div>
       <div style="display:flex;align-items:center;gap:9px;flex:0 0 auto">${pillBig(p.karar)}
         <button class="dots" onclick="event.stopPropagation();posMenu('${k}',${p.id},'${esc(p.ticker)}')">⋯</button></div></div>
     <div class="pline">${esc(p.ticker)} · ${fmt(p.adet,0)} adet${p.alis!=null?` · Maliyet: ${money(p.alis,p.para_birimi)}`:""}</div>
@@ -738,11 +757,35 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;
     const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">Karne · Backtest →</button>`;
     if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.")+karne;fillOverview();return}
+    h+=pieHTML(d.pozisyonlar);
     const gr={bist:"BIST Hisselerim",abd:"ABD Hisselerim",kripto:"Kripto Varlıklarım"};
     ["bist","abd","kripto"].forEach(m=>{const ps=d.pozisyonlar.filter(p=>p.market===m);
       if(ps.length)h+=`<div class="sec-title">${gr[m]}</div>`+ps.map(posCardHTML).join("")});
     el.innerHTML=h+karne;fillOverview();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
+// Portfoy pasta grafigi (saf SVG). Agirlik = deger_tl/toplam. BIST mavi, ABD turuncu tonlari.
+function pieHTML(pos){
+  const items=(pos||[]).filter(p=>(p.deger_tl||0)>0).sort((a,b)=>b.deger_tl-a.deger_tl);
+  if(items.length<2)return"";
+  const tot=items.reduce((s,p)=>s+(p.deger_tl||0),0);if(tot<=0)return"";
+  const BIST=["#3b82f6","#2563eb","#0ea5e9","#1d4ed8","#38bdf8","#6366f1","#0891b2"];
+  const ABD=["#f59e0b","#f97316","#fb923c","#ea580c","#fbbf24","#d97706"];
+  const cx=80,cy=80,r=78;let ang=-Math.PI/2,bi=0,ai=0,paths="",legend="";
+  for(const p of items){
+    const frac=p.deger_tl/tot,a0=ang,a1=ang+frac*2*Math.PI;ang=a1;
+    const col=p.market==="abd"?ABD[ai++%ABD.length]:BIST[bi++%BIST.length];
+    const k=reg(p),pv=(frac*100).toFixed(1);
+    const x0=cx+r*Math.cos(a0),y0=cy+r*Math.sin(a0),x1=cx+r*Math.cos(a1),y1=cy+r*Math.sin(a1);
+    const large=(a1-a0)>Math.PI?1:0;
+    paths+=`<path d="M${cx} ${cy} L${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z" fill="${col}" onclick="openStock('${k}')"><title>${esc(p.ticker)} %${pv}</title></path>`;
+    legend+=`<div class="pie-li" onclick="openStock('${k}')"><span class="pie-dot" style="background:${col}"></span><span class="pn">${esc(p.ticker)}${mtag(p.market)}</span><span class="pp">%${pv}</span></div>`;
+  }
+  return`<div class="sec-title">Portföy Dağılımı</div>
+    <div class="pie-wrap"><div class="pie-row">
+      <svg class="pie-svg" width="160" height="160" viewBox="0 0 160 160">${paths}</svg>
+      <div class="pie-leg">${legend}</div></div>
+      <div class="tick" style="margin-top:10px">Mavi tonları BIST · turuncu tonları ABD hisseleri</div></div>`;
+}
 let DEC_INDEX={};
 function backtestHTML(bt){
   if(!bt||!bt.var)return"";
@@ -891,7 +934,7 @@ function renderGH(){const sec=document.getElementById("gh-sec");if(!sec||!GH_DAT
     const alt=volTab?(s.hacim_kat?`x${fmt(s.hacim_kat)} hacim`:money(s.fiyat,s.para_birimi)):money(s.fiyat,s.para_birimi);
     return`<div class="gh-row" onclick="openStock('${k}')">
       <span class="gh-rank">${i+1}</span>
-      <span class="gh-av" style="background:${ghAvColor(s.ticker)}">${esc((s.ticker||"?").slice(0,1))}</span>
+      ${avatar(s,"gh-av")}
       <div class="gh-main"><div class="gh-tk">${esc(s.ticker)}</div><div class="gh-nm">${esc(s.isim||"")}</div></div>
       <div class="gh-right"><div class="gh-chg ${signCls(s.degisim)}">${pct(s.degisim)}</div><div class="gh-vol">${alt}</div></div>
     </div>`}).join(""):empty("Veri yok");
@@ -930,9 +973,9 @@ async function doSearch(q){const ov=document.getElementById("search-overlay");if
       h+=`<div class="sr-grp">${lbl}</div>`+items.slice(0,8).map(searchRow).join("");}
     ov.innerHTML=h;ov.classList.add("open");
   }catch(e){ov.innerHTML=`<div class="sr-grp">Arama yapılamadı</div>`;ov.classList.add("open");}}
-function searchRow(s){const k=reg(s);const av=ghAvColor(s.ticker);
+function searchRow(s){const k=reg(s);
   return`<div class="sr-row" onclick="searchPick('${k}')">
-    <span class="sr-av" style="background:${av}">${esc((s.ticker||"?").slice(0,1))}</span>
+    ${avatar(s,"sr-av")}
     <div class="sr-main"><div class="sr-tk">${esc(s.ticker)}${mtag(s.market)}</div><div class="sr-nm">${esc(s.isim||"")}</div></div>
     <div class="sr-right"><div class="price" style="font-size:14px">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}" style="font-size:12px">${pct(s.gunluk)}</div></div>
   </div>`}
@@ -1053,15 +1096,32 @@ let MEM_FILTER="hepsi";
 async function loadAyarlar(){const el=document.getElementById("page-ayarlar");
   if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
   el.innerHTML=skel(3);
-  try{const [pf,mem]=await Promise.all([
+  try{const [pf,mem,al]=await Promise.all([
       fetch("/api/profile"+uq()).then(r=>r.json()).catch(()=>({})),
-      fetch("/api/memory"+uq()).then(r=>r.json()).catch(()=>({kategoriler:{}}))]);
+      fetch("/api/memory"+uq()).then(r=>r.json()).catch(()=>({kategoriler:{}})),
+      fetch("/api/alarms"+uq()).then(r=>r.json()).catch(()=>({alarmlar:[]}))]);
     let h=`<h2 style="font-size:22px;font-weight:700;margin-bottom:4px">Ayarlar</h2>
       <div class="tick" style="margin-bottom:14px">Bot seni nasıl tanıyor + hafızası</div>`;
     h+=profileHTML(pf);
+    h+=alarmsHTML(al.alarmlar||[]);
     h+=memoryHTML(mem);
     el.innerHTML=h;
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
+// Fiyat Alarmlarım: aktif alarm listesi + silme
+function alarmsHTML(list){
+  let h=`<div class="sec-title">Fiyat Alarmlarım</div>`;
+  if(!list.length)return h+`<div class="card"><div class="tick" style="line-height:1.5">Henüz alarmın yok. Bota Sor'da <b>"THYAO 300'e düşerse haber ver"</b> gibi yazarak alarm kurabilirsin.</div></div>`;
+  return h+list.map(a=>{const birim=a.para_birimi==="USD"?"$":"TL";
+    const yon=a.yon==="asagi"?"düşerse":"çıkarsa";const ic=a.yon==="asagi"?"▼":"▲";
+    const cls=a.yon==="asagi"?"neg":"pos";
+    return`<div class="card" style="padding:13px 15px"><div class="row">
+      <div><div class="name" style="font-size:15px">${esc(a.ticker)}</div>
+        <div class="pline">Hedef: <b class="${cls}">${ic} ${fmt(a.hedef_fiyat)} ${birim}</b> · ${yon} haber ver</div></div>
+      <button class="dots" onclick="event.stopPropagation();alarmSil(${a.id})" title="Sil">🗑</button></div></div>`}).join("");
+}
+async function alarmSil(id){if(!confirm("Alarm silinsin mi?"))return;
+  try{const r=await fetch("/api/alarms/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,id})});
+    if((await r.json()).ok){toast("Alarm silindi");loaded.ayarlar=false;loadAyarlar()}else toast("Silinemedi")}catch(e){toast("Silinemedi")}}
 function profileHTML(p){
   const skor=p.guven_skoru||0;
   let h=`<div class="sec-title">Bot Seni Böyle Tanıyor</div>

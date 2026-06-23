@@ -873,6 +873,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "alis": alis,
             "guncel": guncel,
             "gunluk": gunluk,
+            "deger_tl": round(deger_tl, 2),     # TL bazli guncel deger (pasta grafigi icin)
             "kz": kz,
             "kz_yuzde": kz_yuzde,
             # yeni arayuz: sade karar + kisa yorum + aksiyon + yumusak durum
@@ -2454,6 +2455,96 @@ def _profil_tamamla(kullanici, soru):
     return None
 
 
+# --- Fiyat alarmi: dogal dil tespiti ("THYAO 300'e düşerse haber ver") ---
+_ALARM_DUSER = ("düşerse", "duserse", "altına", "altina", "inerse", "inince",
+                "gerilerse", "düşünce", "dusunce")
+_ALARM_CIKAR = ("çıkarsa", "cikarsa", "üstüne", "ustune", "geçerse", "gecerse",
+                "yükselirse", "yukselirse", "aşarsa", "asarsa", "çıkınca", "cikinca")
+_ALARM_NIYET = ("haber ver", "alarm", "uyar", "bildir", "haberim olsun",
+                "haber et", "haber ver")
+
+
+def _parse_fiyat(txt: str):
+    """Turkce/ABD ondalik formatini float'a cevirir ('1.234,56'->1234.56, '5,77'->5.77)."""
+    t = (txt or "").strip()
+    try:
+        if "," in t and "." in t:
+            t = t.replace(".", "").replace(",", ".")
+        elif "," in t:
+            t = t.replace(",", ".")
+        return float(t)
+    except ValueError:
+        return None
+
+
+def _alarm_yakala(kullanici, soru):
+    """'X N'e düşerse/çıkarsa haber ver' kalibini yakalar ve DB'ye alarm kaydeder.
+
+    Yakalamazsa None doner (normal akis devam eder)."""
+    if not kullanici:
+        return None
+    s = soru or ""
+    low = s.lower()
+    if not any(k in low for k in _ALARM_NIYET):
+        return None
+    if any(k in low for k in _ALARM_DUSER):
+        yon = "asagi"
+    elif any(k in low for k in _ALARM_CIKAR):
+        yon = "yukari"
+    else:
+        return None
+    tickers = _detect_tickers(s, limit=1)
+    if not tickers:
+        return None
+    tkr = tickers[0]
+    m = re.search(r"(\d{1,7}(?:[.,]\d+)?)", s)
+    if not m:
+        return None
+    hedef = _parse_fiyat(m.group(1))
+    if hedef is None or hedef <= 0:
+        return None
+
+    # para birimi: ABD hissesi mi? (commentary market veya portfoy USD kaydi)
+    para = "TL"
+    try:
+        if (_commentary_by_ticker().get(tkr, {}) or {}).get("market") == "abd":
+            para = "USD"
+        else:
+            with sqlite3.connect(DB_PATH) as c:
+                row = c.execute("SELECT para_birimi FROM portfoy "
+                                "WHERE UPPER(ticker)=? LIMIT 1", (tkr,)).fetchone()
+                if row and (row[0] or "TL").upper() == "USD":
+                    para = "USD"
+    except Exception:
+        pass
+
+    try:
+        from src.db import database as db
+        uid = _uid(kullanici)
+        if not uid:
+            return None
+        db.add_price_alarm(uid, tkr, hedef, yon, para)
+    except Exception:
+        return {"ok": False, "cevap": "Alarmı kaydedemedim, tekrar dener misin?"}
+    birim = "$" if para == "USD" else "TL"
+    yon_tr = "altına düşerse" if yon == "asagi" else "üstüne çıkarsa"
+    return {"ok": True, "cevap": (
+        f"🔔 Alarm kuruldu: <b>{tkr}</b> fiyatı {hedef:g} {birim} {yon_tr} sana "
+        "haber vereceğim. (Ayarlar → Fiyat Alarmlarım'dan yönetebilirsin.)")}
+
+
+def get_alarms(kullanici) -> list[dict]:
+    """Kullanicinin AKTIF fiyat alarmlari (Ayarlar ekrani icin)."""
+    from src.db import database as db
+    uid = _uid(kullanici)
+    if not uid:
+        return []
+    return [{"id": a["id"], "ticker": a["ticker"], "hedef_fiyat": a["hedef_fiyat"],
+             "yon": a["yon"], "para_birimi": a.get("para_birimi", "TL"),
+             "olusturma_tarihi": a.get("olusturma_tarihi")}
+            for a in db.list_price_alarms(kullanici_id=uid, aktif=True)]
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
@@ -2464,6 +2555,14 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         prof_res = _profil_tamamla(kullanici, soru)
         if prof_res is not None:
             return prof_res
+    except Exception:
+        pass
+
+    # --- FIYAT ALARMI: "X N'e düşerse/çıkarsa haber ver" (AI anahtari gerekmez) ---
+    try:
+        alarm_res = _alarm_yakala(kullanici, soru)
+        if alarm_res is not None:
+            return alarm_res
     except Exception:
         pass
 
@@ -3012,6 +3111,22 @@ def api_search():
 @app.route("/api/chat-suggestions")
 def api_chat_suggestions():
     return jsonify({"sorular": get_chat_suggestions(request.args.get("kullanici"))})
+
+
+@app.route("/api/alarms")
+def api_alarms():
+    return jsonify({"alarmlar": get_alarms(request.args.get("kullanici"))})
+
+
+@app.route("/api/alarms/remove", methods=["POST"])
+def api_alarms_remove():
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    uid = _uid(d.get("kullanici"))
+    if uid is None or d.get("id") is None:
+        return jsonify({"ok": False, "hata": "kullanici/id gerekli"})
+    ok = db.delete_price_alarm(d.get("id"), kullanici_id=uid)
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/decisions")
