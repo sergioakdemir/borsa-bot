@@ -732,14 +732,17 @@ def _search_bist(q: str) -> list[dict]:
     return out
 
 
-def get_search(q: str, market: str = "bist") -> list[dict]:
-    """Piyasaya gore arama. market='all' -> BIST + ABD + Kripto birlesik."""
+def get_search(q: str, market: str = "bist", kullanici=None) -> list[dict]:
+    """Piyasaya gore arama. market='all' -> BIST + ABD + Kripto birlesik.
+
+    kullanici verilirse sonuclar onceliklendirilir ve 'grup' alani eklenir:
+    once portfoydeki hisseler, sonra takip listesi, sonra digerleri."""
     market = (market or "bist").lower()
     if market == "abd":
-        return search_us(q)
-    if market == "kripto":
-        return search_crypto(q)
-    if market == "all":
+        out = search_us(q)
+    elif market == "kripto":
+        out = search_crypto(q)
+    elif market == "all":
         # evrensel: uc piyasada birden ara, sonuclari birlestir (BIST once)
         out = _search_bist(q)
         try:
@@ -750,8 +753,34 @@ def get_search(q: str, market: str = "bist") -> list[dict]:
             out += search_crypto(q)
         except Exception:
             pass
-        return out
-    return _search_bist(q)
+    else:
+        out = _search_bist(q)
+
+    # Kullaniciya gore siralama: 1) portfoy, 2) takip listesi, 3) diger
+    owned = {(t or "").upper() for t in _owned_by_user(kullanici)} if kullanici else set()
+    watched = set()
+    try:
+        wl = _load_watchlist()
+        watched = {(t or "").upper().split(".")[0]
+                   for t in wl.get("kisisel", [])}
+        watched |= {(d.get("ticker") or "").upper().split(".")[0]
+                    for d in wl.get("kisisel_diger", [])}
+    except Exception:
+        pass
+
+    def _rank(s):
+        tk = (s.get("ticker") or "").upper().split(".")[0]
+        if tk in owned:
+            s["grup"] = "portfoy"
+            return 0
+        if tk in watched:
+            s["grup"] = "takip"
+            return 1
+        s["grup"] = "bist"
+        return 2
+
+    out.sort(key=_rank)        # _rank her ogeye 'grup' alanini da yazar
+    return out
 
 
 def get_portfolio(kullanici: str | None = None) -> dict:
@@ -1798,15 +1827,95 @@ def get_today(kullanici=None) -> dict:
                  "detaylı yorum için kartlara dokun.")
     else:
         yorum = _overview_fallback(recs)
+    # "Takip Ettiklerim": kullanicinin kisisel BIST takip listesi, portfoyde
+    # OLMAYANLAR. Canli fiyat toplu cekilir; bot karari (varsa) eklenir.
+    wl = _load_watchlist()
+    owned_set = {(t or "").upper() for t in owned}
+    seen_t = set(owned_set)
+    watch_bist = []
+    for t in wl.get("kisisel", []):
+        tk = (t or "").upper().split(".")[0]
+        if tk and tk not in seen_t:
+            seen_t.add(tk)
+            watch_bist.append(tk)
+    live_w = _yf_prices([f"{t}.IS" for t in watch_bist]) if watch_bist else {}
+    takip_listesi = []
+    for tk in watch_bist:
+        card = _stock_card(comm[tk]) if tk in comm else _minimal_card(tk)
+        px = live_w.get(f"{tk}.IS") or {}
+        fiyat = px.get("fiyat") if px.get("fiyat") is not None else card.get("fiyat")
+        gunluk = px.get("gunluk") if px.get("gunluk") is not None else card.get("gunluk")
+        takip_listesi.append({
+            "ticker": tk, "isim": card.get("isim"), "market": "bist",
+            "para_birimi": "₺", "fiyat": fiyat, "gunluk": gunluk,
+            "etiket": card.get("etiket"), "renk": card.get("renk", "gray"),
+        })
+
     return {
         "selamlama": f"{selam}{(' ' + ad) if ad else ''}",
         "tarih": tarih_str,
         "portfoy_yorum": _cap(yorum, 280),
         "etiketler": etiketler,
         "hisseler": hisseler,
+        "takip_listesi": takip_listesi,
         "onemli_haber": haber,
         "firsatlar": firsatlar[:5],
     }
+
+
+def get_chat_suggestions(kullanici=None) -> list[str]:
+    """Bota Sor icin kullanicinin portfoyune gore kisisellesmis 5 hazir soru.
+
+    - THYAO portfoydeyse -> 'THYAO'yu sat mi?'
+    - Zararda pozisyon varsa -> 'En cok zarardaki hissem ... ne yapmali?'
+    - AL sinyali varsa (portfoy/radar) -> 'Bugun alim yapilir mi?'
+    Kalanlar sabit sorularla 5'e tamamlanir."""
+    comm = _commentary_by_ticker()
+    try:
+        pozisyonlar = get_portfolio(kullanici).get("pozisyonlar", [])
+    except Exception:
+        pozisyonlar = []
+    tickers = [(p.get("ticker") or "").upper() for p in pozisyonlar]
+    sorular: list[str] = []
+
+    # 1) Portfoyde belirli hisse -> sat mi? (THYAO oncelikli, yoksa ilk pozisyon)
+    if "THYAO" in tickers:
+        sorular.append("THYAO'yu sat mı?")
+    elif tickers:
+        sorular.append(f"{tickers[0]}'yu sat mı?")
+
+    # 2) En cok zarardaki hisse
+    zararli = [p for p in pozisyonlar
+               if isinstance(p.get("kz_yuzde"), (int, float)) and p["kz_yuzde"] < 0]
+    if zararli:
+        en = min(zararli, key=lambda p: p.get("kz_yuzde"))
+        t = (en.get("ticker") or "").upper()
+        sorular.append(f"En çok zarardaki hissem {t} ne yapmalı?" if t
+                       else "En çok zarardaki hissem ne yapmalı?")
+
+    # 3) AL sinyali (once portfoyde, yoksa radarda)
+    al_var = any(_karar5((comm.get(t) or {}).get("final_decision"))[0] == "AL"
+                 for t in tickers if t in comm)
+    if not al_var:
+        al_var = any(_karar5(r.get("final_decision"))[0] == "AL"
+                     for r in comm.values() if not r.get("skipped"))
+    if al_var:
+        sorular.append("Bugün alım yapılır mı?")
+
+    # Kalani sabit/genel sorularla doldur (tekrar etmeden)
+    varsayilan = [
+        "Bugün portföyümde dikkat etmem gereken ne var?",
+        "En riskli hissem hangisi?",
+        "Bugün ne yapmalıyım?",
+        "Hangi hisseyi azaltmalıyım?",
+        "Piyasa bugün nasıl görünüyor?",
+    ]
+    for s in varsayilan:
+        if len(sorular) >= 5:
+            break
+        if s not in sorular:
+            sorular.append(s)
+    return sorular[:5]
 
 
 # --- Gunun Hareketlileri: BIST-100 + dosya onbellek (15 dk) + arka plan guncelleme ---
@@ -2133,13 +2242,59 @@ _TICKER_STOP = {
 }
 
 
+_TICKER_RE_ANY = re.compile(r"\b[A-Za-z]{2,5}\b")   # kucuk/karisik harf dahil
+
+
+def _known_tickers() -> set[str]:
+    """Sistemin tanidigi tum semboller (commentary + portfoy + watchlist + BIST evreni).
+
+    Kucuk/karisik harfle yazilmis sembolleri (or. 'spcx', 'Thyao') yakalamak icin
+    kullanilir; boylece Turkce kelimeler yanlislikla sembol sanilmaz."""
+    known = set(COMPANY_NAMES.keys())
+    try:
+        known |= {(t or "").upper() for t in _commentary_by_ticker().keys()}
+    except Exception:
+        pass
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            for (tk,) in c.execute("SELECT DISTINCT ticker FROM portfoy"):
+                known.add((tk or "").upper().split(".")[0])
+    except sqlite3.Error:
+        pass
+    try:
+        wl = _load_watchlist()
+        for t in (wl.get("kisisel", []) + wl.get("bist_endeks", [])):
+            known.add((t or "").upper().split(".")[0])
+        for d in wl.get("kisisel_diger", []):
+            known.add((d.get("ticker") or "").upper().split(".")[0])
+    except Exception:
+        pass
+    known.discard("")
+    return known
+
+
 def _detect_tickers(text: str, limit: int = 4) -> list[str]:
-    """Metindeki olasi hisse sembollerini (BUYUK harf 2-5 karakter) dondurur."""
+    """Metindeki olasi hisse sembollerini dondurur.
+
+    1) BUYUK harf yazilmis 2-5 harfli kelimeler (klasik sembol yazimi).
+    2) Kucuk/karisik harfle yazilmis ama SISTEMCE BILINEN semboller (or. 'spcx',
+       'Thyao') -- boylece kullanici sembolu kucuk yazinca da fiyat cekilir."""
+    txt = text or ""
     out = []
-    for m in _TICKER_RE.findall(text or ""):
+    for m in _TICKER_RE.findall(txt):
         if m in _TICKER_STOP or m in out:
             continue
         out.append(m)
+    if len(out) < limit:
+        known = _known_tickers()
+        for m in _TICKER_RE_ANY.findall(txt):
+            u = m.upper()
+            if u in _TICKER_STOP or u in out:
+                continue
+            if u in known:
+                out.append(u)
+                if len(out) >= limit:
+                    break
     return out[:limit]
 
 
@@ -2767,7 +2922,13 @@ def api_gunun_hareketlileri():
 @app.route("/api/search")
 def api_search():
     return jsonify(get_search(request.args.get("q", ""),
-                              request.args.get("market", "bist")))
+                              request.args.get("market", "bist"),
+                              request.args.get("kullanici")))
+
+
+@app.route("/api/chat-suggestions")
+def api_chat_suggestions():
+    return jsonify({"sorular": get_chat_suggestions(request.args.get("kullanici"))})
 
 
 @app.route("/api/decisions")

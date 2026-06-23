@@ -2,10 +2,13 @@
 degisikliklerini uygular.
 
 GUVENLIK (sabit, asilamaz):
-  - YALNIZ src/web/templates/index.html dosyasi degistirilebilir.
-  - Python, veritabani, .env ve diger hicbir dosyaya DOKUNULMAZ (hedef sabit kodlu).
-  - Model yalniz find/replace metni uretir; dosya YOLU veya shell komutu URETEMEZ.
-  - Degisiklik basina en fazla 50 satir (old/new her biri) ve net fark <= 50 satir.
+  - YALNIZ frontend dosyalari degistirilebilir: src/web/templates/index.html ve
+    src/web/static/ altindaki *.css / *.js dosyalari (var olan veya yeni olusturulan).
+  - Python, veritabani, .env, code_mode.py'nin kendisi ve diger HICBIR dosyaya
+    DOKUNULMAZ. Hedef yol allowlist'e gore dogrulanir; disari cikan yol reddedilir.
+  - Model yalniz find/replace metni (+ opsiyonel hedef dosya adi) uretir; mutlak
+    yol, ".." veya shell komutu URETEMEZ.
+  - Degisiklik basina en fazla 150 satir (old/new her biri).
   - Once oneri gosterilir, kullanici "onayla" deyince uygulanir.
   - Uygulamadan once orijinal icerik saklanir; JS/yapisal dogrulama gecmezse geri alinir.
   - Her degisiklik git commit'lenir (geri alinabilir). Servis arka planda yeniden baslar.
@@ -18,8 +21,37 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "src" / "web" / "templates" / "index.html"
-MAX_LINES = 50
+STATIC_DIR = ROOT / "src" / "web" / "static"
+MAX_LINES = 150
 _CHAT_MODEL = "claude-sonnet-4-6"
+
+# Duzenlemeye/olusturmaya izin verilen tek kok (index.html disinda yalniz buranin
+# altindaki *.css / *.js). Python/DB/.env kapsam DISI kalir.
+_ALLOWED_STATIC_SUFFIXES = (".css", ".js")
+
+
+def _resolve_target(rel: str | None) -> Path | None:
+    """Model'in onerdigi (opsiyonel) hedef dosya adini guvenle cozumler.
+
+    Yalniz index.html VEYA src/web/static/*.css|*.js dondurur; bunun disindaki
+    her sey (mutlak yol, '..', Python, baska dizin) icin None doner."""
+    if not rel:
+        return TEMPLATE
+    rel = rel.strip().replace("\\", "/").lstrip("/")
+    name = rel.split("/")[-1]
+    if not name or ".." in rel:
+        return None
+    if rel in ("index.html", "src/web/templates/index.html",
+               "templates/index.html"):
+        return TEMPLATE
+    if not name.lower().endswith(_ALLOWED_STATIC_SUFFIXES):
+        return None
+    target = (STATIC_DIR / name).resolve()
+    try:
+        target.relative_to(STATIC_DIR.resolve())     # static/ disina cikmasin
+    except ValueError:
+        return None
+    return target
 
 # Kullanici basina bekleyen (onay bekleyen) tek oneri
 _PENDING: dict = {}
@@ -42,11 +74,17 @@ _EDIT_SCHEMA = {
                         "description": "Istek sadece HTML/CSS/JS ile yapilabilir mi"},
         "aciklama": {"type": "string",
                      "description": "Ne yapilacaginin kisa Turkce ozeti (tek cumle)"},
+        "hedef_dosya": {"type": "string",
+                        "description": "Degisecek dosya: 'index.html' (varsayilan) VEYA "
+                                       "src/web/static/ altinda bir *.css / *.js dosya adi "
+                                       "(or. 'custom.css'). Bos birakirsan index.html."},
         "old_string": {"type": "string",
-                       "description": "index.html'de AYNEN gecen, DEGISTIRILECEK metin "
-                                      "(benzersiz olmali, yeterli baglam icersin)"},
+                       "description": "Hedef dosyada AYNEN gecen, DEGISTIRILECEK metin "
+                                      "(benzersiz olmali, yeterli baglam icersin). YENI "
+                                      "dosya olusturuyorsan BOS birak."},
         "new_string": {"type": "string",
-                       "description": "old_string'in yerine gelecek yeni metin"},
+                       "description": "old_string'in yerine gelecek yeni metin (yeni "
+                                      "dosyada: dosyanin tum icerigi)"},
     },
     "required": ["yapilabilir", "aciklama", "old_string", "new_string"],
     "additionalProperties": False,
@@ -54,14 +92,19 @@ _EDIT_SCHEMA = {
 
 _PROPOSE_SYSTEM = (
     "Sen bir web arayuzu duzenleme asistanisin. Kullanici, bir Flask uygulamasinin "
-    "TEK sayfasi olan index.html (HTML+CSS+JS, tek dosya) icin gorsel/arayuz "
-    "degisikligi istiyor. Sana dosyanin tam icerigi verilir.\n"
-    "Gorevin: istegi yerine getiren MINIMAL bir find/replace uret. old_string dosyada "
-    "AYNEN ve BENZERSIZ gecen bir parca olsun (gerekiyorsa benzersizlik icin biraz "
-    "baglam ekle). new_string degismis halidir. Sadece HTML/CSS/JS degisikligi yap; "
-    "mantik/veri/Python ile ilgili istekleri 'yapilabilir=false' isaretle ve old/new "
-    "alanlarini bos birak. Degisiklik kucuk olsun (en fazla ~50 satir). Renk vb. "
-    "icin mevcut CSS degiskenlerini/sinif yapisini koru."
+    "frontend'i icin gorsel/arayuz degisikligi istiyor. Ana sayfa index.html "
+    "(HTML+CSS+JS, tek dosya). Sana index.html'in tam icerigi verilir.\n"
+    "Gorevin: istegi yerine getiren MINIMAL bir find/replace uret. old_string hedef "
+    "dosyada AYNEN ve BENZERSIZ gecen bir parca olsun (gerekiyorsa benzersizlik icin "
+    "biraz baglam ekle). new_string degismis halidir.\n"
+    "Hedef dosya: Varsayilan index.html. Istersen src/web/static/ altinda bir CSS/JS "
+    "dosyasi da olusturabilir/duzenleyebilirsin -- bunun icin 'hedef_dosya' alanina "
+    "dosya adini yaz (or. 'custom.css'). YENI dosya olusturuyorsan old_string'i BOS "
+    "birak, new_string dosyanin tam icerigi olsun.\n"
+    "SADECE HTML/CSS/JS degisikligi yap; mantik/veri/Python/veritabani ile ilgili "
+    "istekleri 'yapilabilir=false' isaretle ve old/new alanlarini bos birak. Degisiklik "
+    "kucuk olsun (en fazla ~150 satir). Renk vb. icin mevcut CSS degiskenlerini/sinif "
+    "yapisini koru."
 )
 
 
@@ -87,10 +130,8 @@ def _git(args, timeout=30):
                           capture_output=True, text=True, timeout=timeout)
 
 
-def _js_ok(html: str) -> bool:
-    """index.html icindeki <script> bloklarini node ile sozdizimi acisindan dogrular."""
-    blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-    body = "\n".join(blocks)
+def _js_syntax_ok(body: str) -> bool:
+    """Ham JavaScript govdesini node ile sozdizimi acisindan dogrular."""
     if not body.strip():
         return True
     try:
@@ -103,8 +144,34 @@ def _js_ok(html: str) -> bool:
         return True
 
 
+def _js_ok(html: str) -> bool:
+    """index.html icindeki <script> bloklarini sozdizimi acisindan dogrular."""
+    blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
+    return _js_syntax_ok("\n".join(blocks))
+
+
 def _structurally_ok(html: str) -> bool:
     return all(a in html for a in _ANCHORS)
+
+
+def _validate(target: Path, content: str) -> tuple[bool, str]:
+    """Hedef dosya tipine gore saglik/guvenlik kontrolu. (ok, hata_mesaji) doner."""
+    name = target.name.lower()
+    if name == "index.html":
+        if not _structurally_ok(content):
+            return False, "Değişiklik sayfayı bozacaktı (yapısal kontrol), iptal ettim."
+        if not _js_ok(content):
+            return False, "Değişiklik JavaScript hatası verdi, geri aldım."
+        return True, ""
+    if name.endswith(".js"):
+        if not _js_syntax_ok(content):
+            return False, "JavaScript dosyası sözdizimi hatası verdi, iptal ettim."
+        return True, ""
+    if name.endswith(".css"):
+        if content.count("{") != content.count("}"):
+            return False, "CSS süslü parantezleri dengesiz, iptal ettim."
+        return True, ""
+    return False, "Bu dosya türünü düzenleyemem."
 
 
 def _line_count(s: str) -> int:
@@ -137,22 +204,39 @@ def propose(kullanici, soru, client=None) -> dict:
             "Bu isteği arayüzde (HTML/CSS/JS) yapamam — sadece görsel değişiklikler "
             "yapabilirim (renk, yazı, buton, sekme vb.). " + (d.get("aciklama") or ""))}
 
+    # --- hedef dosyayi guvenle cozumle (index.html veya static/*.css|*.js) ---
+    target = _resolve_target(d.get("hedef_dosya"))
+    if target is None:
+        return {"ok": False, "cevap": (
+            "Bu dosyayı düzenleyemem; sadece index.html ve static klasöründeki "
+            "CSS/JS dosyalarını değiştirebilirim.")}
+    try:
+        current = target.read_text(encoding="utf-8") if target.exists() else ""
+    except Exception:
+        return {"ok": False, "cevap": "Hedef dosya okunamadı."}
+
     old, new = d.get("old_string") or "", d.get("new_string") or ""
     # --- guvenlik dogrulamalari ---
-    if not old or old not in html:
-        return {"ok": False, "cevap": "Değişecek yeri bulamadım, daha açık tarif eder misin?"}
-    if html.count(old) != 1:
-        return {"ok": False, "cevap": "Değişiklik birden fazla yere uyuyor; daha belirgin söyler misin?"}
+    if not target.exists():                       # YENI dosya olusturma
+        if not new.strip():
+            return {"ok": False, "cevap": "Yeni dosya için içerik üretemedim."}
+    else:                                          # MEVCUT dosyada find/replace
+        if not old or old not in current:
+            return {"ok": False, "cevap": "Değişecek yeri bulamadım, daha açık tarif eder misin?"}
+        if current.count(old) != 1:
+            return {"ok": False, "cevap": "Değişiklik birden fazla yere uyuyor; daha belirgin söyler misin?"}
     if _line_count(old) > MAX_LINES or _line_count(new) > MAX_LINES:
         return {"ok": False, "cevap": f"Bu değişiklik çok büyük (max {MAX_LINES} satır). Daha küçük parçalara böl."}
 
     _PENDING[kullanici] = {"aciklama": d.get("aciklama") or "arayüz değişikliği",
-                           "old": old, "new": new}
+                           "old": old, "new": new, "target": str(target),
+                           "yeni_dosya": not target.exists()}
     onizle = new.strip()
     if len(onizle) > 400:
         onizle = onizle[:400] + "…"
+    dosya_not = "" if target.name == "index.html" else f" (dosya: {target.name})"
     return {"ok": True, "cevap": (
-        f"Şunu yapacağım: {d.get('aciklama')}\n\n"
+        f"Şunu yapacağım: {d.get('aciklama')}{dosya_not}\n\n"
         f"Önizleme (yeni hâli):\n{onizle}\n\n"
         "Onaylıyorsan 'onayla' yaz; uygulayıp sayfayı yenilemeni isteyeceğim. "
         "Vazgeçersen başka bir şey yaz.")}
@@ -165,28 +249,51 @@ def apply_pending(kullanici) -> dict:
         return {"ok": True, "cevap": "Bekleyen bir değişiklik yok."}
     _PENDING.pop(kullanici, None)
 
-    try:
-        original = TEMPLATE.read_text(encoding="utf-8")
-    except Exception:
-        return {"ok": False, "cevap": "Arayüz dosyası okunamadı."}
-
     old, new, aciklama = pend["old"], pend["new"], pend["aciklama"]
-    if old not in original or original.count(old) != 1:
-        return {"ok": False, "cevap": "Değişiklik artık uygulanamıyor (dosya değişmiş)."}
+    # Hedefi yeniden guvenle cozumle (pending'deki ham yola guvenme)
+    target = _resolve_target(pend.get("target"))
+    if target is None:
+        # eski kayit: tam yol stringi gelmis olabilir -> dosya adina indir
+        target = _resolve_target(Path(pend.get("target", "")).name) if pend.get("target") else TEMPLATE
+    if target is None:
+        return {"ok": False, "cevap": "Hedef dosya artık geçerli değil, iptal ettim."}
 
-    yeni = original.replace(old, new, 1)
+    yeni_dosya = not target.exists()
+    if yeni_dosya:
+        original = None
+        yeni = new
+    else:
+        try:
+            original = target.read_text(encoding="utf-8")
+        except Exception:
+            return {"ok": False, "cevap": "Hedef dosya okunamadı."}
+        if old:
+            if old not in original or original.count(old) != 1:
+                return {"ok": False, "cevap": "Değişiklik artık uygulanamıyor (dosya değişmiş)."}
+            yeni = original.replace(old, new, 1)
+        else:
+            yeni = new                              # tam dosya icerigini degistir
 
-    # --- uygulamadan once dogrula: JS sozdizimi + yapisal cogur ---
-    if not _structurally_ok(yeni):
-        return {"ok": False, "cevap": "Değişiklik sayfayı bozacaktı (yapısal kontrol), iptal ettim."}
-    TEMPLATE.write_text(yeni, encoding="utf-8")
-    if not _js_ok(yeni):
-        TEMPLATE.write_text(original, encoding="utf-8")    # geri al
-        return {"ok": False, "cevap": "Değişiklik JavaScript hatası verdi, geri aldım. Değişiklik yapılamadı."}
+    # --- uygulamadan once/sonra dogrula (dosya tipine gore) ---
+    ok, hata = _validate(target, yeni)
+    if not ok and not target.name.endswith(".js"):
+        return {"ok": False, "cevap": hata}         # yazmadan reddet
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(yeni, encoding="utf-8")
+    if not ok:                                       # .js: yazip dogrula, bozuksa geri al
+        if original is not None:
+            target.write_text(original, encoding="utf-8")
+        else:
+            try:
+                target.unlink()
+            except Exception:
+                pass
+        return {"ok": False, "cevap": hata}
 
-    # --- git commit (yalniz index.html) ---
+    # --- git commit (yalniz hedef dosya) ---
     try:
-        _git(["add", "src/web/templates/index.html"])
+        rel = str(target.relative_to(ROOT))
+        _git(["add", rel])
         _git(["commit", "-m", f"Bota Sor UI degisikligi: {aciklama[:80]}"])
     except Exception:
         pass

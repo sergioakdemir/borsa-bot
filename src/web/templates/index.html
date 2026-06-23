@@ -213,6 +213,28 @@
   .search{width:100%;background:var(--card);border:1px solid var(--border);color:var(--text);
     border-radius:14px;padding:13px 15px;font-size:15px;outline:none;margin-bottom:11px;min-height:46px}
   .search:focus{border-color:var(--border2)}
+  /* --- arama overlay (kutu altinda, kayarak acilir) --- */
+  .search-wrap{position:relative}
+  .search-overlay{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:200;
+    background:var(--card);border:1px solid var(--border2);border-radius:16px;
+    box-shadow:0 16px 40px rgba(0,0,0,.5);overflow:hidden;max-height:62vh;overflow-y:auto;
+    opacity:0;transform:translateY(-10px);pointer-events:none;
+    transition:transform .2s ease,opacity .2s ease}
+  .search-overlay.open{opacity:1;transform:translateY(0);pointer-events:auto}
+  .sr-grp{font-size:10.5px;color:var(--muted2);text-transform:uppercase;letter-spacing:.5px;
+    font-weight:800;padding:9px 14px 4px}
+  .sr-row{display:flex;align-items:center;gap:11px;padding:9px 14px;cursor:pointer;
+    border-top:1px solid var(--border)}
+  .sr-grp + .sr-row{border-top:none}
+  .sr-row:active{background:rgba(255,255,255,.05)}
+  .sr-av{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;
+    justify-content:center;font-weight:800;color:#fff;flex:0 0 auto;font-size:15px}
+  .sr-main{flex:1;min-width:0}
+  .sr-tk{font-size:14px;font-weight:700}
+  .sr-nm{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sr-right{text-align:right;flex:0 0 auto}
+  /* --- portfoy kartinda BELIRGIN karar etiketi --- */
+  .pill.big{height:30px;padding:0 15px;font-size:15px;font-weight:800;letter-spacing:.4px}
   .filters{display:flex;gap:7px;margin-bottom:4px;flex-wrap:wrap}
   .filters button{flex:0 0 auto;background:var(--card);border:1px solid var(--border);color:var(--muted);
     border-radius:999px;padding:8px 15px;font-size:12.5px;font-weight:600;min-height:38px}
@@ -557,6 +579,10 @@ function esc(s){return(s??"").toString().replace(/[<>&]/g,c=>({'<':'&lt;','>':'&
 function empty(m){return`<div class="empty">${m}</div>`}
 function mtag(m){const l=m==="abd"?"ABD":m==="kripto"?"KRP":"BIST";return`<span class="mtag ${m||'bist'}">${l}</span>`}
 function pill(t,r){return t?`<span class="pill ${r||'gray'}">${esc(t)}</span>`:""}
+// Belirgin karar etiketi: AL=yesil, SAT/AZALT=kirmizi, TUT/digeri=gri
+function pillBig(t){if(!t)return"";const u=(t||"").toLocaleUpperCase("tr");
+  const cls=u.indexOf("AL")===0?"green":(u.indexOf("SAT")===0||u.indexOf("AZALT")>=0)?"red":"gray";
+  return`<span class="pill big ${cls}">${esc(t)}</span>`}
 function priceBlock(s){return s.fiyat==null?"":`<div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>`}
 function statusLine(s){return s.statusPhrase?`<div class="status c-${s.statusColor||'gray'}">${esc(s.statusPhrase)}</div>`:""}
 function key(s){return(s.market||"bist")+":"+s.ticker}
@@ -637,6 +663,15 @@ function sanalBorcHTML(){if(CUR_USER!=="ufuk")return"";
   const today=Date.UTC(now.getFullYear(),now.getMonth(),now.getDate());
   const gun=Math.max(0,Math.floor((today-start)/86400000));const borc=gun*10;
   return`<div class="sanal-borc">💸 Sanal Borç: $${borc} (ve artmaya devam ediyor...)</div>`}
+// Takip Ettiklerim karti: renkli ikon + ticker + isim + fiyat + degisim + (varsa) karar
+function takipCard(s){const k=reg(s);const av=ghAvColor(s.ticker);
+  return`<div class="card" onclick="openStock('${k}')" style="padding:13px 15px">
+    <div class="row"><div style="display:flex;align-items:center;gap:11px;min-width:0">
+      <span class="sr-av" style="background:${av}">${esc((s.ticker||"?").slice(0,1))}</span>
+      <div style="min-width:0"><div class="sr-tk">${esc(s.ticker)}</div><div class="sr-nm">${esc(s.isim||"")}</div></div></div>
+      <div style="display:flex;align-items:center;gap:10px;flex:0 0 auto">
+        <div style="text-align:right"><div class="price">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}">${pct(s.gunluk)}</div></div>
+        ${s.etiket?pillBig(s.etiket):""}</div></div></div>`}
 async function loadBugun(){const el=document.getElementById("page-bugun");
   el.innerHTML=`<div class="hello">…</div>${skel(3)}`;
   try{const d=await(await fetch("/api/today"+uq())).json();
@@ -648,6 +683,8 @@ async function loadBugun(){const el=document.getElementById("page-bugun");
     else{h+=`<div id="acc-list">${d.hisseler.slice(0,3).map(accCard).join("")}</div>`;
       const rest=d.hisseler.slice(3);
       if(rest.length)h+=`<button class="seemore" onclick="this.outerHTML=document.getElementById('acc-rest').innerHTML">Tümünü gör (${rest.length})</button><template id="acc-rest">${rest.map(accCard).join("")}</template>`;}
+    if(d.takip_listesi&&d.takip_listesi.length){
+      h+=`<div class="sec-title">Takip Ettiklerim</div>${d.takip_listesi.map(takipCard).join("")}`;}
     if(d.onemli_haber){const n=d.onemli_haber;const ec=n.etki==="Pozitif"?"green":n.etki==="Negatif"?"red":"gray";const nk=n.ticker?reg({ticker:n.ticker,market:'bist',isim:n.ticker}):"";
       h+=`<div class="sec-title">Bugünün önemli haberi</div>
         <div class="news" ${nk?`onclick="openStock('${nk}')"`:""}>${newsVisual(n)}
@@ -666,8 +703,9 @@ async function fillOverview(){if(!CUR_USER)return;try{const d=await(await fetch(
 function posCardHTML(p){const k=reg(p);
   const kz=p.kz!=null?` · <span class="${signCls(p.kz)}">K/Z: ${money(p.kz,p.para_birimi)} (${pct(p.kz_yuzde)})</span>`:"";
   return`<div class="card" onclick="openStock('${k}')">
-    <div class="row"><div class="name">${esc(p.isim)} ${mtag(p.market)} ${pill(p.karar,p.karar_renk)}</div>
-      <button class="dots" onclick="event.stopPropagation();posMenu('${k}',${p.id},'${esc(p.ticker)}')">⋯</button></div>
+    <div class="row"><div class="name">${esc(p.isim)} ${mtag(p.market)}</div>
+      <div style="display:flex;align-items:center;gap:9px;flex:0 0 auto">${pillBig(p.karar)}
+        <button class="dots" onclick="event.stopPropagation();posMenu('${k}',${p.id},'${esc(p.ticker)}')">⋯</button></div></div>
     <div class="pline">${esc(p.ticker)} · ${fmt(p.adet,0)} adet${p.alis!=null?` · Maliyet: ${money(p.alis,p.para_birimi)}`:""}</div>
     ${p.guncel!=null?`<div class="pline">Güncel: ${money(p.guncel,p.para_birimi)}${kz}</div>`:""}
     ${p.cardText?`<div class="cardtext">${esc(p.cardText)}</div>`:""}
@@ -827,7 +865,7 @@ function openDecision(id){const r=DEC_INDEX[id];if(!r)return;
 /* ============ RADAR ============ */
 let radarTimer=null;
 async function loadRadar(){const el=document.getElementById("page-radar");
-  el.innerHTML=`<input class="search" id="radar-search" placeholder="BIST · ABD · Kripto — ara…" oninput="radarSearch(this.value)">
+  el.innerHTML=`<div class="search-wrap"><input class="search" id="radar-search" autocomplete="off" placeholder="BIST · ABD · Kripto — ara…" oninput="searchInput(this.value)" onfocus="searchInput(this.value)"><div class="search-overlay" id="search-overlay"></div></div>
     <div id="gh-sec"></div>
     <div class="filters">${["all","bist","abd","kripto"].map(f=>`<button class="${f===RADAR_FILTER?'active':''}" onclick="setRadarFilter('${f}')">${f==="all"?"Tümü":f==="bist"?"BIST":f==="abd"?"ABD":"Kripto"}</button>`).join("")}</div>
     <div id="radar-body">${skel(4)}</div>`;
@@ -876,19 +914,49 @@ function renderRadar(){const b=document.getElementById("radar-body");if(!RADAR_D
   h+=`<div class="sec-title">İzlemeye alınanlar</div>`+(iz.length?iz.map(radarCard).join(""):empty("Takip listen boş"));
   h+=`<div class="sec-title">Riskli görünenler</div>`+(ri.length?ri.map(radarCard).join(""):empty("Riskli sinyal yok"));
   b.innerHTML=h}
-function radarSearch(q){clearTimeout(radarTimer);q=(q||"").trim();if(q.length<1){renderRadar();return}
-  const b=document.getElementById("radar-body");b.innerHTML=`<div class="spin">Aranıyor…</div>`;
-  radarTimer=setTimeout(async()=>{try{const list=await(await fetch("/api/search?market=all&q="+encodeURIComponent(q))).json();
-    b.innerHTML=list.length?`<div class="sec-title">"${esc(q)}" sonuçları</div>`+list.map(s=>radarCard({...s,cardText:(s.ozet||"").slice(0,120)})).join(""):empty(`"${esc(q)}" için sonuç yok`);
-  }catch(e){b.innerHTML=empty("Arama yapılamadı")}},300)}
+// Arama: 200ms debounce, min 2 karakter, kutu altinda kayan overlay.
+function searchInput(q){clearTimeout(radarTimer);q=(q||"").trim();
+  const ov=document.getElementById("search-overlay");if(!ov)return;
+  if(q.length<2){ov.classList.remove("open");ov.innerHTML="";return}
+  radarTimer=setTimeout(()=>doSearch(q),200)}
+async function doSearch(q){const ov=document.getElementById("search-overlay");if(!ov)return;
+  try{const list=await(await fetch(`/api/search?market=all&q=${encodeURIComponent(q)}${CUR_USER?`&kullanici=${encodeURIComponent(CUR_USER)}`:""}`)).json();
+    if(!Array.isArray(list)||!list.length){ov.innerHTML=`<div class="sr-grp">"${esc(q)}" için sonuç yok</div>`;ov.classList.add("open");return}
+    // Sira: 1) Portfoy, 2) Takip, 3) BIST/diger
+    const groups=[["portfoy","Portföyüm"],["takip","Takip Listem"],["bist","BIST · Diğer"]];
+    let h="";
+    for(const [key,lbl] of groups){const items=list.filter(s=>(s.grup||"bist")===key);
+      if(!items.length)continue;
+      h+=`<div class="sr-grp">${lbl}</div>`+items.slice(0,8).map(searchRow).join("");}
+    ov.innerHTML=h;ov.classList.add("open");
+  }catch(e){ov.innerHTML=`<div class="sr-grp">Arama yapılamadı</div>`;ov.classList.add("open");}}
+function searchRow(s){const k=reg(s);const av=ghAvColor(s.ticker);
+  return`<div class="sr-row" onclick="searchPick('${k}')">
+    <span class="sr-av" style="background:${av}">${esc((s.ticker||"?").slice(0,1))}</span>
+    <div class="sr-main"><div class="sr-tk">${esc(s.ticker)}${mtag(s.market)}</div><div class="sr-nm">${esc(s.isim||"")}</div></div>
+    <div class="sr-right"><div class="price" style="font-size:14px">${money(s.fiyat,s.para_birimi)}</div><div class="chg ${signCls(s.gunluk)}" style="font-size:12px">${pct(s.gunluk)}</div></div>
+  </div>`}
+function searchPick(k){closeSearch();openStock(k)}
+function closeSearch(){const ov=document.getElementById("search-overlay");if(ov)ov.classList.remove("open");
+  const inp=document.getElementById("radar-search");if(inp)inp.value="";}
+// Disari tiklayinca arama overlay'ini kapat
+document.addEventListener("click",e=>{if(!e.target.closest(".search-wrap")){
+  const ov=document.getElementById("search-overlay");if(ov)ov.classList.remove("open");}});
 
 /* ============ BOTA SOR ============ */
+// Varsayilan hazir sorular; CUR_USER icin /api/chat-suggestions ile kisisellesir.
 const PRESETS=["Bugün portföyümde dikkat etmem gereken ne var?","En riskli hissem hangisi?","Hangi hisseyi azaltmalıyım?","Bugün yeni alım yapılır mı?","THYAO neden TUT?"];
-let CHAT=[];
+let CHAT=[],SUGGESTIONS=null;
+function presetsHTML(list){return`<div class="presets">${(list||PRESETS).map(p=>`<button class="preset" onclick="askPreset(this.textContent)">${esc(p)}</button>`).join("")}</div>`}
 function loadSor(){const el=document.getElementById("page-sor");
-  el.innerHTML=`<div class="presets">${PRESETS.map(p=>`<button class="preset" onclick="askPreset(this.textContent)">${esc(p)}</button>`).join("")}</div>
+  el.innerHTML=`<div id="preset-box">${presetsHTML(SUGGESTIONS)}</div>
     <div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Portföyün, hisselerin ve piyasa görünümü hakkında soru sorabilirsin. Cevaplar elimizdeki güncel verilere göre hazırlanır.</div>`}</div>`;
-  scrollChat()}
+  scrollChat();
+  // kullaniciya ozel sorulari arka planda cek ve guncelle
+  if(CUR_USER){fetch("/api/chat-suggestions?kullanici="+encodeURIComponent(CUR_USER))
+    .then(r=>r.json()).then(d=>{if(d&&Array.isArray(d.sorular)&&d.sorular.length){
+      SUGGESTIONS=d.sorular;const box=document.getElementById("preset-box");if(box)box.innerHTML=presetsHTML(SUGGESTIONS);}})
+    .catch(()=>{});}}
 function renderBubble(m){
   if(m.rol==="bot"){
     return`<div class="bubble-wrap"><div class="bubble bot">${esc(m.metin)}</div>`+
