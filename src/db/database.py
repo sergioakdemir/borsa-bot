@@ -229,6 +229,8 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE decisions ADD COLUMN tahmini_sure INTEGER")
     if "ilk_gun_degisim" not in cols_d:     # AL/SAT 1. islem gunu fiyat degisimi (%)
         c.execute("ALTER TABLE decisions ADD COLUMN ilk_gun_degisim REAL")
+    if "piyasa_farki" not in cols_d:        # hisse degisimi - BIST-100 degisimi (piyasaya gore)
+        c.execute("ALTER TABLE decisions ADD COLUMN piyasa_farki REAL")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -424,6 +426,17 @@ def user_id_by_ad(ad):
         return r["id"] if r else None
 
 
+def portfolio_last_update(kullanici_id) -> str | None:
+    """Kullanicinin portfoyundeki en yeni pozisyon tarihi (alim_tarihi, ISO).
+    'Portfoyun N gun guncellenmedi' uyarisi icin proxy. Bos portfoy -> None."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT MAX(alim_tarihi) AS son FROM portfoy WHERE kullanici_id=?",
+            (kullanici_id,)).fetchone()
+        return r["son"] if r and r["son"] else None
+
+
 def list_portfolio(kullanici_id=None) -> list[dict]:
     init_db()
     with get_conn() as c:
@@ -501,14 +514,21 @@ def list_decisions(limit: int = 100) -> list[dict]:
             "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))]
 
 
-def set_decision_outcome(decision_id, sonuc, yanlis_sebep=None) -> None:
+def set_decision_outcome(decision_id, sonuc, yanlis_sebep=None,
+                         piyasa_farki=None) -> None:
+    """Karar sonucunu (DOGRU/YANLIS metni) yazar. piyasa_farki verilirse
+    (hisse degisimi - BIST-100 degisimi) ayni kayda islenir."""
     init_db()
     with get_conn() as c:
+        sets, args = ["sonuc=?"], [sonuc]
         if yanlis_sebep is not None:
-            c.execute("UPDATE decisions SET sonuc=?, yanlis_sebep=? WHERE id=?",
-                      (sonuc, yanlis_sebep, decision_id))
-        else:
-            c.execute("UPDATE decisions SET sonuc=? WHERE id=?", (sonuc, decision_id))
+            sets.append("yanlis_sebep=?")
+            args.append(yanlis_sebep)
+        if piyasa_farki is not None:
+            sets.append("piyasa_farki=?")
+            args.append(piyasa_farki)
+        args.append(decision_id)
+        c.execute(f"UPDATE decisions SET {', '.join(sets)} WHERE id=?", args)
 
 
 def mark_last_decision_wrong(ticker, yanlis_sebep="kullanici_bildirimi"):

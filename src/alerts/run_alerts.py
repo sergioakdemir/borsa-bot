@@ -76,6 +76,107 @@ def _son_karar(ticker):
     return _karar_map().get((ticker or "").upper())
 
 
+_STOP_MAP = None
+
+
+def _stop_loss_map():
+    """ai_commentary.json'dan {TICKER: stop_seviyesi(float)} (bir kez yükle).
+
+    Once AI'nin 'stop_loss' metnindeki sayiyi parse eder ('Y TL altina duserse cik');
+    metin yoksa deterministik 'stop_loss_seviyesi' (TUT'ta dolan sayi) yedek alinir."""
+    global _STOP_MAP
+    if _STOP_MAP is None:
+        _STOP_MAP = {}
+        try:
+            import json
+            data = json.loads(_COMMENTARY_PATH.read_text(encoding="utf-8"))
+            for rec in (data if isinstance(data, list) else []):
+                t = (rec.get("ticker") or "").upper()
+                if not t:
+                    continue
+                seviye = _parse_stop_level(rec.get("stop_loss"))
+                if seviye is None:
+                    sv = rec.get("stop_loss_seviyesi")
+                    seviye = float(sv) if isinstance(sv, (int, float)) and sv else None
+                if seviye is not None:
+                    _STOP_MAP.setdefault(t, seviye)
+        except Exception:
+            pass
+    return _STOP_MAP
+
+
+def _parse_stop_level(metin):
+    """'88 TL altina duserse cik' / '270,5 TL' / '$88 altina' -> 88.0 (float) | None.
+    Metindeki ILK sayiyi (binlik nokta + ondalik virgul destekli) ceker."""
+    import re
+    if not metin:
+        return None
+    m = re.search(r"\d[\d.,]*", str(metin))
+    if not m:
+        return None
+    s = m.group(0).rstrip(".,")
+    if "," in s and "." in s:           # 1.234,56 -> 1234.56
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:                       # 270,5 -> 270.5
+        s = s.replace(",", ".")
+    try:
+        v = float(s)
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def check_stop_loss(now=None):
+    """PORTFOY STOP-LOSS kontrolu (30 dk'lik taramada calisir).
+
+    Her kullanicinin portfoyundeki hisseler icin ai_commentary.json'daki stop_loss
+    seviyesini okur; guncel fiyat bu seviyenin ALTINA dustuyse o KULLANICIYA ozel
+    Telegram bildirimi gonderir. Ayni hisse-kullanici icin gunde bir kez (spam onleme).
+    """
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    smap = _stop_loss_map()
+    if not smap:
+        return 0
+    today = now.date().isoformat()
+    tetik = 0
+    try:
+        users = db.list_users()
+    except Exception:
+        return 0
+    for u in users:
+        uid = u.get("id")
+        try:
+            pozisyonlar = db.list_portfolio(uid)
+        except Exception:
+            continue
+        for p in pozisyonlar:
+            tkr = (p.get("ticker") or "").upper().replace(".IS", "")
+            seviye = smap.get(tkr)
+            if seviye is None:
+                continue
+            usd = (p.get("para_birimi") or "TL").upper() == "USD"
+            sym = tkr if usd else f"{tkr}.IS"
+            fiyat = _alarm_price(sym)
+            if fiyat is None or fiyat >= seviye:
+                continue
+            # Spam onleme: bu hisse-kullanici icin bugun zaten gonderildi mi?
+            anahtar = f"STOPLOSS:{uid}"
+            if anahtar in db.alert_levels_today(tkr, today):
+                continue
+            db.record_alert(tkr, today, anahtar, fiyat)
+            birim = "$" if usd else "TL"
+            msg = (f"🔴 <b>STOP-LOSS TETİKLENDİ: {tkr}</b> {fiyat:g} {birim} — "
+                   f"Bot hedefi {seviye:g} {birim} altına düştü. "
+                   "Pozisyonu gözden geçir.")
+            if _notify_alarm(uid, msg):
+                tetik += 1
+                print(f"[{now:%Y-%m-%d %H:%M}] [stop-loss] {tkr} {fiyat} < "
+                      f"{seviye} -> kullanici {uid} bildirildi.")
+    return tetik
+
+
 def _seviye(change_abs, portfoyde):
     """Hareketi içsel uyarı seviyesine indirger: 'ACIL' (ani), 'IZLE' (dikkat) veya None.
     Eşik listeye göre: portföy %2.5, radar %3; %5+ ani."""
@@ -459,6 +560,12 @@ def main():
 
     # Şartlı senaryo kontrolü (makro: usdtry; gün içi her taramada)
     _senaryo_kontrol_ve_bildir(now)
+
+    # Portföy stop-loss kontrolü (kullanıcıya özel, günde bir kez)
+    try:
+        check_stop_loss(now)
+    except Exception as e:
+        print(f"[stop-loss] kontrol hatasi: {type(e).__name__}")
 
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")

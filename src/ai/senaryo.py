@@ -12,11 +12,28 @@ EMOJİ: sadece izinli set (🟢🟡🔴⚡📰).
 """
 import json
 import os
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 TAKIP_PATH = ROOT / "data" / "senaryo_takip.json"
 HABER_MODEL = "claude-haiku-4-5"
+_TZ = ZoneInfo("Europe/Istanbul")
+
+# Anlam (Haiku) kontrolu icin gunluk butce: ~$0.001/kontrol -> 15 kontrol ~ $0.015/gun
+_MAX_HAIKU_GUNLUK = 15
+
+# Haber basliginin senaryoyu ANLAMCA tetikleyip tetiklemedigini soran sema
+_TETIK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tetikleniyor": {"type": "boolean",
+                         "description": "Basliklardan biri bu senaryoyu tetikliyor mu"},
+    },
+    "required": ["tetikleniyor"],
+    "additionalProperties": False,
+}
 
 _SENARYO_SCHEMA = {
     "type": "object",
@@ -143,6 +160,37 @@ def _haber_tetik(s, basliklar) -> bool:
     return any(k in metin for k in kelimeler)
 
 
+def _haber_tetik_semantik(s, basliklar, client=None) -> bool:
+    """ANLAM kontrolu (Haiku): kelime eşleşmese de başlıklar senaryoyu tetikliyor mu?
+    Örn. senaryo 'ABD-İran anlaşırsa THYAO rahatlar', başlık 'Washington ve Tahran
+    müzakere masasına oturdu' -> evet. Anahtar yok/hata -> False (sessiz)."""
+    if not basliklar or not os.environ.get("ANTHROPIC_API_KEY"):
+        return False
+    senaryo_metin = (s.get("metin") or "").strip()
+    if not senaryo_metin:
+        return False
+    try:
+        import anthropic
+        client = client or anthropic.Anthropic()
+        haber_txt = "\n".join(f"- {b}" for b in list(basliklar)[:12] if b)
+        sistem = (
+            "Bir borsa senaryosunun bugünkü haber başlıklarıyla GERÇEKLEŞİP "
+            "gerçekleşmediğini değerlendiriyorsun. Kelimeler farklı olsa bile AYNI "
+            "gelişme anlatılıyorsa (eş anlam, dolaylı ifade, şehir/lider adı vb.) "
+            "tetikleniyor=true de. Yalnızca açık bir anlam eşleşmesi varsa true; "
+            "emin değilsen false. Sadece şemaya uygun JSON dön.")
+        icerik = (f"Senaryo: {senaryo_metin}\n\nBugünkü başlıklar:\n{haber_txt}\n\n"
+                  "Bu başlıklardan biri bu senaryoyu tetikliyor mu?")
+        resp = client.messages.create(
+            model=HABER_MODEL, max_tokens=60, system=sistem,
+            messages=[{"role": "user", "content": icerik}],
+            output_config={"format": {"type": "json_schema", "schema": _TETIK_SCHEMA}})
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        return bool(json.loads(text).get("tetikleniyor"))
+    except Exception:
+        return False
+
+
 def kontrol_et(basliklar=None, guncel_usdtry=None, guncel_bist_gunluk=None) -> list:
     """Bekleyen senaryoları kontrol eder; gerçekleşenleri döndürür ve durumu günceller.
 
@@ -155,11 +203,35 @@ def kontrol_et(basliklar=None, guncel_usdtry=None, guncel_bist_gunluk=None) -> l
     basliklar = basliklar or []
     tetiklenen = []
     degisti = False
+
+    # Gunluk Haiku (anlam) kontrol butcesi: tarih degisince sifirlanir
+    bugun = datetime.now(_TZ).date().isoformat()
+    butce = kayit.get("haiku_gunluk") or {}
+    if butce.get("tarih") != bugun:
+        butce = {"tarih": bugun, "sayi": 0}
+    _client = [None]   # lazy paylasilan anthropic client (tek olusturulur)
+
+    def _anlamca_tetikler(s):
+        """Kelime eşleşmedi; bütçe varsa Haiku ile anlam kontrolü yap."""
+        if not basliklar or butce["sayi"] >= _MAX_HAIKU_GUNLUK:
+            return False
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return False
+        if _client[0] is None:
+            try:
+                import anthropic
+                _client[0] = anthropic.Anthropic()
+            except Exception:
+                return False
+        butce["sayi"] += 1
+        return _haber_tetik_semantik(s, basliklar, client=_client[0])
+
     for s in senaryolar:
         if s.get("durum") != "bekliyor":
             continue
         if s.get("tip") == "haber":
-            vurdu = _haber_tetik(s, basliklar)
+            # Once ucuz kelime eslesmesi; tutmazsa Haiku anlam kontrolu (butce dahilinde)
+            vurdu = _haber_tetik(s, basliklar) or _anlamca_tetikler(s)
         else:
             vurdu = (_makro_tetik(s, baseline, guncel_usdtry, guncel_bist_gunluk)
                      or _haber_tetik(s, basliklar))
@@ -171,7 +243,10 @@ def kontrol_et(basliklar=None, guncel_usdtry=None, guncel_bist_gunluk=None) -> l
                              f"<b>{hisse}</b> için <b>{karar}</b>.")
             tetiklenen.append(s)
             degisti = True
-    if degisti:
+    # Butce sayaci degistiyse de (Haiku cagrildi) kaydet -> gunluk limit korunur
+    butce_degisti = kayit.get("haiku_gunluk") != butce
+    kayit["haiku_gunluk"] = butce
+    if degisti or butce_degisti:
         try:
             TAKIP_PATH.write_text(json.dumps(kayit, ensure_ascii=False, indent=2),
                                   encoding="utf-8")

@@ -176,7 +176,9 @@ SYSTEM = (
     "ANALIST KONSENSUSU: Veride 'analist_konsensus' varsa dikkate al (kac kurum, "
     "ortalama hedef fiyat, getiri potansiyeli, AL/TUT/SAT dagilimi). Guclu bir "
     "konsensus puani destekler; senin teknik gorusunle celisiyorsa nedenini kisaca "
-    "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de.\n\n"
+    "belirt. Hedef fiyati kendi rakamin gibi sunma, 'analistlerin ortalama hedefi' de. "
+    "Veride 'analist_konsensus.veri_kalitesi' 'yetersiz' ise (3'ten az analist) bu "
+    "veriye az agirlik ver ve kesin sonuc cikarma; 'bayat' veri zaten verilmez.\n\n"
     "SIRKET SAGLIGI (AGIRLIK ~%40): Veride 'sirket_sagligi' varsa bu sirketin FINANSAL "
     "SAGLIGINI bu verilerle degerlendir ve kararinin yaklasik %40'ini buna dayandir "
     "(teknik/haber kalan %60). Alanlar: F/K (fk), ROE (roe_%), kar marji (kar_marji_%), "
@@ -498,10 +500,18 @@ def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") 
     Tum kaynaklar mevcut filtreden gecer: tazelik (YENI/GUNCEL/ESKI = kademe 0-1-2)
     ve fiyatlanma (FIYATLANDI/FIYATLANMADI/VERI_YOK).
 
-    ABD hisseleri icin KAP ve Turkce RSS uygulanmaz (eslesme olmaz); bos doner.
+    ABD hisseleri icin KAP/Turkce RSS yerine Ingilizce RSS (Yahoo Finance hisse-bazli
+    + Investing.com EN) uygulanir; son 7 gunluk haberler dondurulur. Haberler
+    sonra Haiku etki analizinden gecer (Ingilizce sorun degil).
     """
     if market in ("us", "abd"):
-        return {"bildirimler": [], "haberler": []}
+        try:
+            from src.news.us_news import ticker_news
+            haberler = ticker_news(ticker, within_days=7)
+        except Exception:
+            haberler = []
+        # Bildirimler (30g KAP) ABD'de yok; haberler hem 'bildirimler' hem '7g' listesi.
+        return {"bildirimler": list(haberler), "haberler": haberler}
 
     from src.news.service import get_news_source
     from src.news.freshness import check_news_freshness
@@ -781,13 +791,16 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
             "ozet": sektor.get("ozet"),
             "korelasyonlar": sektor.get("korelasyonlar"),
         }
-    if analist.get("available"):
+    # Bayat analist verisi (>7 gun) AI baglamina KONULMAZ; yetersiz veri kalite
+    # etiketiyle gecer (AI az agirlik verir). 'iyi' veri normal sekilde girer.
+    if analist.get("available") and analist.get("veri_kalitesi") != "bayat":
         payload["analist_konsensus"] = {
             "analist_sayisi": analist.get("analist_sayisi"),
             "ortalama_hedef": analist.get("ortalama_hedef"),
             "potansiyel_%": analist.get("potansiyel"),
             "al": analist.get("al_sayisi"), "tut": analist.get("tut_sayisi"),
             "sat": analist.get("sat_sayisi"), "konsensus": analist.get("konsensus"),
+            "veri_kalitesi": analist.get("veri_kalitesi"),
         }
     if context:
         payload["piyasa_baglami"] = context
@@ -833,12 +846,9 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     if vetoed:
         final_decision = "VETO"
         final_label = f"VETO (risk {v.risk}/10) -> islem yok"
-    elif v.karar == "TUT" and (v.puan or 0) >= 7 and v.risk < 10:
-        # AL ESIGI 7: model TUT dediyse ama puan guclu (>=7) ve risk veto altindaysa
-        # AL'e cevir. Bot artik puan 7+ guclu sinyalde AL veriyor (eskiden esik 8'di).
-        final_decision = "AL"
-        final_label = _LABEL["AL"]
     else:
+        # AI kararina guven: TUT dediyse TUT kalir. AL esigi (puan 7+) zaten prompt'ta
+        # ('AL CESARETI'); kararin uzerine kod ile yazmiyoruz.
         final_decision = v.karar
         final_label = _LABEL[v.karar]
 
@@ -898,7 +908,8 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "haber_sayisi": len(news["haberler"]),
         "haberler": news["haberler"],
         "kullanilan_on_sinyal": sig,
-        "analist": analist if analist.get("available") else None,
+        "analist": (analist if (analist.get("available")
+                                 and analist.get("veri_kalitesi") != "bayat") else None),
         "temel": temel if temel.get("available") else None,
         "hacim_anomalisi": hacim_anom if hacim_anom.get("available") else None,
         "sektor_korelasyonu": sektor if sektor.get("available") else None,
@@ -959,7 +970,7 @@ def _verbose_satir(t, r):
 
 def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
               overview=None, learning=None, poll_interval: int = 30,
-              max_wait: int = 1800) -> list[dict]:
+              max_wait: int = 1800, extra_context=None) -> list[dict]:
     """Sabah brifingi icin TOPLU (Batch API) calistirma. Tum hisse verilerini
     hazirlar, AI yorumlarini TEK batch isteginde gonderir (%50 daha ucuz),
     batch bitene kadar polling yapar (varsayilan 30 dk, 30 sn'de bir) ve
@@ -978,6 +989,8 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     news_src, is_sample = get_news_source(verbose=verbose)
     rss_src = RSSNewsSource()
     context = market_context(rss_src=rss_src, overview=overview)
+    if extra_context:                       # ABD brifingi: abd_gundemi vb. ek baglam
+        context.update(extra_context)
     learning = learning or {}
     if verbose:
         gp = context.get("genel_piyasa") or {}
@@ -1098,7 +1111,7 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     _persist(results, save=save, verbose=verbose)
     return results
 def run(tickers: list[str], save: bool = True, verbose: bool = True,
-        overview=None, learning=None) -> list[dict]:
+        overview=None, learning=None, extra_context=None) -> list[dict]:
     from src.news.service import get_news_source
     from src.db import database as db
     import anthropic
@@ -1113,6 +1126,8 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
     rss_src = RSSNewsSource()                       # Bloomberg HT + Investing + Mynet
     # genel piyasa baglami (1 kez); brifing onceden hesaplamissa onu kullan
     context = market_context(rss_src=rss_src, overview=overview)
+    if extra_context:                       # ABD brifingi: abd_gundemi vb. ek baglam
+        context.update(extra_context)
     learning = learning or {}
     if verbose:
         gp = context.get("genel_piyasa") or {}

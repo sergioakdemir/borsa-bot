@@ -752,6 +752,12 @@ function retBody(){const g=(RET_DATA||{})[RET_TAB];
 function setRetTab(t){RET_TAB=t;
   document.querySelectorAll(".ret-tabs button").forEach((b,i)=>b.classList.toggle("active",RET_TABS[i][0]===t));
   const el=document.getElementById("ret-body");if(el)el.innerHTML=retBody()}
+/* Portföy son güncelleme tarihi (3 günden eskiyse uyarı) */
+function guncellemeHTML(gun){
+  if(gun==null)return"";
+  const metin=gun===0?"bugün güncellendi":(gun===1?"1 gün önce güncellendi":gun+" gün önce güncellendi");
+  if(gun>3)return`<div class="lbl" style="margin-top:8px;color:#d9822b">⚠️ Portföyün ${gun} gündür güncellenmedi — güncel tutarsan önerilerim daha isabetli olur.</div>`;
+  return`<div class="lbl" style="margin-top:8px;opacity:.7">Son güncelleme: ${metin}</div>`}
 
 async function loadPortfoy(){const el=document.getElementById("page-portfoy");
   if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
@@ -763,6 +769,7 @@ async function loadPortfoy(){const el=document.getElementById("page-portfoy");
         ${retHTML(d.getiri)}
         <div class="grid"><div><div class="lbl">Yatırım</div><b>${money(o.maliyet)}</b></div>
           <div><div class="lbl">Toplam K/Z</div><b class="${signCls(o.kz)}">${money(o.kz)}</b></div></div>
+        ${guncellemeHTML(d.son_guncelleme_gun_once)}
         ${d.genel_yorum?`<div class="yorum" id="pf-yorum">${esc(d.genel_yorum)}</div>`:""}</div>`;
     const karne=`<button class="seemore" onclick="openKarne()" style="margin-top:14px">📊 Karne →</button>`;
     if(!d.pozisyonlar.length){el.innerHTML=h+empty("Portföyde pozisyon yok. + ile ekle.")+karne;fillOverview();return}

@@ -183,12 +183,13 @@ def select_targets(market="bist"):
             "portfolio": _portfolio_tickers(), "market": "bist"}
 
 
-def evaluate_all(targets, overview=None, learning=None):
+def evaluate_all(targets, overview=None, learning=None, extra_context=None):
     """Her hedef hisse icin TAM analiz zincirini calistirir (commentary.py).
 
     Zincir: yfinance + KAP(30g) + haber(7g) -> Claude -> karar/puan/risk/...
     ai_commentary.json'a yazar ve her karari decisions tablosuna kaydeder.
     overview/learning: brifingden gecirilen genel piyasa baglami + karar ogrenimi.
+    extra_context: AI baglamina eklenecek ek alanlar (ABD brifingi: abd_gundemi).
     """
     from src.ai import commentary
     if not targets:
@@ -197,12 +198,14 @@ def evaluate_all(targets, overview=None, learning=None):
     # Batch basarisiz olursa tek-tek calistirmaya geri don.
     try:
         return commentary.run_batch(targets, save=True, verbose=True,
-                                    overview=overview, learning=learning)
+                                    overview=overview, learning=learning,
+                                    extra_context=extra_context)
     except Exception as e:
         print(f"  [batch] basarisiz ({type(e).__name__}: {str(e)[:300]}); "
               "tek-tek calistiriliyor")
         return commentary.run(targets, save=True, verbose=True,
-                              overview=overview, learning=learning)
+                              overview=overview, learning=learning,
+                              extra_context=extra_context)
 
 
 def _yorum_cumle(r, limit=180):
@@ -287,7 +290,8 @@ def _plan_cumlesi(overview, now, is_us):
 
 
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
-                  profil_uyari=None, zarar_uyarilari=None, senaryolar=None):
+                  profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
+                  portfoy_guncel_gun=None, us_gundem=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -326,6 +330,9 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     pf_rows = [r for r in valid if _in_pf(r)]
     lines.append("")
     lines.append("<b>PORTFÖY</b>")
+    if portfoy_guncel_gun is not None and portfoy_guncel_gun > 3:
+        lines.append(f"🟡 Portföyün {portfoy_guncel_gun} gündür güncellenmedi — "
+                     "güncel tutarsan önerilerim daha isabetli olur.")
     if pf_rows:
         if zarar_uyarilari:                  # zarardaki pozisyonlar önce (kritik)
             lines += _zarar_satirlari(zarar_uyarilari)
@@ -351,6 +358,17 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             metin = s.get("metin") if isinstance(s, dict) else str(s)
             if metin:
                 lines.append(f"• {_esc(metin)}")
+
+    # ABD GÜNDEMİ — son 24 saatteki ABD piyasa haberleri (yalnız ABD brifingi)
+    if is_us and us_gundem:
+        lines.append("")
+        lines.append("<b>BUGÜN TAKİP · ABD GÜNDEMİ</b>")
+        for h in us_gundem[:5]:
+            baslik = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+            kaynak = h.get("kaynak") if isinstance(h, dict) else ""
+            if baslik:
+                ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
+                lines.append(f"• {_esc(baslik)}{ek}")
 
     if profil_uyari:
         lines.append("")
@@ -420,6 +438,17 @@ def main(market="bist"):
             print(f"  piyasa baglami alinamadi: {type(e).__name__}: {str(e)[:80]}")
             overview = None
 
+    # 2.5) ABD brifingi: son 24 saatteki ABD piyasa gundemi (Reuters/Yahoo/Investing)
+    us_gundem = []
+    if is_us:
+        try:
+            from src.news.us_news import market_news
+            us_gundem = market_news(within_hours=24, limit=8)
+            print(f"  ABD gundemi: {len(us_gundem)} haber (24s)")
+        except Exception as e:
+            print(f"  ABD gundemi alinamadi: {type(e).__name__}: {str(e)[:80]}")
+            us_gundem = []
+
     # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
     try:
         from src.ai.learning import build_learning_notes, weak_sector_warnings
@@ -433,7 +462,13 @@ def main(market="bist"):
         print(f"  karar gecmisi notu alinamadi: {type(e).__name__}")
         learning = {}
 
-    results = evaluate_all(sel["targets"], overview=overview, learning=learning)
+    # ABD gundemini AI baglamina ekle (piyasa_baglami.abd_gundemi)
+    extra_context = None
+    if is_us and us_gundem:
+        extra_context = {"abd_gundemi": [
+            {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")} for h in us_gundem]}
+    results = evaluate_all(sel["targets"], overview=overview, learning=learning,
+                           extra_context=extra_context)
 
     # 4) Paper trading: AL -> sanal alim ac, SAT -> kapat
     try:
@@ -512,10 +547,20 @@ def main(market="bist"):
             zarar_uy = _zarar_uyarilari(u["id"], results)
         except Exception:
             zarar_uy = []
+        # Portföy kaç gündür güncellenmedi? (3 günden eskiyse PORTFÖY'de uyarı)
+        guncel_gun = None
+        try:
+            son = db.portfolio_last_update(u["id"])
+            if son:
+                d = datetime.fromisoformat(str(son)[:10]).date()
+                guncel_gun = (now.date() - d).days
+        except Exception:
+            guncel_gun = None
         msg = build_message(results, sel, now, overview=overview,
                             portfolio=pf, kullanici_ad=u.get("ad"),
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
-                            senaryolar=senaryolar)
+                            senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
+                            us_gundem=us_gundem)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
@@ -524,7 +569,7 @@ def main(market="bist"):
         gonderilen.add(str(tg))
     # DB'de kullanici olarak olmayan env alicilari (TELEGRAM_CHAT_ID/IDS) -> birlesik
     genel = build_message(results, sel, now, overview=overview,
-                          senaryolar=senaryolar)   # portfolio=tum birlesik
+                          senaryolar=senaryolar, us_gundem=us_gundem)   # portfolio=tum birlesik
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:
             continue

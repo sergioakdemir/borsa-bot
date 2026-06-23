@@ -7,7 +7,8 @@ Yanlis cikan kararlar icin ucuz Haiku ile kisa 'neden yanlis' analizi yapilir
 (decisions.yanlis_sebep). Degerlendirme penceresi: AL=5, SAT=3, TUT=10, BEKLE=5 islem gunu.
 
 Kazanma kurali (karar yonune gore):
-  AL / AL_TEMKINLI : fiyat yukseldiyse DOGRU
+  AL / AL_TEMKINLI : fiyat yukseldi VE BIST-100'den %2'den fazla geri kalmadiysa DOGRU
+                     (hisse +%3 ama BIST +%5 ise aslinda kotu karar -> YANLIS)
   SAT / GUCLU_SAT / AZALT : fiyat dustuyse DOGRU
   TUT / BEKLE      : fiyat ~yatay kaldiysa (|degisim| <= %5) DOGRU
   VETO / UZAK_DUR  : islemden kacinildi; fiyat yukselmediyse (<= 0) DOGRU
@@ -46,14 +47,26 @@ def _kapanis_gun(karar: str, tahmini_sure=None) -> int:
     return KAPANIS_GUN_VARSAYILAN
 
 
-def _verdict(karar: str, degisim: float) -> bool:
+# AL kararinin piyasaya gore tolere edilen geri kalmasi (yuzde puan).
+# Hisse yukselse bile BIST-100'den bu kadar fazla geride kaldiysa AL basarisiz sayilir.
+PIYASA_GERI_KALMA = 2.0
+
+
+def _verdict(karar: str, degisim: float, piyasa_farki: float = None) -> bool:
+    """Karar dogru mu? AL'da piyasa kiyasi devreye girer: fiyat yukselmis OLSA bile
+    BIST-100'den PIYASA_GERI_KALMA'dan (%2) fazla geride kaldiysa AL basarisiz sayilir
+    ('hisse +%3 ama BIST +%5' -> aslinda kotu karar)."""
     k = (karar or "").upper()
     if "VETO" in k or "UZAK" in k:   # VETO / UZAK_DUR: girilmedi -> yukselmediyse dogru
         return degisim <= 0
     if "SAT" in k or "AZALT" in k:   # SAT, GUCLU_SAT, AZALT
         return degisim < 0
-    if "AL" in k:           # AL, AL_TEMKINLI
-        return degisim > 0
+    if "AL" in k:           # AL, AL_TEMKINLI: yukseldi VE piyasadan cok geri kalmadi
+        if degisim <= 0:
+            return False
+        if piyasa_farki is not None and piyasa_farki < -PIYASA_GERI_KALMA:
+            return False
+        return True
     return abs(degisim) <= TUT_BANT   # TUT
 
 
@@ -91,10 +104,16 @@ def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
         karar bari ile hedef bar AYNI olup %0 cikmaz ve karar tipinin penceresine uyulur.
     Veri yoksa None.
     """
+    symbol = _market_for(ticker).to_symbol(ticker)
+    return _symbol_change(symbol, karar_tarihi, kapanis_gun)
+
+
+def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
+    """Verilen yfinance sembolu icin karar gunu -> kapanis_gun islem gunu sonraki
+    yuzde degisim (bkz. _price_change). Pencere dolmadiysa/veri yoksa None."""
     from src.data.factory import get_data_source
     import pandas as pd
 
-    symbol = _market_for(ticker).to_symbol(ticker)
     # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
     start = (datetime.fromisoformat(karar_tarihi).date()
              - timedelta(days=12)).isoformat()
@@ -123,6 +142,18 @@ def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
     if not baz:
         return None
     return round((hedef - baz) / baz * 100, 2)
+
+
+def _is_bist(ticker: str) -> bool:
+    """Karar BIST hissesi mi? (US ise BIST-100 kiyasi anlamsiz)."""
+    from src.markets.bist import BIST
+    return isinstance(_market_for(ticker), BIST)
+
+
+def _index_change(karar_tarihi: str, kapanis_gun: int):
+    """BIST-100 (XU100.IS) endeksinin ayni pencere icindeki yuzde degisimi.
+    Veri yoksa None. Hisse degisimi ile ayni bar mantigini kullanir."""
+    return _symbol_change("XU100.IS", karar_tarihi, kapanis_gun)
 
 
 # --- L2: 'Neden yanlis cikti?' kisa Haiku analizi ---
@@ -194,14 +225,23 @@ def run(verbose: bool = True) -> int:
                 print(f"  {r['ticker']} ({r['tarih']}, {r['karar']}): "
                       f"{kg} islem gunu dolmadi / veri yok -> bekliyor")
             continue
-        dogru = _verdict(r["karar"], deg)
+        # PIYASAYA KARSI: BIST hissesinde ayni pencerede BIST-100 degisimini kiyasla
+        piyasa_farki = None
+        if _is_bist(r["ticker"]):
+            bist_deg = _index_change(r["tarih"], kg)
+            if bist_deg is not None:
+                piyasa_farki = round(deg - bist_deg, 2)
+        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
+        if piyasa_farki is not None:
+            sonuc += f" · piyasa {piyasa_farki:+.1f}p"
         # L2: yanlis cikan kararlar icin kisa Haiku sebep analizi
         yanlis_sebep = None
         if not dogru:
             yanlis_sebep = _yanlis_analiz(r["ticker"], r["karar"],
                                           r.get("gerekce"), deg)
-        db.set_decision_outcome(r["id"], sonuc, yanlis_sebep=yanlis_sebep)
+        db.set_decision_outcome(r["id"], sonuc, yanlis_sebep=yanlis_sebep,
+                                piyasa_farki=piyasa_farki)
         guncellenen += 1
         if verbose:
             ek = f"  · sebep: {yanlis_sebep}" if yanlis_sebep else ""

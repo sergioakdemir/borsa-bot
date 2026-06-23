@@ -895,6 +895,16 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         })
 
     toplam_kz = toplam_deger - toplam_maliyet
+    # Portfoyun son guncelleme tarihi (en yeni alim_tarihi) + kac gun once
+    tarihler = [p.get("tarih") for p in pozisyonlar if p.get("tarih")]
+    son_guncelleme = max(tarihler) if tarihler else None
+    gun_once = None
+    if son_guncelleme:
+        try:
+            d = datetime.fromisoformat(str(son_guncelleme)[:10]).date()
+            gun_once = (datetime.now(ZoneInfo("Europe/Istanbul")).date() - d).days
+        except Exception:
+            gun_once = None
     owned_recs = [comm[t] for t in {p["ticker"] for p in pozisyonlar}
                   if t in comm and not comm[t].get("skipped")]
     # Snapshot bazli getiri (gunluk/haftalik/aylik) - yalniz tek kullanici sorusunda
@@ -912,6 +922,8 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             "kz_yuzde": (toplam_kz / toplam_maliyet * 100) if toplam_maliyet else None,
         },
         "getiri": getiri,
+        "son_guncelleme": son_guncelleme,
+        "son_guncelleme_gun_once": gun_once,
     }
     _cache_set(ck, result)
     return result
@@ -2792,10 +2804,43 @@ def _geri_bildirim_yakala(soru):
     return {"ok": True, "cevap": "Geri bildirim için teşekkürler, bunu öğrendim."}
 
 
+# --- Pozisyon bildirimi: "aldım / sattım / pozisyon açtım" -> portföyü güncelle hatırlatması ---
+_POZISYON_KW = ("aldım", "aldim", "satın aldım", "satin aldim", "sattım", "sattim",
+                "pozisyon açtım", "pozisyon actim", "pozisyon aldım", "pozisyon aldim",
+                "giriş yaptım", "giris yaptim", "alım yaptım", "alim yaptim",
+                "satış yaptım", "satis yaptim")
+# Soru/analiz isteyen ifadeler varsa hatırlatma yerine normal AI cevabı verilir.
+_POZISYON_SORU = ("?", "ne yap", "nasıl", "nasil", "öner", "oner", "düşün", "dusun",
+                  "değerlend", "degerlend", " mı", " mi", " mu", " mü", "tut mu",
+                  "sat mı", "al mı")
+
+
+def _pozisyon_hatirlatma_yakala(soru):
+    """Kullanıcı bir işlem yaptığını söylüyorsa ('aldım/sattım/pozisyon açtım') ve
+    bir soru/analiz istemiyorsa, portföyünü güncel tutmasını hatırlat."""
+    low = (soru or "").lower()
+    if not any(k in low for k in _POZISYON_KW):
+        return None
+    if any(s in low for s in _POZISYON_SORU):   # aslında soru soruyor -> AI cevabı versin
+        return None
+    return {"ok": True, "cevap": (
+        "💡 Yeni bir işlem mi yaptın? Portföyünü güncel tutarsan önerilerim daha "
+        "isabetli olur — <b>Portföyüm</b> sekmesinden <b>+</b> ile pozisyonunu "
+        "ekleyebilir veya çıkarabilirsin.")}
+
+
 def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
         return {"ok": False, "cevap": "Bir soru yaz."}
+
+    # --- POZISYON HATIRLATMA: "aldım / sattım / pozisyon açtım" (AI anahtari gerekmez) ---
+    try:
+        poz_res = _pozisyon_hatirlatma_yakala(soru)
+        if poz_res is not None:
+            return poz_res
+    except Exception:
+        pass
 
     # --- PROFIL TAMAMLAMA: kayip toleransi soru/cevap akisi (AI anahtari gerekmez) ---
     try:

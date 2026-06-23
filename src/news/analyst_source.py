@@ -133,14 +133,34 @@ def _borsaveyatirim(ticker):
         return {}
     t = _strip(html)
     # satirlar: "<hedef>₺ <potansiyel> YYYY-AA-GG"
-    rows = re.findall(r"([\d.,]+)\s*₺\s+([\-\d.,]+)\s+\d{4}-\d{2}-\d{2}", t)
-    hedefler = [_num(h) for h, _ in rows if _num(h)]
+    rows = re.findall(r"([\d.,]+)\s*₺\s+([\-\d.,]+)\s+(\d{4}-\d{2}-\d{2})", t)
+    hedefler = [_num(h) for h, _, _ in rows if _num(h)]
     if not hedefler:
         return {}
-    return {
+    tarihler = [d for _, _, d in rows if d]
+    out = {
         "analist_sayisi": len(hedefler),
         "ortalama_hedef": round(sum(hedefler) / len(hedefler), 2),
     }
+    if tarihler:                      # en yeni analist guncelleme tarihi (bayatlik icin)
+        out["son_guncelleme"] = max(tarihler)
+    return out
+
+
+def _veri_kalitesi(son_guncelleme, analist_sayisi):
+    """Analist verisi kalitesi: 'bayat' (>7 gun eski), 'yetersiz' (<3 analist),
+    'iyi' (aksi halde). Tarih yoksa bayatlik bilinemez -> sadece sayiya bakilir."""
+    from datetime import date
+    if son_guncelleme:
+        try:
+            d = date.fromisoformat(son_guncelleme)
+            if (date.today() - d).days > 7:
+                return "bayat"
+        except Exception:
+            pass
+    if not analist_sayisi or analist_sayisi < 3:
+        return "yetersiz"
+    return "iyi"
 
 
 def _konsensus(al, tut, sat):
@@ -169,6 +189,7 @@ def get_analyst_consensus(ticker: str) -> dict:
     sat = hf.get("sat_sayisi", 0)
     ortalama = hf.get("ortalama_hedef") or bvy.get("ortalama_hedef")
     analist = hf.get("analist_sayisi") or bvy.get("analist_sayisi")
+    son_guncelleme = bvy.get("son_guncelleme")
     kaynaklar = []
     if hf:
         kaynaklar.append("hedeffiyat.com.tr")
@@ -185,6 +206,8 @@ def get_analyst_consensus(ticker: str) -> dict:
         "tut_sayisi": tut,
         "sat_sayisi": sat,
         "konsensus": _konsensus(al, tut, sat),
+        "son_guncelleme": son_guncelleme,
+        "veri_kalitesi": _veri_kalitesi(son_guncelleme, analist),
         "kaynak": kaynaklar,
     }
     _CACHE[ticker] = (now, out)

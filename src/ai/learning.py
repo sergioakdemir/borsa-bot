@@ -66,6 +66,14 @@ def build_learning_note(ticker: str, limit: int = 10) -> str | None:
     sebep = next((r.get("yanlis_sebep") for r in rows if r.get("yanlis_sebep")), None)
     if sebep:
         parca += f" Son yanlışının sebebi: {sebep}."
+    # PIYASAYA KARSI: bu hisse piyasadan (BIST-100) surekli geri kaliyorsa uyar
+    farklar = [r.get("piyasa_farki") for r in rows
+               if isinstance(r.get("piyasa_farki"), (int, float))]
+    if len(farklar) >= 2 and all(f < 0 for f in farklar):
+        ort = sum(farklar) / len(farklar)
+        parca += (f" Bu hissede son {len(farklar)} kararın hepsinde fiyat BIST-100'ün "
+                  f"gerisinde kaldı (ort. {ort:+.1f} puan); piyasadan sürekli geri "
+                  "kalıyor, dikkatli ol.")
     return parca
 
 

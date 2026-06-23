@@ -32,8 +32,16 @@
   ],
   "kisisel": [
     "ASELS",
-    "GMSTR.F"
+    "GMSTR.F",
+    "PETKM"
   ],
   "hareketli_esik": 3.0,
-  "kisisel_diger": []
+  "kisisel_diger": [
+    {
+      "ticker": "NVDA",
+      "market": "abd",
+      "isim": "NVDA",
+      "cg_id": ""
+    }
+  ]
 }
