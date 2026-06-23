@@ -369,7 +369,9 @@ def build_message(price_alerts, news_alerts, vol_alerts, now):
 
 
 def _senaryo_kontrol_ve_bildir(now, basliklar=None):
-    """Bekleyen şartlı senaryoları kontrol eder; gerçekleşeni ⚡ ile bildirir."""
+    """Bekleyen şartlı senaryoları kontrol eder; gerçekleşeni ⚡ ile bildirir.
+    Güncel usdtry (makro) + bist100 günlük (piyasa) değerlerini geçer; haber
+    tipi senaryolar için taze başlıklarda anahtar kelime arar."""
     try:
         from src.ai import senaryo
         usd = None
@@ -378,7 +380,14 @@ def _senaryo_kontrol_ve_bildir(now, basliklar=None):
             usd = get_macro().get("usdtry")
         except Exception:
             usd = None
-        tetik = senaryo.kontrol_et(basliklar=basliklar or [], guncel_usdtry=usd)
+        bist_gunluk = None
+        try:                                   # bist100 makro senaryoları için günlük %
+            from src.news.market_overview import get_market_overview
+            bist_gunluk = (get_market_overview() or {}).get("bist100_gunluk_%")
+        except Exception:
+            bist_gunluk = None
+        tetik = senaryo.kontrol_et(basliklar=basliklar or [], guncel_usdtry=usd,
+                                   guncel_bist_gunluk=bist_gunluk)
         if tetik:
             telegram.broadcast("\n\n".join(s["bildirim"] for s in tetik))
             print(f"[{now:%Y-%m-%d %H:%M}] {len(tetik)} senaryo gerçekleşti -> bildirildi.")

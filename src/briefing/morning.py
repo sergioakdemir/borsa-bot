@@ -331,10 +331,7 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
         lines.append("")
         lines.append(profil_uyari)
 
-    msg = "\n".join(lines)
-    if len(msg) > 3500:
-        msg = msg[:3480].rsplit("\n", 1)[0] + "\n…"
-    return msg
+    return "\n".join(lines)
 
 
 def _record_briefing_memory(results):

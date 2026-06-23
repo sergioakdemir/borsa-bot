@@ -167,8 +167,8 @@ def kontrol_et(basliklar=None, guncel_usdtry=None, guncel_bist_gunluk=None) -> l
             s["durum"] = "gerceklesti"
             hisse = s.get("hisse") or ""
             karar = s.get("beklenen_karar") or "BEKLE"
-            s["bildirim"] = (f"⚡ <b>Beklediğimiz gelişme geldi:</b> {s.get('metin')} "
-                             f"→ <b>{hisse} {karar}</b>.")
+            s["bildirim"] = (f"⚡ <b>Beklediğimiz gelişme geldi:</b> {s.get('metin')}. "
+                             f"<b>{hisse}</b> için <b>{karar}</b>.")
             tetiklenen.append(s)
             degisti = True
     if degisti:

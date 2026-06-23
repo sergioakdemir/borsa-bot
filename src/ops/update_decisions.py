@@ -54,6 +54,28 @@ def _verdict(karar: str, degisim: float) -> bool:
     return abs(degisim) <= TUT_BANT   # TUT
 
 
+def _market_for(ticker: str):
+    """Ticker'in market nesnesini doner. decisions tablosunda para_birimi yok;
+    portfoy tablosundan bakilir: USD ise US() (yfinance'te .IS yok, orn. NVDA/SPCX/RXT),
+    degilse BIST() (.IS ekler). Boylece ABD hisseleri icin de veri gelir."""
+    from src.markets.bist import BIST
+    from src.markets.us import US
+    norm = (ticker or "").upper().replace(".IS", "").strip()
+    try:
+        from src.db import database as db
+        with db.get_conn() as c:
+            row = c.execute(
+                "SELECT para_birimi FROM portfoy "
+                "WHERE UPPER(REPLACE(ticker, '.IS', '')) = ? "
+                "ORDER BY (UPPER(para_birimi) = 'USD') DESC LIMIT 1",
+                (norm,)).fetchone()
+        if row and (row[0] or "").upper() == "USD":
+            return US()
+    except Exception:
+        pass
+    return BIST()
+
+
 def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
     """Karar gunundeki kapanis -> kapanis_gun ISLEM GUNU sonraki kapanis yuzde degisimi.
 
@@ -67,10 +89,9 @@ def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
     Veri yoksa None.
     """
     from src.data.factory import get_data_source
-    from src.markets.bist import BIST
     import pandas as pd
 
-    symbol = BIST().to_symbol(ticker)
+    symbol = _market_for(ticker).to_symbol(ticker)
     # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
     start = (datetime.fromisoformat(karar_tarihi).date()
              - timedelta(days=12)).isoformat()
