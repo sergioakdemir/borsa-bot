@@ -643,6 +643,47 @@
   #page-portfoy .pie-wrap{background:var(--glass);
     backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur));
     border:1px solid var(--glass-brd);border-radius:20px}
+
+  /* ---- güncelleme bildirim kartı (Bugün üstü) ---- */
+  .update-card{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 16px;margin-bottom:14px;
+    background:radial-gradient(120% 130% at 0% 0%,rgba(99,102,241,.18),transparent 60%),var(--elev);
+    border:1px solid rgba(99,102,241,.32)}
+  .update-card .uc-l{min-width:0}
+  .update-card .uc-badge{font-size:10.5px;font-weight:800;letter-spacing:.5px;color:var(--blue);
+    text-transform:uppercase;margin-bottom:3px}
+  .update-card .uc-title{font-size:15px;font-weight:700;line-height:1.3;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .update-card .uc-btn{flex:0 0 auto;background:var(--blue);color:#fff;border-radius:12px;
+    padding:9px 14px;font-size:13px;font-weight:700;min-height:40px}
+  .update-card .uc-btn:active{opacity:.8}
+
+  /* ---- changelog liste öğesi (modal + sistem sekmesi) ---- */
+  .cl-item{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:13px 15px;margin-bottom:9px}
+  .cl-item .cl-top{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .cl-item .cl-date{font-size:11.5px;color:var(--muted2);font-weight:700;letter-spacing:.3px}
+  .cl-item .cl-title{font-size:15px;font-weight:700;line-height:1.3}
+  .cl-item .cl-detail{font-size:13.5px;color:var(--muted);line-height:1.5;margin-top:5px}
+
+  /* ---- ayarlar accordion bölümleri ---- */
+  .sacc{background:var(--card);border:1px solid var(--border);border-radius:18px;
+    margin-bottom:10px;overflow:hidden;transition:border-color .2s var(--ease)}
+  .sacc.open{border-color:var(--border2)}
+  .sacc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:16px;cursor:pointer;min-height:56px;-webkit-tap-highlight-color:transparent}
+  .sacc-head:active{opacity:.75}
+  .sacc-t{font-size:15.5px;font-weight:700;letter-spacing:.1px}
+  .sacc-caret{color:var(--muted);font-size:17px;line-height:1;transition:transform .26s var(--ease)}
+  .sacc.open .sacc-caret{transform:rotate(180deg)}
+  .sacc-body{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s var(--ease)}
+  .sacc.open .sacc-body{grid-template-rows:1fr}
+  .sacc-inner{overflow:hidden;min-height:0;padding:0 14px}
+  .sacc.open .sacc-inner{padding-bottom:14px}
+  /* accordion içinde ilk sec-title üst boşluğu sıfırla */
+  .sacc-inner .sec-title:first-child{margin-top:6px}
+  .app-info{font-size:13px;color:var(--muted);line-height:1.6}
+  .app-info b{color:var(--text);font-weight:650}
 </style>
 </head>
 <body>
@@ -752,6 +793,7 @@ const loaded={};
 let CUR_USER=null,curTab="bugun";
 const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"}};
 let STOCK_INDEX={},ALERT_INDEX=[],RADAR_FILTER="all",RADAR_DATA=null;
+let CHANGELOG_DATA=null;
 
 /* ---- format ---- */
 function fmt(n,d=2){if(n==null||isNaN(n))return"—";return Number(n).toLocaleString("tr-TR",{minimumFractionDigits:d,maximumFractionDigits:d})}
@@ -903,10 +945,51 @@ async function loadBugun(){const el=document.getElementById("page-bugun");
     if(d.firsatlar&&d.firsatlar.length){h+=`<div class="sec-title">Fırsat radarı</div>
       <div class="hscroll">${d.firsatlar.map(s=>{const k=reg(s);
         return`<div class="opp ${s.etiket==='AL'?'glow':''}" onclick="openStock('${k}')"><div class="row"><span class="name" style="font-size:14px">${esc(s.ticker)}</span>${pill(s.etiket,s.renk)}</div><div class="why">${esc(s.cardText||s.isim)}</div></div>`}).join("")}</div>`;}
-    el.innerHTML=h;fillOverview();
+    el.innerHTML=h;fillOverview();renderUpdateBanner();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
 async function fillOverview(){if(!CUR_USER)return;try{const d=await(await fetch("/api/overview"+uq())).json();
   if(d.yorum){const a=document.getElementById("ov-text"),b=document.getElementById("pf-yorum");if(a)a.textContent=d.yorum;if(b)b.textContent=d.yorum}}catch(e){}}
+
+/* ============ GÜNCELLEME BİLDİRİMİ (changelog) ============ */
+async function fetchChangelog(){if(CHANGELOG_DATA)return CHANGELOG_DATA;
+  try{const d=await(await fetch("/api/changelog")).json();CHANGELOG_DATA=Array.isArray(d)?d:[]}catch(e){CHANGELOG_DATA=[]}
+  return CHANGELOG_DATA}
+function changelogSeen(){let s="";try{s=localStorage.getItem("bb_changelog_seen")||""}catch(e){}return s}
+function changelogMax(list){return (list||[]).reduce((m,x)=>((x.tarih||"")>m?(x.tarih||""):m),"")}
+async function renderUpdateBanner(){
+  const list=await fetchChangelog();if(!list.length)return;
+  const yeni=list.filter(x=>(x.tarih||"")>changelogSeen());
+  const el=document.getElementById("page-bugun");if(!el)return;
+  const old=document.getElementById("update-banner");if(old)old.remove();
+  if(!yeni.length)return;
+  // En yeni + önemli olanı başlıkta göster (yoksa en yeni)
+  const top=yeni.find(x=>x.onemli)||yeni[0];
+  const div=document.createElement("div");div.className="update-card";div.id="update-banner";
+  div.innerHTML=`<div class="uc-l"><div class="uc-badge">🆕 Yeni güncelleme</div>`+
+    `<div class="uc-title">${esc(top.baslik)}</div></div>`+
+    `<button class="uc-btn" onclick="openChangelog()">Detay →</button>`;
+  el.insertBefore(div,el.firstChild);
+}
+function changelogItemsHTML(list){return (list||[]).map(x=>
+  `<div class="cl-item"><div class="cl-top"><span class="cl-date">${esc(x.tarih)}</span>`+
+  `${x.onemli?'<span class="chip green">Önemli</span>':''}</div>`+
+  `<div class="cl-title">${esc(x.baslik)}</div>`+
+  `<div class="cl-detail">${esc(x.detay)}</div></div>`).join("");
+}
+async function openChangelog(){
+  const list=await fetchChangelog();
+  const yeni=list.filter(x=>(x.tarih||"")>changelogSeen());
+  const goster=yeni.length?yeni:list;
+  ovShow(`<h2 style="font-size:21px;font-weight:700">🆕 Son Güncellemeler</h2>
+    <div class="tick" style="margin-bottom:14px">Botta neler yenilendi</div>
+    ${changelogItemsHTML(goster)}
+    <button class="btn-primary" onclick="markChangelogSeen()">Tamam</button>`);
+}
+function markChangelogSeen(){
+  try{localStorage.setItem("bb_changelog_seen",changelogMax(CHANGELOG_DATA||[]))}catch(e){}
+  const b=document.getElementById("update-banner");if(b)b.remove();
+  closeStock();
+}
 
 /* ============ PORTFOYUM ============ */
 function posRow(p){const k=reg(p);
@@ -1313,22 +1396,50 @@ function onbFinish(){try{localStorage.setItem("bb_onb_skip_"+CUR_USER,"1")}catch
   document.getElementById("onb").classList.remove("open");loaded.ayarlar=false;
   toast("Teşekkürler, seni artık daha iyi tanıyorum");if(curTab==="ayarlar")loadAyarlar()}
 
-/* ============ AYARLAR (profil + hafıza) ============ */
+/* ============ AYARLAR (accordion: profil / bildirim / karne / sistem) ============ */
 let MEM_FILTER="hepsi";
+// Hangi bölümler açık (memFilter re-render'ında konum korunsun diye kalıcı)
+const SACC_OPEN={profil:true,bildirim:false,karne:false,sistem:false};
+function toggleSacc(id){SACC_OPEN[id]=!SACC_OPEN[id];
+  const c=document.getElementById("sacc-"+id);if(c)c.classList.toggle("open",SACC_OPEN[id])}
+function saccHTML(id,baslik,icerik){
+  return`<div class="sacc ${SACC_OPEN[id]?'open':''}" id="sacc-${id}">
+    <div class="sacc-head" onclick="toggleSacc('${id}')">
+      <span class="sacc-t">${baslik}</span><span class="sacc-caret">⌄</span></div>
+    <div class="sacc-body"><div class="sacc-inner">${icerik}</div></div></div>`}
 async function loadAyarlar(){const el=document.getElementById("page-ayarlar");
   if(!CUR_USER){el.innerHTML=empty("Önce kullanıcı seç");return}
   el.innerHTML=skel(3);
-  try{const [pf,mem,al]=await Promise.all([
+  try{const [pf,mem,al,cl]=await Promise.all([
       fetch("/api/profile"+uq()).then(r=>r.json()).catch(()=>({})),
       fetch("/api/memory"+uq()).then(r=>r.json()).catch(()=>({kategoriler:{}})),
-      fetch("/api/alarms"+uq()).then(r=>r.json()).catch(()=>({alarmlar:[]}))]);
+      fetch("/api/alarms"+uq()).then(r=>r.json()).catch(()=>({alarmlar:[]})),
+      fetchChangelog()]);
     let h=`<h2 style="font-size:22px;font-weight:700;margin-bottom:4px">Ayarlar</h2>
-      <div class="tick" style="margin-bottom:14px">Bot seni nasıl tanıyor + hafızası</div>`;
-    h+=profileHTML(pf);
-    h+=alarmsHTML(al.alarmlar||[]);
-    h+=memoryHTML(mem);
+      <div class="tick" style="margin-bottom:14px">Profilin, bildirimler, karne ve sistem</div>`;
+    h+=saccHTML("profil","👤 Profilim",profileHTML(pf)+memoryHTML(mem));
+    h+=saccHTML("bildirim","🔔 Bildirimler",alarmsHTML(al.alarmlar||[]));
+    h+=saccHTML("karne","📊 Karne",karneAyarHTML());
+    h+=saccHTML("sistem","🔧 Sistem",sistemHTML(cl));
     el.innerHTML=h;
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
+// KARNE bölümü: karne + model portföy linki (detay openKarne modalında)
+function karneAyarHTML(){
+  return`<div class="card" style="margin-top:6px"><div class="tick" style="line-height:1.55">`+
+    `Botun gerçek kararlarının başarı karnesi ve botun kendi <b>model portföyü</b> burada.`+
+    `</div></div>`+
+    `<button class="prof-btn" style="width:100%;margin-top:4px" onclick="openKarne()">📊 Karneyi ve Model Portföyü Aç →</button>`}
+// SİSTEM bölümü: son güncellemeler (changelog) + uygulama bilgisi
+function sistemHTML(list){
+  let h=`<div class="sec-title">Son Güncellemeler</div>`;
+  h+=(list&&list.length)?changelogItemsHTML(list):empty("Henüz güncelleme kaydı yok.");
+  h+=`<div class="sec-title">Uygulama Bilgisi</div>
+    <div class="card"><div class="app-info">
+      <b>Borsa Takip</b> — kişisel borsa asistanı<br>
+      Veriler yereldir, izniniz olmadan dışarı çıkmaz.<br>
+      Bot tavsiyeleri yatırım danışmanlığı değildir.
+    </div></div>`;
+  return h}
 // Fiyat Alarmlarım: aktif alarm listesi + silme
 function alarmsHTML(list){
   let h=`<div class="sec-title">Fiyat Alarmlarım</div>`;

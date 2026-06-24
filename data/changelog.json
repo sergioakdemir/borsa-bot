@@ -1,0 +1,7 @@
+[
+  {"tarih": "2026-06-24", "baslik": "Bota Sor güçlendi", "detay": "Artık hisse sorunca fiyat + haber + teknik analiz birleştirilerek ChatGPT seviyesinde yorum yapıyor. Şirket adı yazınca (Aselsan, THY vb.) otomatik tanıyor.", "onemli": true},
+  {"tarih": "2026-06-24", "baslik": "Fiyat cache sistemi", "detay": "Her 5 dakikada 100 BIST hissesi otomatik güncelleniyor. Artık fiyat bilgisi daha hızlı ve güvenilir geliyor.", "onemli": false},
+  {"tarih": "2026-06-23", "baslik": "Karar motoru güçlendi", "detay": "Her karara giriş seviyesi, stop-loss, hedef fiyat ve tetikleyici koşul eklendi. Bot artık somut fiyat seviyeleri veriyor.", "onemli": true},
+  {"tarih": "2026-06-23", "baslik": "Telegram yenilendi", "detay": "5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), sade format, NÖTR haberler artık gelmiyor.", "onemli": true},
+  {"tarih": "2026-06-22", "baslik": "Karne açıldı", "detay": "22 Haziran'dan itibaren botun gerçek kararları takip ediliyor. AL ve SAT başarı oranları ayrı gösteriliyor.", "onemli": true}
+]

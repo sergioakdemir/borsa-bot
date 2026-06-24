@@ -3908,6 +3908,16 @@ def api_gunun_hareketlileri():
     return jsonify(get_gunun_hareketlileri())
 
 
+@app.route("/api/changelog")
+def api_changelog():
+    """Uygulama guncelleme gunlugu (data/changelog.json). En yeni tarih basta."""
+    items = _read_json(DATA / "changelog.json", [])
+    if not isinstance(items, list):
+        items = []
+    items.sort(key=lambda x: (x or {}).get("tarih", ""), reverse=True)
+    return jsonify(items)
+
+
 @app.route("/api/search")
 def api_search():
     return jsonify(get_search(request.args.get("q", ""),
