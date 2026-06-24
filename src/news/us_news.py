@@ -72,6 +72,22 @@ _ACADEMIC_FEEDS = [
     {"ad": "ECB", "url": "https://www.ecb.europa.eu/rss/press.html"},
     {"ad": "Google News Tech",
      "url": "https://news.google.com/rss/search?q=AI+chip+semiconductor&hl=en"},
+    # RSS'i olmayan akademik/kurum kaynaklari Google News aramasi uzerinden takip
+    # edilir (konferanslar, varlik fonlari, RSS vermeyen merkez bankalari).
+    {"ad": "AI Konferanslari",
+     "url": "https://news.google.com/rss/search?q=NeurIPS+OR+ICML+OR+ICLR+CVPR+AI+research&hl=en"},
+    {"ad": "Norveç Varlık Fonu (NBIM)",
+     "url": "https://news.google.com/rss/search?q=Norges+Bank+Investment+Management+NBIM&hl=en"},
+    {"ad": "Suudi PIF",
+     "url": "https://news.google.com/rss/search?q=Saudi+PIF+Public+Investment+Fund+tech&hl=en"},
+    {"ad": "BOJ (Japonya MB)",
+     "url": "https://news.google.com/rss/search?q=Bank+of+Japan+BOJ+interest+rate&hl=en"},
+    {"ad": "PBOC (Çin MB)",
+     "url": "https://news.google.com/rss/search?q=PBOC+China+monetary+policy&hl=en"},
+    {"ad": "BOE (İngiltere MB)",
+     "url": "https://news.google.com/rss/search?q=Bank+of+England+BOE+rate&hl=en"},
+    {"ad": "SNB (İsviçre MB)",
+     "url": "https://news.google.com/rss/search?q=Swiss+National+Bank+SNB&hl=en"},
 ]
 
 # Semantic Scholar arama API'si (RSS degil; JSON doner).
