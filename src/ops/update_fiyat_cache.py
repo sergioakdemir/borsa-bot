@@ -12,6 +12,7 @@ gidilmez, 429 riski azalir. Borsa kapaliysa kapali=true ve deger son kapanistir.
 Calistirma: python -m src.ops.update_fiyat_cache
 """
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime
@@ -20,6 +21,22 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+
+
+def _load_dotenv():
+    """KAP_PROXY_URL (bigpara icin) gibi degiskenleri .env'den ortama yukler."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
 
 _TZ = ZoneInfo("Europe/Istanbul")
 DATA = ROOT / "data"
@@ -31,6 +48,17 @@ WATCHLIST_PATH = CONFIG / "watchlist.json"
 
 # Cache'e her zaman dahil edilecek sabit ABD hisseleri.
 SABIT_ABD = ["NVDA", "SPCX", "RXT", "CNCK"]
+
+# yfinance'in YANLIS fiyatladigi enstrumanlar -> bigpara detay slug'i. yfinance'de
+# (or. GMSTR.IS) eksik bar/yanlis bolunme nedeniyle anormal deger geliyor (ornek:
+# %1000+ gunluk); bunlari yfinance batch'inden cikarip bigpara'dan cekiyoruz.
+# Anahtar = .IS'siz taban kod (portfoy 'GMSTR.F' -> taban 'GMSTR').
+BIGPARA_ONLY = {"GMSTR": "gmstr-qnb-portfoy-gumus-katilim-byf-detay"}
+
+# Tek gunde mantikli sayilan azami |% degisim|. Ustu yfinance veri hatasi sayilir
+# (BIST gunluk fiyat limiti ~%10; fonlarda biraz daha genis tutuyoruz) -> gunluk
+# bilgisi guvenilmez kabul edilip None yazilir (fiyat korunur).
+_MAKUL_GUNLUK_LIMIT = 30.0
 
 
 def _piyasa_acik(market: str, now: datetime) -> bool:
@@ -116,6 +144,12 @@ def _batch_cek(yf_syms: list[str]) -> dict:
             if len(col) >= 2:
                 prev, last = float(col.iloc[-2]), float(col.iloc[-1])
                 chg = ((last - prev) / prev * 100) if prev else None
+                # SANITE: anormal gunluk (or. yfinance eksik bar/bolunme) -> veriyi
+                # yazma; yanlis '%1000' degeri cache'e dusmesin.
+                if chg is not None and abs(chg) > _MAKUL_GUNLUK_LIMIT:
+                    print(f"[uyari] {s} anormal gunluk %{chg:.0f} -> atlandi "
+                          f"(prev={prev:g}, last={last:g})")
+                    continue
                 out[s] = {"fiyat": round(last, 2),
                           "gunluk": round(chg, 2) if chg is not None else None}
             elif len(col) >= 1:
@@ -125,26 +159,79 @@ def _batch_cek(yf_syms: list[str]) -> dict:
     return out
 
 
+def _bigpara_fiyat(slug: str):
+    """bigpara hisse/fon detay sayfasindan {fiyat, gunluk}. yfinance'in yanlis
+    fiyatladigi enstrumanlar (or. GMSTR.F) icin yedek kaynak. Hata -> None."""
+    proxy = os.environ.get("KAP_PROXY_URL")
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    url = f"https://bigpara.hurriyet.com.tr/borsa/hisse-fiyatlari/{slug}/"
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, impersonate="chrome", proxies=proxies, timeout=20)
+        if r.status_code != 200:
+            return None
+        html_txt = r.text
+    except Exception:
+        return None
+    import re
+    pairs = dict(re.findall(
+        r'<span class="name">([^<]+)</span>\s*<span class="value"[^>]*>([^<]+)</span>',
+        html_txt))
+
+    def _num(s):
+        s = (s or "").replace("%", "").replace("&#x2B;", "+").strip()
+        if not s:
+            return None
+        s = s.replace(".", "").replace(",", ".")     # TR sayi: 1.234,56 -> 1234.56
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    fiyat = _num(pairs.get("Son İşlem Fiyatı") or pairs.get("Satış"))
+    if fiyat is None:
+        return None
+    gunluk = _num(pairs.get("Günlük Değişim %"))
+    return {"fiyat": round(fiyat, 2),
+            "gunluk": round(gunluk, 2) if gunluk is not None else None}
+
+
 def guncelle() -> dict:
     """Tum hisseleri cekip data/fiyat_cache.json'a yazar; ozet sayilari dondurur."""
     now = datetime.now(_TZ)
     sembol_market = _semboller()
-    # ticker -> yf_sembol ve ters harita (yf_sembol -> ticker)
-    yf_map = {t: _yf_sembol(t, m) for t, m in sembol_market.items()}
-    ters = {sym: t for t, sym in yf_map.items()}
-
-    fiyatlar = _batch_cek(sorted(ters.keys()))
-
+    zaman = now.strftime("%Y-%m-%d %H:%M")
     cache = {}
-    for t, market in sembol_market.items():
+
+    # 1) yfinance batch (BIGPARA_ONLY enstrumanlar haric)
+    yf_tickers = {t: m for t, m in sembol_market.items() if t not in BIGPARA_ONLY}
+    yf_map = {t: _yf_sembol(t, m) for t, m in yf_tickers.items()}
+    ters = {sym: t for t, sym in yf_map.items()}
+    fiyatlar = _batch_cek(sorted(ters.keys()))
+    for t, market in yf_tickers.items():
         d = fiyatlar.get(yf_map[t])
         if not d or d.get("fiyat") is None:
             continue
         cache[t] = {
             "fiyat": d["fiyat"],
             "gunluk": d.get("gunluk"),
-            "guncelleme": now.strftime("%Y-%m-%d %H:%M"),
+            "guncelleme": zaman,
             "kapali": not _piyasa_acik(market, now),
+        }
+
+    # 2) yfinance'in yanlis fiyatladigi enstrumanlar -> bigpara'dan dogru fiyat
+    for t, slug in BIGPARA_ONLY.items():
+        if t not in sembol_market:
+            continue
+        d = _bigpara_fiyat(slug)
+        if not d or d.get("fiyat") is None:
+            print(f"[uyari] {t} bigpara'dan alinamadi (slug={slug})")
+            continue
+        cache[t] = {
+            "fiyat": d["fiyat"],
+            "gunluk": d.get("gunluk"),
+            "guncelleme": zaman,
+            "kapali": not _piyasa_acik("bist", now),
         }
 
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1),

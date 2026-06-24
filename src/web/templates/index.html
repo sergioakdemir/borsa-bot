@@ -304,10 +304,6 @@
     background:var(--amber-bg);border-radius:999px;padding:2px 8px;vertical-align:middle;text-transform:none}
 
   /* ---- sohbet ---- */
-  .presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-  .preset{background:var(--glass);backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur));
-    border:1px solid var(--glass-brd);color:var(--text);border-radius:999px;
-    padding:9px 14px;font-size:12.5px;font-weight:600;min-height:40px}
   .chat{display:flex;flex-direction:column;gap:10px}
   .bubble{max-width:86%;padding:12px 14px;border-radius:18px;font-size:14.5px;line-height:1.5;white-space:pre-line}
   .bubble.user{align-self:flex-end;background:var(--indigo);color:#fff;font-weight:550;border-bottom-right-radius:6px}
@@ -1221,19 +1217,12 @@ document.addEventListener("click",e=>{if(!e.target.closest(".search-wrap")){
   const ov=document.getElementById("search-overlay");if(ov)ov.classList.remove("open");}});
 
 /* ============ BOTA SOR ============ */
-// Varsayilan hazir sorular; CUR_USER icin /api/chat-suggestions ile kisisellesir.
-const PRESETS=["Bugün portföyümde dikkat etmem gereken ne var?","En riskli hissem hangisi?","Hangi hisseyi azaltmalıyım?","Bugün yeni alım yapılır mı?","THYAO neden TUT?"];
-let CHAT=[],SUGGESTIONS=null;
-function presetsHTML(list){return`<div class="presets">${(list||PRESETS).map(p=>`<button class="preset" onclick="askPreset(this.textContent)">${esc(p)}</button>`).join("")}</div>`}
+// Bota Sor: sade gorunum -> sadece sohbet + alttaki input/gonder. Oneri soru
+// (chip/pill) butonlari kaldirildi.
+let CHAT=[];
 function loadSor(){const el=document.getElementById("page-sor");
-  el.innerHTML=`<div id="preset-box">${presetsHTML(SUGGESTIONS)}</div>
-    <div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Portföyün, hisselerin ve piyasa görünümü hakkında soru sorabilirsin. Cevaplar elimizdeki güncel verilere göre hazırlanır.</div>`}</div>`;
-  scrollChat();
-  // kullaniciya ozel sorulari arka planda cek ve guncelle
-  if(CUR_USER){fetch("/api/chat-suggestions?kullanici="+encodeURIComponent(CUR_USER))
-    .then(r=>r.json()).then(d=>{if(d&&Array.isArray(d.sorular)&&d.sorular.length){
-      SUGGESTIONS=d.sorular;const box=document.getElementById("preset-box");if(box)box.innerHTML=presetsHTML(SUGGESTIONS);}})
-    .catch(()=>{});}}
+  el.innerHTML=`<div class="chat" id="chat">${CHAT.length?CHAT.map(renderBubble).join(""):`<div class="bubble bot">Portföyün, hisselerin ve piyasa görünümü hakkında soru sorabilirsin. Cevaplar elimizdeki güncel verilere göre hazırlanır.</div>`}</div>`;
+  scrollChat();}
 function renderBubble(m){
   if(m.rol==="bot"){
     return`<div class="bubble-wrap"><div class="bubble bot">${esc(m.metin)}</div>`+
@@ -1251,7 +1240,6 @@ function copyFallback(t){try{const ta=document.createElement("textarea");ta.valu
   ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();
   document.execCommand("copy");document.body.removeChild(ta)}catch(e){}}
 function scrollChat(){const m=document.querySelector("main");if(m)m.scrollTop=m.scrollHeight}
-function askPreset(p){document.getElementById("chat-text").value=p;sendChat()}
 async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
   inp.value="";
   const gecmis=CHAT.slice(-12).map(m=>({role:m.rol==="bot"?"assistant":"user",content:m.metin}));

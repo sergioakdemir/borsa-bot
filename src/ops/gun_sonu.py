@@ -12,7 +12,9 @@ Format:
 
 Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
 (🟢🟡🔴⚡📰), teknik oran yok, kısa. Kararlar sabah brifinginde üretilen
-ai_commentary.json'dan okunur (ek AI maliyeti yok).
+ai_commentary.json'dan okunur; hisse yorumları gün sonunda TEK Haiku çağrısıyla
+sade/jargonsuz, en fazla 2 cümle + net aksiyon olacak şekilde yeniden yazılır
+(cümleler asla yarım kesilmez). Anahtar yoksa ham gerekçe tam cümlelerle gösterilir.
 """
 import html
 import os
@@ -50,11 +52,74 @@ def _esc(s):
     return html.escape(str(s or ""))
 
 
-def _kisa(metin, limit=160):
+def _tam_cumleler(metin, max_len=240):
+    """Metni TAM CUMLELERE gore kirpar; cumleyi asla yarim birakmaz.
+
+    max_len'i asarsa, son tam cumle sinirina (.!?) kadar olan kismi dondurur;
+    hic cumle siniri yoksa metni oldugu gibi birakir (yarim '…' eklemez)."""
     g = " ".join((metin or "").split())
-    if len(g) > limit:
-        g = g[:limit].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
-    return g
+    if len(g) <= max_len:
+        return g
+    import re
+    parcalar = re.split(r"(?<=[.!?])\s+", g)
+    out = ""
+    for p in parcalar:
+        if out and len(out) + 1 + len(p) > max_len:
+            break
+        out = (out + " " + p).strip()
+    return out or g
+
+
+def _temiz_yorumlar(tickers, kmap):
+    """Portfoy hisseleri icin TEK Haiku cagrisiyla temiz, jargonsuz yorum uretir.
+
+    Her hisse: gunluk dilde, teknik terim icermeyen, EN FAZLA 2 cumle + net aksiyon.
+    BEKLE/TUT'ta neden + ne zaman tekrar bakilacagini soyler. {TICKER: yorum}
+    doner; anahtar yoksa/hata olursa {} (cagiran taraf ham metne duser)."""
+    secili = [t for t in tickers if kmap.get(t) and not kmap.get(t, {}).get("skipped")]
+    if not secili or not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    import json as _json
+    girdi = []
+    for t in secili:
+        r = kmap.get(t) or {}
+        girdi.append({
+            "hisse": t,
+            "karar": r.get("final_decision") or r.get("karar") or "TUT",
+            "gerekce": (r.get("sade_yorum") or r.get("gerekce") or "")[:300],
+            "tekrar_bak": (r.get("tekrar_bak_kosulu") or r.get("aksiyon") or "")[:200],
+        })
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=1000,
+            system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Sana "
+                    "hisse listesi + karar + ham gerekce verilir. Her hisse icin "
+                    "KULLANICIYA donuk, GUNLUK dilde, kisa bir yorum yaz. KURALLAR:\n"
+                    "- TEKNIK TERIM KULLANMA. Sunlari YAZMA: MA10, MA50, hareketli "
+                    "ortalama, 52 hafta zirvesi/dibi, RSI, MACD, destek, direnc, "
+                    "fibonacci, formasyon. Bunlari gunluk dile cevir (or. 'son "
+                    "aylarin tepesinden uzak', 'henuz toparlanma sinyali yok').\n"
+                    "- Her hisse icin MAKSIMUM 2 cumle, sonunda NET aksiyon.\n"
+                    "- Cumleleri ASLA yarim birakma; her yorum tam ve bagimsiz olsun.\n"
+                    "- Karar BEKLE veya TUT ise NEDEN beklenmesi gerektigini ve NE "
+                    "ZAMAN / hangi kosulda tekrar bakilacagini sade dille soyle.\n"
+                    "- Veri/rakam UYDURMA. Markdown/yildiz yok.\n"
+                    "SADECE su JSON'u don (baska metin yok): "
+                    "{\"TICKER\": \"yorum\", ...}"),
+            messages=[{"role": "user", "content":
+                       "Hisseler:\n" + _json.dumps(girdi, ensure_ascii=False)}],
+        )
+        metin = "".join(getattr(b, "text", "") for b in resp.content
+                        if getattr(b, "type", "") == "text").strip()
+        import re
+        m = re.search(r"\{.*\}", metin, re.S)
+        data = _json.loads(m.group(0)) if m else {}
+        return {(k or "").upper(): " ".join(str(v).split())
+                for k, v in data.items() if v}
+    except Exception:
+        return {}
 
 
 def _karar_map():
@@ -126,7 +191,7 @@ def _gun_degisim(ticker, birim="TL"):
         return None, None
 
 
-def _hisse_satiri(rec, ticker, birim="TL"):
+def _hisse_satiri(rec, ticker, birim="TL", yorum_map=None):
     fd = rec.get("final_decision") if rec else None
     kelime = karar_kelime(fd) or "TUT"
     emoji = karar_emoji(fd)
@@ -139,13 +204,17 @@ def _hisse_satiri(rec, ticker, birim="TL"):
     else:
         parca = " (USD)" if usd else ""
     satir = f"{emoji} <b>{_esc(ticker)} — {kelime}</b>{parca}"
-    yorum = _kisa((rec or {}).get("sade_yorum") or (rec or {}).get("gerekce")) if rec else ""
+    # Once temiz AI yorumu (jargonsuz, tam cumle); yoksa ham metni TAM CUMLELERE
+    # gore (yarim kesmeden) goster.
+    yorum = (yorum_map or {}).get((ticker or "").upper())
+    if not yorum and rec:
+        yorum = _tam_cumleler((rec or {}).get("sade_yorum") or (rec or {}).get("gerekce"))
     if yorum:
         satir += f"\n<i>{_esc(yorum)}</i>"
     return satir
 
 
-def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None):
+def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None, yorum_map=None):
     ad = f" · {str(kullanici_ad).capitalize()}" if kullanici_ad else ""
     lines = [f"<b>GÜN SONU</b>{ad} — {now:%d.%m %H:%M}", _esc(_genel_ozet(overview))]
     lines += ["", "<b>PORTFÖY</b>"]
@@ -153,7 +222,8 @@ def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None):
     pf = sorted(portfolio)
     if pf:
         for tkr in pf:
-            lines.append(_hisse_satiri(kmap.get(tkr), tkr, portfolio.get(tkr, "TL")))
+            lines.append(_hisse_satiri(kmap.get(tkr), tkr, portfolio.get(tkr, "TL"),
+                                       yorum_map=yorum_map))
     else:
         lines.append("Takip ettiğin portföy hissesi yok.")
     lines += ["", "<b>YARIN BAKILACAKLAR</b>"]
@@ -179,6 +249,17 @@ def run():
         print(f"  piyasa ozeti alinamadi: {type(e).__name__}")
     yarin = _yarin_bakilacaklar(now)
 
+    # Tum portfoylerdeki benzersiz hisseler -> TEK Haiku cagrisiyla temiz yorumlar
+    # (tum mesajlarda paylasilir; her kullanici icin tekrar AI cagrilmaz).
+    try:
+        tum_tickerlar = sorted({(r.get("ticker") or "").upper().replace(".IS", "")
+                                for r in db.list_portfolio() if r.get("ticker")})
+    except Exception:
+        tum_tickerlar = []
+    yorum_map = _temiz_yorumlar(tum_tickerlar, kmap)
+    print(f"[{now:%Y-%m-%d %H:%M}] gun sonu temiz yorum: "
+          f"{len(yorum_map)}/{len(tum_tickerlar)} hisse")
+
     sonuc = {}
     gonderilen = set()
     try:
@@ -195,7 +276,8 @@ def run():
                   for p in db.list_portfolio(u["id"]) if p.get("ticker")}
         except Exception:
             pf = {}
-        msg = build_message(pf, kmap, overview, yarin, now, kullanici_ad=u.get("ad"))
+        msg = build_message(pf, kmap, overview, yarin, now, kullanici_ad=u.get("ad"),
+                            yorum_map=yorum_map)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
@@ -212,7 +294,7 @@ def run():
                 birlesik.setdefault(t, (r.get("para_birimi") or "TL").upper())
     except Exception:
         birlesik = {}
-    genel = build_message(birlesik, kmap, overview, yarin, now)
+    genel = build_message(birlesik, kmap, overview, yarin, now, yorum_map=yorum_map)
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:
             continue

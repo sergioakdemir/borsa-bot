@@ -246,6 +246,43 @@ def _kap_yorum(ticker, haber):
         return None
 
 
+def _kap_onemli_mi(ticker, baslik) -> bool:
+    """KAP bildirimi YATIRIM KARARINI etkiler mi? Haiku ile EVET/HAYIR.
+
+    Rutin/teknik bildirimleri (borclanma araci ihrac/itfa, kupon/faiz odemesi,
+    varant/sertifika itfasi, fon pay degeri vb.) eler. Anahtar yoksa/hata olursa
+    True doner (fail-open: suphede sustur ma, bildir)."""
+    baslik = (baslik or "").strip()
+    if not baslik:
+        return False
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=5,
+            system=("Bir KAP bildiriminin hisse YATIRIM KARARINI etkileyip "
+                    "etkilemedigini degerlendir. RUTIN/TEKNIK bildirimler yatirim "
+                    "kararini ETKILEMEZ: borclanma araci/tahvil ihrac veya itfasi, "
+                    "kupon/faiz/ana para odemesi, varant veya sertifika itfasi, fon "
+                    "pay/birim deger duyurusu, ek getiri odemesi, rutin kayitli sermaye "
+                    "islemleri, rutin pay geri alim adimlari. ONEMLI olanlar yatirim "
+                    "kararini ETKILER: bilanco/kar-zarar, temettu karari, yeni buyuk "
+                    "sozlesme/ihale, yatirim/satin alma/birlesme, ortaklik veya yonetim "
+                    "degisikligi, sorusturma/ceza/dava, uretim-kapasite, hedef/beklenti "
+                    "revizyonu. SADECE tek kelime cevap ver: EVET veya HAYIR."),
+            messages=[{"role": "user", "content":
+                       f"Hisse: {ticker}\nKAP bildirimi: {baslik}\n"
+                       "Bu bildirim yatirim kararini etkiler mi? EVET/HAYIR."}],
+        )
+        t = "".join(getattr(b, "text", "") for b in resp.content
+                    if getattr(b, "type", "") == "text").strip().upper()
+        return not t.startswith("HAYIR")
+    except Exception:
+        return True
+
+
 def _kaydet_kap_yorum(ticker, haber, yorum, tarih):
     """KAP yorumunu data/kap_yorumlar.json'a yazar (hisse basina son kayit)."""
     if not yorum:
@@ -372,6 +409,12 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
                 continue   # ayni bildirim bugun zaten gonderildi (main veya onceki tarama)
             db.record_alert(ticker, today, tok, info["change"])
             gonderilmis.add(tok)
+            # ONEM FILTRESI: rutin/notr bildirimleri (borclanma, kupon, varant itfa
+            # vb.) gondermeden once Haiku ile ele; etkisizse logla ve gec.
+            if not _kap_onemli_mi(ticker, it.title):
+                print(f"[{now:%Y-%m-%d %H:%M}] [KAP-filtre] {ticker} rutin/notr bildirim "
+                      f"gonderilmedi: {(it.title or '')[:70]}")
+                continue
             haber = {"baslik": it.title, "url": it.url}
             yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz/notr yorum
             _kaydet_kap_yorum(ticker, haber, yorum, today)
@@ -542,10 +585,15 @@ def main():
             tok = _kap_key(haber.get("disclosure_id"), haber.get("baslik")) if haber else None
             if haber and tok not in db.alert_levels_today(ticker, today):
                 db.record_alert(ticker, today, tok, info["change"])
-                yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz yorum
-                _kaydet_kap_yorum(ticker, haber, yorum, today)
-                news_alerts.append({"ticker": ticker, "change": info["change"],
-                                    "haber": haber, "yorum": yorum})
+                # ONEM FILTRESI: rutin/notr KAP bildirimini gondermeden once ele.
+                if not _kap_onemli_mi(ticker, haber.get("baslik")):
+                    print(f"[{now:%Y-%m-%d %H:%M}] [KAP-filtre] {ticker} rutin/notr "
+                          f"bildirim gonderilmedi: {(haber.get('baslik') or '')[:70]}")
+                else:
+                    yorum = _kap_yorum(ticker, haber)      # AI: olumlu/olumsuz yorum
+                    _kaydet_kap_yorum(ticker, haber, yorum, today)
+                    news_alerts.append({"ticker": ticker, "change": info["change"],
+                                        "haber": haber, "yorum": yorum})
 
         # HACIM anomalisi: COK YUKSEK (5g ort. 3x+) -> uyari (gunde bir kez)
         try:
