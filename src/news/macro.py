@@ -263,15 +263,18 @@ def _borsapy_macro() -> dict:
     return out
 
 
-# TCMB 1 hafta repo (politika faizi) EVDS serisi - gunluk, borsapy uzerinden cekilir
-_EVDS_POLITIKA_SERISI = "TP.APIFON4"
+# TCMB politika faizi (1 hafta repo) EVDS serisi. DIKKAT: TP.APIFON4 GECELIK borc
+# verme faizini (%40) verir, politika faizini DEGIL. Dogru seri TP.BISPOLFAIZ.TUR
+# ("Merkez Bankalari Politika Faiz Orani" - Turkiye, aylik) = guncel %37.
+# (Onerilen TP.MB.B.B00 / TP.TF.TG.A1 serileri borsapy EVDS'te bulunamadi.)
+_EVDS_POLITIKA_SERISI = "TP.BISPOLFAIZ.TUR"
 
 
 def _evds_borsapy_policy_rate():
-    """borsapy EVDS ile GUNCEL politika faizi (1 hafta repo, TP.APIFON4 serisi).
+    """borsapy EVDS ile GUNCEL politika faizi (1 hafta repo, TP.BISPOLFAIZ.TUR serisi).
 
     EVDS_API_KEY gerekir. borsapy.policy_rate() yanlis (7.0) donerken bu seri dogru
-    guncel degeri verir. Makul aralik (20-80) disi deger / hata / anahtar yok -> None."""
+    guncel degeri verir (%37). Makul aralik (20-80) disi deger / hata / anahtar yok -> None."""
     key = os.environ.get("EVDS_API_KEY")
     if not key:
         return None
@@ -377,8 +380,9 @@ def get_macro() -> dict:
     out["tufe_yillik"] = None
 
     # 2-pre) POLITIKA FAIZI BIRINCIL: EVDS (borsapy ile, EVDS_API_KEY). borsapy'nin
-    # policy_rate()'i yanlis (7.0) doner; EVDS serisi (TP.APIFON4, 1H repo) dogru
-    # guncel degeri verir. Basarisizsa asagidaki borsapy/EVDS3/TCMB zinciri devralir.
+    # policy_rate()'i yanlis (7.0) doner; EVDS serisi (TP.BISPOLFAIZ.TUR = TCMB
+    # politika faizi, %37) dogru guncel degeri verir. Basarisizsa asagidaki
+    # borsapy/EVDS3/TCMB zinciri devralir.
     pf_evds = _evds_borsapy_policy_rate()
     if pf_evds is not None:
         out["politika_faizi"] = pf_evds
