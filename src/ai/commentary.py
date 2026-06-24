@@ -226,6 +226,15 @@ SYSTEM = (
     "ettigini gosterir. Bunu bir egilim/taban olasilik olarak kullan; guncel veri "
     "bu egilimi destekliyorsa eminligi artir, celisiyorsa nedenini belirt. Olasiliklari "
     "kesin gercek gibi sunma ('gecmiste cogunlukla ... egilimindeydi' de).\n\n"
+    "UFUK PROFILI — TEKNOLOJI ODAGI: Veride 'ufuk_teknoloji_profili' varsa, bu hisse "
+    "uzun vadeli teknoloji yatirimcisi icindir. Karari yalnizca kisa vadeli teknikle "
+    "degil, 'Bu teknoloji 5-10 yil perspektifinde nereye gider?' sorusuyla da "
+    "degerlendir: AI, cip/yari iletken, kuantum, robotik, uzay ve enerji altyapisi "
+    "gibi alanlarda yapisal buyume potansiyelini tart. Veride "
+    "'piyasa_baglami.akademik_gundemi' varsa (MIT, Stanford, Berkeley, arXiv, NASA, "
+    "NSF, DARPA, FED, ECB gibi akademik/kurum kaynaklari) bu gelismelerin uzun vadeli "
+    "tezi destekleyip desteklemedigini karara dahil et. Kisa vadeli dalgalanmayi yine "
+    "belirt, ama uzun vadeli teknoloji tezini sade dille gerekceye yansit.\n\n"
     "KARAR MOTORU — her karar icin su alanlari doldur (bos birakma):\n"
     "- giris_seviyesi: AL kararinda, su anki fiyatin %2-3 alti makul giris noktasi "
     "(orn. 'Portfoyde yoksa 95 TL altinda al'). Diger kararlarda bos.\n"
@@ -302,6 +311,24 @@ SEKTOR_NOTLARI = {
     "GMSTR.F": ("Bu bir altın/gümüş BYF (Borsa Yatırım Fonu). Kıymetli maden "
                 "fiyatlarına, dolar/TL kuruna ve enflasyon beklentilerine bağlı "
                 "hareket eder."),
+}
+
+# --- Ufuk'un teknoloji odakli yatirim profili ---
+# Bu tickerlar analiz edilirken payload'a 'ufuk_teknoloji_profili' eklenir;
+# SYSTEM bunu gorunce uzun vadeli (5-10 yil) teknoloji merceğiyle ve akademik
+# gundemle birlikte degerlendirir. ABD tech evreni (Ufuk'un watchlist'i).
+UFUK_TEKNOLOJI_TICKERS = {
+    "NVDA", "AMD", "TSM", "ASML", "RKLB", "OSS",
+    "IONQ", "RGTI", "ACHR", "BFLY", "MU",
+}
+
+UFUK_TEKNOLOJI_PROFILI = {
+    "yatirim_felsefesi": "uzun vadeli teknoloji odakli",
+    "odak_alanlar": ["AI", "çip teknolojisi", "kuantum",
+                     "robotik", "uzay", "enerji altyapısı"],
+    "karar_tonu": "Bu teknoloji 5-10 yıl perspektifinde nereye gider?",
+    "not": ("Kısa vadeli volatiliteden çok yapısal büyüme tezini ve akademik/"
+            "kurum gelişmelerini (akademik_gundemi) tart."),
 }
 
 
@@ -809,6 +836,10 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         }
     if context:
         payload["piyasa_baglami"] = context
+    # Ufuk'un teknoloji evreni: uzun vadeli (5-10 yil) teknoloji mercegi + akademik
+    # gundem. ABD tech tickerlarinda payload'a profili ekle (SYSTEM bunu kullanir).
+    if ticker in UFUK_TEKNOLOJI_TICKERS:
+        payload["ufuk_teknoloji_profili"] = UFUK_TEKNOLOJI_PROFILI
     # Sektor notu (statik): hangi faktorler kritik - yalniz BIST
     if not is_us:
         sektor_notu = SEKTOR_NOTLARI.get(ticker)

@@ -40,8 +40,79 @@
     {
       "ticker": "NVDA",
       "market": "abd",
-      "isim": "NVDA",
-      "cg_id": ""
+      "isim": "Nvidia",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "AMD",
+      "market": "abd",
+      "isim": "AMD",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "TSM",
+      "market": "abd",
+      "isim": "TSMC",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "ASML",
+      "market": "abd",
+      "isim": "ASML",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "RKLB",
+      "market": "abd",
+      "isim": "Rocket Lab",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "OSS",
+      "market": "abd",
+      "isim": "One Stop Systems",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "IONQ",
+      "market": "abd",
+      "isim": "IonQ",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "RGTI",
+      "market": "abd",
+      "isim": "Rigetti Computing",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "ACHR",
+      "market": "abd",
+      "isim": "Archer Aviation",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "BFLY",
+      "market": "abd",
+      "isim": "Butterfly Network",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "MU",
+      "market": "abd",
+      "isim": "Micron",
+      "cg_id": "",
+      "kullanici": "ufuk"
     }
   ]
 }

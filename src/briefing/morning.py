@@ -291,7 +291,7 @@ def _plan_cumlesi(overview, now, is_us):
 
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
-                  portfoy_guncel_gun=None, us_gundem=None):
+                  portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -370,6 +370,17 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                 ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
                 lines.append(f"• {_esc(baslik)}{ek}")
 
+    # AKADEMİK & KURUM — son 24 saatteki akademik/kurum gelişmeleri (yalnız ABD brifingi)
+    if is_us and akademik_gundem:
+        lines.append("")
+        lines.append("<b>BUGÜN TAKİP · AKADEMİK & KURUM</b>")
+        for h in akademik_gundem[:5]:
+            baslik = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+            kaynak = h.get("kaynak") if isinstance(h, dict) else ""
+            if baslik:
+                ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
+                lines.append(f"• {_esc(baslik)}{ek}")
+
     if profil_uyari:
         lines.append("")
         lines.append(profil_uyari)
@@ -439,7 +450,9 @@ def main(market="bist"):
             overview = None
 
     # 2.5) ABD brifingi: son 24 saatteki ABD piyasa gundemi (Reuters/Yahoo/Investing)
+    #      + akademik/kurum gundemi (MIT/Stanford/arXiv/NASA/DARPA/FED...)
     us_gundem = []
+    akademik_gundem = []
     if is_us:
         try:
             from src.news.us_news import market_news
@@ -448,6 +461,13 @@ def main(market="bist"):
         except Exception as e:
             print(f"  ABD gundemi alinamadi: {type(e).__name__}: {str(e)[:80]}")
             us_gundem = []
+        try:
+            from src.news.us_news import academic_news
+            akademik_gundem = academic_news(within_hours=24, limit=8)
+            print(f"  akademik/kurum gundemi: {len(akademik_gundem)} haber (24s)")
+        except Exception as e:
+            print(f"  akademik gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
+            akademik_gundem = []
 
     # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
     try:
@@ -462,11 +482,19 @@ def main(market="bist"):
         print(f"  karar gecmisi notu alinamadi: {type(e).__name__}")
         learning = {}
 
-    # ABD gundemini AI baglamina ekle (piyasa_baglami.abd_gundemi)
+    # ABD + akademik gundemini AI baglamina ekle
+    # (piyasa_baglami.abd_gundemi / piyasa_baglami.akademik_gundemi)
     extra_context = None
-    if is_us and us_gundem:
-        extra_context = {"abd_gundemi": [
-            {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")} for h in us_gundem]}
+    if is_us and (us_gundem or akademik_gundem):
+        extra_context = {}
+        if us_gundem:
+            extra_context["abd_gundemi"] = [
+                {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")}
+                for h in us_gundem]
+        if akademik_gundem:
+            extra_context["akademik_gundemi"] = [
+                {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")}
+                for h in akademik_gundem]
     results = evaluate_all(sel["targets"], overview=overview, learning=learning,
                            extra_context=extra_context)
 
@@ -560,7 +588,7 @@ def main(market="bist"):
                             portfolio=pf, kullanici_ad=u.get("ad"),
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
-                            us_gundem=us_gundem)
+                            us_gundem=us_gundem, akademik_gundem=akademik_gundem)
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
@@ -569,7 +597,8 @@ def main(market="bist"):
         gonderilen.add(str(tg))
     # DB'de kullanici olarak olmayan env alicilari (TELEGRAM_CHAT_ID/IDS) -> birlesik
     genel = build_message(results, sel, now, overview=overview,
-                          senaryolar=senaryolar, us_gundem=us_gundem)   # portfolio=tum birlesik
+                          senaryolar=senaryolar, us_gundem=us_gundem,
+                          akademik_gundem=akademik_gundem)   # portfolio=tum birlesik
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:
             continue

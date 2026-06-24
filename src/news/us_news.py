@@ -41,7 +41,42 @@ _US_KEYWORDS = {
     "SPCX": ["SPCX", "SpaceX"],
     "RXT": ["RXT", "Rackspace"],
     "CNCK": ["CNCK", "Cinacor", "Coincheck"],
+    # Ufuk'un teknoloji listesi (AI/cip/kuantum/uzay/robotik)
+    "AMD": ["AMD", "Advanced Micro Devices"],
+    "TSM": ["TSM", "TSMC", "Taiwan Semiconductor"],
+    "ASML": ["ASML"],
+    "RKLB": ["RKLB", "Rocket Lab"],
+    "OSS": ["OSS", "One Stop Systems"],
+    "IONQ": ["IONQ", "IonQ"],
+    "RGTI": ["RGTI", "Rigetti"],
+    "ACHR": ["ACHR", "Archer Aviation"],
+    "BFLY": ["BFLY", "Butterfly Network"],
+    "MU": ["MU", "Micron"],
 }
+
+# Akademik + kurum RSS kaynaklari (AI/cip/kuantum/robotik/uzay/makro). BIST
+# haberlerinden AYRI 'akademik_ve_kurum' kategorisinde tutulur; Ufuk'un teknoloji
+# odakli analizine ve ABD brifingine baglam saglar. Erisilemeyen feed atlanir.
+_ACADEMIC_FEEDS = [
+    {"ad": "MIT AI", "url": "https://news.mit.edu/rss/topic/artificial-intelligence-2"},
+    {"ad": "Berkeley BAIR", "url": "https://bair.berkeley.edu/blog/feed.xml"},
+    {"ad": "Stanford HAI", "url": "https://hai.stanford.edu/rss.xml"},
+    {"ad": "arXiv AI", "url": "https://export.arxiv.org/rss/cs.AI"},
+    {"ad": "arXiv Chip", "url": "https://export.arxiv.org/rss/cs.AR"},
+    {"ad": "arXiv Quantum", "url": "https://export.arxiv.org/rss/quant-ph"},
+    {"ad": "arXiv Robotics", "url": "https://export.arxiv.org/rss/cs.RO"},
+    {"ad": "NASA", "url": "https://www.nasa.gov/news-release/feed/"},
+    {"ad": "NSF", "url": "https://www.nsf.gov/rss/rss_www_news.xml"},
+    {"ad": "DARPA", "url": "https://news.mit.edu/rss/topic/darpa"},
+    {"ad": "FED", "url": "https://www.federalreserve.gov/feeds/press_all.xml"},
+    {"ad": "ECB", "url": "https://www.ecb.europa.eu/rss/press.html"},
+    {"ad": "Google News Tech",
+     "url": "https://news.google.com/rss/search?q=AI+chip+semiconductor&hl=en"},
+]
+
+# Semantic Scholar arama API'si (RSS degil; JSON doner).
+_SEMANTIC_SCHOLAR = ("https://api.semanticscholar.org/graph/v1/paper/search"
+                     "?query=AI+semiconductor&limit=5&fields=title,year,abstract")
 
 
 def _fetch(url: str, timeout: int = 15):
@@ -170,11 +205,74 @@ def market_news(within_hours: int = 24, limit: int = 8) -> list[dict]:
     return out[:limit]
 
 
+def _semantic_scholar(limit: int = 5) -> list[dict]:
+    """Semantic Scholar arama API'si (JSON) -> akademik makale kayitlari.
+    Tarih filtresine tabi degildir (makaleler yil bazli)."""
+    text = _fetch(_SEMANTIC_SCHOLAR)
+    if not text:
+        return []
+    try:
+        import json
+        data = json.loads(text)
+    except Exception:
+        return []
+    out = []
+    for p in (data.get("data") or [])[:limit]:
+        baslik = (p.get("title") or "").strip()
+        if not baslik:
+            continue
+        yil = p.get("year")
+        out.append({
+            "baslik": baslik, "kaynak": "Semantic Scholar",
+            "kategori": "akademik_ve_kurum",
+            "tarih": f"{yil}-01-01 00:00" if yil else "",
+            "ozet": (p.get("abstract") or None), "url": None,
+        })
+    return out
+
+
+def academic_news(within_hours: int = 24, limit: int = 10) -> list[dict]:
+    """Akademik + kurum kaynaklarindan (MIT, Berkeley, Stanford, arXiv, NASA, NSF,
+    DARPA, FED, ECB, Google News) son `within_hours` saatteki haberler.
+
+    Dondurur: [{baslik, kaynak, kategori='akademik_ve_kurum', tarih, ozet, url}].
+    BIST haberlerinden ayridir; AI baglamina/ABD brifingine eklenir. Semantic
+    Scholar makaleleri (tarih filtresiz) sona eklenir. Erisilemeyen feed atlanir.
+    """
+    cutoff = datetime.now(_TZ) - timedelta(hours=within_hours)
+    seen, out = set(), []
+    for feed in _ACADEMIC_FEEDS:
+        for e in _entries(feed["url"]):
+            if e["tarih"] < cutoff:
+                continue
+            key = e["baslik"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "baslik": e["baslik"], "kaynak": feed["ad"],
+                "kategori": "akademik_ve_kurum",
+                "tarih": e["tarih"].strftime("%Y-%m-%d %H:%M"),
+                "ozet": e.get("ozet") or None, "url": e.get("link"),
+            })
+    out.sort(key=lambda r: r["tarih"], reverse=True)
+    # Semantic Scholar makaleleri (yil bazli; en sona)
+    for p in _semantic_scholar():
+        key = p["baslik"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out[:limit]
+
+
 if __name__ == "__main__":
     import json
     import sys
     if sys.argv[1:] and sys.argv[1] == "market":
         print(json.dumps(market_news(), ensure_ascii=False, indent=2))
+    elif sys.argv[1:] and sys.argv[1] in ("academic", "akademik"):
+        print(json.dumps(academic_news(), ensure_ascii=False, indent=2))
     else:
         tk = sys.argv[1] if sys.argv[1:] else "NVDA"
         print(json.dumps(ticker_news(tk), ensure_ascii=False, indent=2))
