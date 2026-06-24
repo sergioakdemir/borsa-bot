@@ -757,6 +757,25 @@ def add_memory(kullanici_id, tip, icerik, ticker=None, sonuc=None, tarih=None) -
         return cur.lastrowid
 
 
+def hafiza_kv_get(kullanici_id, key, default=None):
+    """kullanici_hafiza'yi tip-anahtarli basit KV deposu olarak okur (en son deger)."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT icerik FROM kullanici_hafiza WHERE kullanici_id=? AND tip=? "
+                      "ORDER BY id DESC LIMIT 1", (kullanici_id, key)).fetchone()
+        return r["icerik"] if r else default
+
+
+def hafiza_kv_set(kullanici_id, key, value) -> None:
+    """kullanici_hafiza'ya tip-anahtarli tek deger yazar (upsert; eski satirlari siler)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("DELETE FROM kullanici_hafiza WHERE kullanici_id=? AND tip=?",
+                  (kullanici_id, key))
+        c.execute("INSERT INTO kullanici_hafiza (kullanici_id, tip, icerik, tarih) "
+                  "VALUES (?,?,?,?)", (kullanici_id, key, str(value), _now()))
+
+
 def list_memory(kullanici_id, tip=None, limit: int = 200) -> list[dict]:
     init_db()
     with get_conn() as c:

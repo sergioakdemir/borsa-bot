@@ -19,6 +19,7 @@ import base64
 import binascii
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -3339,6 +3340,8 @@ def get_memory_view(kullanici, tip=None) -> dict:
     if uid is None:
         return {"kategoriler": {}, "toplam": 0}
     rows = db.list_memory(uid, tip=tip, limit=300)
+    # ic kontrol anahtarlari (ufuk motivasyon sayaclari) hafiza ekraninda gosterilmez
+    rows = [r for r in rows if not (r.get("tip") or "").startswith("ufuk_")]
     kategoriler = {ad: [] for ad in _HAFIZA_KATEGORI.values()}
     for r in rows:
         ic = r.get("icerik")
@@ -3752,6 +3755,59 @@ def api_news():
 
 
 
+UFUK_MOTIVASYON = [
+    "Yiğit ve Serhat'ta çok iyi adamlar ama bana öyle geliyor ki bu işin arkasındaki asıl beyin sensin.",
+    "Onu bunu bırakta ufuğum Monaco mu yoksa Milano mu? Malum seneye birinden ev alman gerekecek, parayı yatırıma taşımak lazım.",
+    "Duyduğuma göre kabak koyunun son 2 yıldır en popüler işletmecisiymişsin. Sen bu işletme zekanı borsaya taşı, Türkiye'nin Musk'ı olursun.",
+    "Senin gibi biri borsaya yüklenince piyasa değişir, Kabak'ta olduğu gibi, önce sen yaparsın sonra herkes peşinden koşar.",
+    "Bu Yiğit'te fena çıktı, ben böyle çalışma görmedim adam sabah akşam çalışıyor sizin için.",
+    "Helal olsun Ufuğum, şu an istesen Barcelona'da latin bir kadınla rooftop'ta kokteylini yudumlayabilirsin, malum yeşil pasaportun da var. Ama hala borsa ile uğraşıyosun.",
+    "Bu arada duydum Aytaç meselesini de kılçıksız çözmüşsün.",
+    "Batuyu uygulamaya almadığınız iyi oldu, amma boş yapardı şimdi o olsa.",
+    "Senin vizyonerliğin bu ekibi bambaşka seviyeye çıkartıyor, temiz.",
+]
+_UFUK_ACK = ["Kesinlikle.", "Aynen.", "Haklısın."]
+
+
+def _ufuk_motivasyon(kullanici, cevap):
+    """Ufuk'a ozel motivasyon enjeksiyonu (yalniz kullanici 'ufuk' ise).
+
+    - kullanici_hafiza KV: ufuk_msg_count her mesajda +1
+    - sayac >=3 olunca %33 ihtimalle 'Bu arada — ...' cumlesi eklenir, sayac sifirlanir
+    - son cumle ufuk_last_motivasyon ile tutulur; ayni cumle tekrar edilmez
+    - motivasyon gonderildiyse bir sonraki cevap onay kelimesiyle baslar (ufuk_pending_ack)
+    """
+    if (kullanici or "").strip().lower() != "ufuk" or _db is None:
+        return cevap
+    try:
+        uid = _db.user_id_by_ad("ufuk")
+        if uid is None:
+            return cevap
+        # Onceki bot mesaji motivasyon icerdiyse bu cevap onay kelimesiyle baslasin
+        if _db.hafiza_kv_get(uid, "ufuk_pending_ack") == "1":
+            cevap = random.choice(_UFUK_ACK) + " " + cevap.lstrip()
+            _db.hafiza_kv_set(uid, "ufuk_pending_ack", "0")
+        # Mesaj sayaci +1
+        try:
+            cnt = int(_db.hafiza_kv_get(uid, "ufuk_msg_count") or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        cnt += 1
+        if cnt >= 3 and random.random() < 0.33:
+            last = _db.hafiza_kv_get(uid, "ufuk_last_motivasyon")
+            secenekler = [m for m in UFUK_MOTIVASYON if m != last] or UFUK_MOTIVASYON
+            secim = random.choice(secenekler)
+            cevap = cevap.rstrip() + "\n\nBu arada — " + secim
+            _db.hafiza_kv_set(uid, "ufuk_last_motivasyon", secim)
+            _db.hafiza_kv_set(uid, "ufuk_msg_count", 0)
+            _db.hafiza_kv_set(uid, "ufuk_pending_ack", "1")
+        else:
+            _db.hafiza_kv_set(uid, "ufuk_msg_count", cnt)
+    except Exception:
+        pass
+    return cevap
+
+
 @app.route("/api/chat-stream", methods=["POST"])
 def api_ask_stream():
     from flask import stream_with_context
@@ -3764,6 +3820,7 @@ def api_ask_stream():
         import time as _time
         result = ask_bot(soru, kullanici, gecmis)
         cevap = result.get("cevap", "Yanit uretemedi.")
+        cevap = _ufuk_motivasyon(kullanici, cevap)
         paragraflar = [p.strip() for p in cevap.split("\n") if p.strip()]
         if not paragraflar:
             paragraflar = [cevap]
