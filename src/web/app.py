@@ -100,6 +100,14 @@ _SEARCH_TTL = 300.0  # saniye (5 dakika)
 
 _OPPORTUNITY_MIN = 7  # firsat bolgesine girmek icin gereken puan
 _VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
+# Bota Sor fotograf yukleme (gorsel analiz)
+UPLOADS_DIR = DATA / "uploads"          # data/uploads/{kullanici_id}/{ts}.{ext}
+_MAX_UPLOADS = 10                       # kullanici basina saklanan max fotograf (FIFO)
+_MAX_UPLOAD_BYTES = 5 * 1024 * 1024     # 5 MB
+_UPLOAD_EXTS = {"jpg", "jpeg", "png", "webp"}
+_UPLOAD_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png", "webp": "image/webp"}
+_CHAT_VISION_MODEL = "claude-opus-4-6"  # Bota Sor sohbette gorsel yorumu (vision)
 
 # Portfoy ticker -> bigpara fiyat kaynagi (yfinance'de olmayan/yanlis gelen
 # enstrumanlar icin). KAP_PROXY_URL uzerinden cekilir. Deger = bigpara URL slug'i.
@@ -3208,15 +3216,77 @@ def _pozisyon_hatirlatma_yakala(soru):
         "ekleyebilir veya çıkarabilirsin.")}
 
 
-def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
+def _safe_upload_path(image_path) -> Path | None:
+    """Verilen yolu UPLOADS_DIR icinde, var olan bir dosyaya cozer. Disari
+    cikan/uydurma yollari (path traversal) reddeder -> None."""
+    if not image_path:
+        return None
+    try:
+        p = Path(image_path).resolve()
+        root = UPLOADS_DIR.resolve()
+        if root in p.parents and p.is_file():
+            return p
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _ext_ok(filename: str) -> str | None:
+    """Dosya adindan izinli uzantiyi (kucuk harf, noktasiz) doner; degilse None."""
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    return ext if ext in _UPLOAD_EXTS else None
+
+
+def save_upload(kullanici, file_storage) -> dict:
+    """Bir fotografi data/uploads/{uid}/{ts}.{ext} olarak kaydeder, DB'ye yazar ve
+    FIFO ile kullanici basina en fazla _MAX_UPLOADS tutar (fazlasini siler).
+
+    file_storage: Flask werkzeug FileStorage. Doner: {ok, dosya_yolu|hata}.
+    """
+    uid = _uid(kullanici)
+    if uid is None:
+        return {"ok": False, "hata": "Önce kullanıcı seç"}
+    if file_storage is None or not getattr(file_storage, "filename", ""):
+        return {"ok": False, "hata": "Dosya yok"}
+    ext = _ext_ok(file_storage.filename)
+    if not ext:
+        return {"ok": False, "hata": "Yalnızca jpg, jpeg, png, webp"}
+    data = file_storage.read()
+    if not data:
+        return {"ok": False, "hata": "Boş dosya"}
+    if len(data) > _MAX_UPLOAD_BYTES:
+        return {"ok": False, "hata": "En fazla 5MB"}
+    udir = UPLOADS_DIR / str(uid)
+    udir.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time() * 1000)
+    dest = udir / f"{ts}.{ext}"
+    try:
+        dest.write_bytes(data)
+    except OSError as e:
+        return {"ok": False, "hata": f"Kaydedilemedi: {type(e).__name__}"}
+    from src.db import database as db
+    db.add_upload(uid, str(dest))
+    # FIFO: 10'u asanlari (en eski) hem DB'den hem diskten sil
+    for eski in db.prune_uploads(uid, keep=_MAX_UPLOADS):
+        try:
+            Path(eski).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"ok": True, "dosya_yolu": str(dest)}
+
+
+def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
     soru = (soru or "").strip()
-    if not soru:
+    foto = _safe_upload_path(image_path)
+    if not soru and not foto:
         return {"ok": False, "cevap": "Bir soru yaz."}
-    _dbg("ask_bot basladi", {"soru": soru, "kullanici": str(kullanici)})
+    _dbg("ask_bot basladi", {"soru": soru, "kullanici": str(kullanici),
+                             "foto": bool(foto)})
 
     # --- POZISYON HATIRLATMA: "aldım / sattım / pozisyon açtım" (AI anahtari gerekmez) ---
+    # Fotograf varsa kural-tabanli kisa yollar atlanir; dogrudan gorsel analizine gidilir.
     try:
-        poz_res = _pozisyon_hatirlatma_yakala(soru)
+        poz_res = None if foto else _pozisyon_hatirlatma_yakala(soru)
         if poz_res is not None:
             _dbg("erken donus", "pozisyon_hatirlatma")
             return poz_res
@@ -3225,7 +3295,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     # --- PROFIL TAMAMLAMA: kayip toleransi soru/cevap akisi (AI anahtari gerekmez) ---
     try:
-        prof_res = _profil_tamamla(kullanici, soru)
+        prof_res = None if foto else _profil_tamamla(kullanici, soru)
         if prof_res is not None:
             _dbg("erken donus", "profil_tamamla")
             return prof_res
@@ -3234,7 +3304,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     # --- FIYAT ALARMI: "X N'e düşerse/çıkarsa haber ver" (AI anahtari gerekmez) ---
     try:
-        alarm_res = _alarm_yakala(kullanici, soru)
+        alarm_res = None if foto else _alarm_yakala(kullanici, soru)
         if alarm_res is not None:
             _dbg("erken donus", "alarm")
             return alarm_res
@@ -3243,7 +3313,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     # --- SEKTOR ANALIZI: "Bankacılık sektörü nasıl?" (AI anahtari gerekmez) ---
     try:
-        sektor_res = _sektor_yakala(soru)
+        sektor_res = None if foto else _sektor_yakala(soru)
         if sektor_res is not None:
             _dbg("erken donus", "sektor")
             return sektor_res
@@ -3252,7 +3322,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     # --- KULLANICI GERI BILDIRIMI: "X kararı yanlıştı" (AI anahtari gerekmez) ---
     try:
-        gb_res = _geri_bildirim_yakala(soru)
+        gb_res = None if foto else _geri_bildirim_yakala(soru)
         if gb_res is not None:
             _dbg("erken donus", "geri_bildirim")
             return gb_res
@@ -3285,20 +3355,22 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         _norm(soru)))
     _dbg("analiz_modu", analiz_modu)
 
-    # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi ---
+    # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi (fotograf varsa atla) ---
     try:
         from src.web import code_mode
         norm = soru.lower()
-        if kullanici and code_mode.has_pending(kullanici) and code_mode.is_approval(soru):
+        if foto:
+            code_mode = None     # fotograf varsa kod modu calismaz; vision'a gec
+        if code_mode and kullanici and code_mode.has_pending(kullanici) and code_mode.is_approval(soru):
             return code_mode.apply_pending(kullanici)          # onayli -> uygula
-        if kullanici and ("geri al" in norm or "geri-al" in norm) and \
+        if code_mode and kullanici and ("geri al" in norm or "geri-al" in norm) and \
                 soru.lower().strip() in ("geri al", "geri-al", "geri alın", "geri al onayla"):
             return code_mode.revert_last(kullanici)
         # HATA DUZELTME MODU: arayuz hatasi bildirimi -> teshis + otomatik fix + restart
-        if kullanici and code_mode.is_error_report(soru) and not code_mode.is_approval(soru):
+        if code_mode and kullanici and code_mode.is_error_report(soru) and not code_mode.is_approval(soru):
             import anthropic
             return code_mode.fix_error(kullanici, soru, client=anthropic.Anthropic())
-        if kullanici and code_mode.is_ui_request(soru) and not code_mode.is_approval(soru):
+        if code_mode and kullanici and code_mode.is_ui_request(soru) and not code_mode.is_approval(soru):
             import anthropic
             return code_mode.propose(kullanici, soru, client=anthropic.Anthropic())
     except Exception as e:
@@ -3609,14 +3681,41 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
             mesajlar.append({"role": rol, "content": icerik[:2000]})
     while mesajlar and mesajlar[0]["role"] != "user":
         mesajlar.pop(0)                     # ilk mesaj user olmali (API kurali)
-    mesajlar.append({"role": "user", "content": soru})
+
+    # FOTOGRAF: son user mesaji = [gorsel blok + metin]; vision modeli + ek talimat
+    if foto:
+        ext = foto.suffix.lstrip(".").lower()
+        media = _UPLOAD_MIME.get(ext, "image/jpeg")
+        try:
+            b64 = base64.b64encode(foto.read_bytes()).decode("ascii")
+        except OSError:
+            b64 = None
+        metin = soru or "Bu fotoğrafı analiz et ve yatırım bağlamında yorumla."
+        if b64:
+            mesajlar.append({"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": media, "data": b64}},
+                {"type": "text", "text": metin}]})
+            sistem += (
+                "\n\nFOTOGRAF: Kullanıcı bir fotoğraf gönderdi. Grafik, haber, "
+                "portföy ekranı olabilir. Görseli analiz et ve yatırım bağlamında "
+                "yorumla. Grafikse trend/seviye, haberse etki, portföy/broker "
+                "ekranıysa pozisyonları yorumla; uydurma, görselde gördüğüne dayan.")
+        else:
+            mesajlar.append({"role": "user", "content": metin})
+            foto = None
+    else:
+        mesajlar.append({"role": "user", "content": soru})
 
     try:
         import anthropic
-        _dbg("AI cagrisi", {"model": _CHAT_MODEL, "anlik_fiyat_var": bool(anlik_fiyatlar)})
+        _model = _CHAT_VISION_MODEL if foto else _CHAT_MODEL
+        _dbg("AI cagrisi", {"model": _model, "foto": bool(foto),
+                            "anlik_fiyat_var": bool(anlik_fiyatlar)})
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_CHAT_MODEL, max_tokens=700 if (plan_modu or analiz_modu) else 400,
+            model=_model,
+            max_tokens=900 if foto else (700 if (plan_modu or analiz_modu) else 400),
             system=sistem,
             messages=mesajlar,
         )
@@ -4181,13 +4280,26 @@ def api_series(ticker):
                     "son": cs[-1] if cs else None})
 
 
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    """Bota Sor gorsel yukleme: multipart 'foto' + 'kullanici'.
+    data/uploads/{uid}/{ts}.{ext} olarak kaydeder, FIFO ile max 10 tutar."""
+    # Asiri buyuk istegi okumadan reddet (5MB + kucuk multipart payi)
+    cl = request.content_length or 0
+    if cl > _MAX_UPLOAD_BYTES + 256 * 1024:
+        return jsonify({"ok": False, "hata": "En fazla 5MB"})
+    return jsonify(save_upload(request.form.get("kullanici"),
+                               request.files.get("foto")))
+
+
 @app.route("/api/ask", methods=["POST"])
 @app.route("/api/chat", methods=["POST"])
 def api_ask():
     d = request.get_json(silent=True) or {}
     return jsonify(ask_bot(d.get("soru") or d.get("mesaj") or d.get("message", ""),
                            d.get("kullanici"),
-                           d.get("gecmis") or d.get("messages")))
+                           d.get("gecmis") or d.get("messages"),
+                           image_path=d.get("image_path")))
 
 
 @app.route("/api/portfolio-analysis")
@@ -4269,10 +4381,11 @@ def api_ask_stream():
     soru = d.get("soru") or d.get("mesaj") or ""
     kullanici = d.get("kullanici")
     gecmis = d.get("gecmis") or d.get("messages")
+    image_path = d.get("image_path")
     @stream_with_context
     def generate():
         import time as _time
-        result = ask_bot(soru, kullanici, gecmis)
+        result = ask_bot(soru, kullanici, gecmis, image_path=image_path)
         cevap = result.get("cevap", "Yanit uretemedi.")
         cevap = _ufuk_motivasyon(kullanici, cevap)
         paragraflar = [p.strip() for p in cevap.split("\n") if p.strip()]

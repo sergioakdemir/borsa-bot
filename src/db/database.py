@@ -171,6 +171,13 @@ CREATE TABLE IF NOT EXISTS fiyat_alarm (
     tetiklenme_tarihi TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_fiyat_alarm_aktif ON fiyat_alarm(aktif);
+CREATE TABLE IF NOT EXISTS uploads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id    INTEGER NOT NULL REFERENCES kullanici(id),
+    dosya_yolu      TEXT NOT NULL,
+    yukleme_tarihi  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_uploads_kullanici ON uploads(kullanici_id);
 """
 
 # Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
@@ -796,6 +803,40 @@ def list_memory(kullanici_id, tip=None, limit: int = 200) -> list[dict]:
                     pass
             out.append(d)
         return out
+
+
+# ---- yuklenen fotograflar (Bota Sor gorsel analizi) ----
+def add_upload(kullanici_id, dosya_yolu) -> int:
+    """Yeni fotograf kaydi ekler; eklenen satirin id'sini doner."""
+    init_db()
+    with get_conn() as c:
+        cur = c.execute(
+            "INSERT INTO uploads (kullanici_id, dosya_yolu, yukleme_tarihi) "
+            "VALUES (?, ?, ?)", (kullanici_id, str(dosya_yolu), _now()))
+        return cur.lastrowid
+
+
+def list_uploads(kullanici_id, limit: int = 100) -> list[dict]:
+    """Kullanicinin fotograflari (en yeni once)."""
+    init_db()
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM uploads WHERE kullanici_id=? ORDER BY id DESC LIMIT ?",
+            (kullanici_id, limit))]
+
+
+def prune_uploads(kullanici_id, keep: int = 10) -> list[str]:
+    """En fazla `keep` fotograf sakla; fazlasini (en eski) DB'den siler.
+    Silinen dosyalarin yollarini doner (cagiran disk dosyasini siler)."""
+    init_db()
+    with get_conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, dosya_yolu FROM uploads WHERE kullanici_id=? "
+            "ORDER BY id ASC", (kullanici_id,))]
+        fazla = rows[:-keep] if len(rows) > keep else []
+        for r in fazla:
+            c.execute("DELETE FROM uploads WHERE id=?", (r["id"],))
+        return [r["dosya_yolu"] for r in fazla]
 
 
 def memory_by_id(mem_id):

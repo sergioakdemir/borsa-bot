@@ -316,7 +316,7 @@
     border-radius:8px;padding:4px 10px;font-size:11.5px;font-weight:600;margin-top:-4px;margin-bottom:4px;min-height:28px}
   .copy-btn:active{opacity:.7}
   .copy-btn.ok{color:var(--green);border-color:var(--green)}
-  .chat-input{position:fixed;left:0;right:0;z-index:34;display:none;gap:9px;padding:10px 14px;
+  .chat-input{position:fixed;left:0;right:0;z-index:34;display:none;flex-direction:column;gap:8px;padding:10px 14px;
     bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
     background:rgba(7,10,15,.94);backdrop-filter:blur(18px);border-top:1px solid var(--border)}
   body.kb .chat-input{bottom:var(--kb)}
@@ -324,10 +324,24 @@
   #page-sor{padding-bottom:88px}
   body.kb #page-sor{padding-bottom:calc(var(--kb) + 64px)}
   .chat-input.on{display:flex}
-  .chat-input input{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
+  .chat-input-row{display:flex;gap:9px;align-items:flex-end}
+  .chat-input input[type=text]{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
     border-radius:14px;padding:12px 15px;font-size:16px;outline:none;min-height:46px}
-  .chat-input input:focus{border-color:var(--border2)}
-  .chat-input .send{background:var(--green2);color:#04150a;border-radius:13px;width:48px;font-size:19px;font-weight:700}
+  .chat-input input[type=text]:focus{border-color:var(--border2)}
+  .chat-input .send{background:var(--green2);color:#04150a;border-radius:13px;width:48px;font-size:19px;font-weight:700;flex:0 0 auto}
+  .chat-attach{flex:0 0 auto;background:var(--card);border:1px solid var(--border);color:var(--text);
+    border-radius:13px;width:46px;min-height:46px;font-size:20px;display:flex;align-items:center;justify-content:center}
+  .chat-attach:active{opacity:.6}
+  /* sohbet fotograf onizleme (input kutusunun ustunde) */
+  .chat-preview{display:flex;align-items:center;gap:10px;background:var(--card);
+    border:1px solid var(--border);border-radius:12px;padding:7px 9px}
+  .chat-preview img{width:46px;height:46px;border-radius:9px;object-fit:cover;flex:0 0 auto}
+  .chat-preview .cp-lbl{font-size:13px;color:var(--muted);font-weight:600}
+  .chat-preview .cp-rm{margin-left:auto;flex:0 0 auto;background:var(--card2);border:1px solid var(--border);
+    color:var(--muted);border-radius:999px;width:30px;height:30px;font-size:14px;
+    display:flex;align-items:center;justify-content:center}
+  /* sohbet baloncugunda gonderilen fotograf */
+  .bubble-img{max-width:200px;max-height:240px;border-radius:12px;display:block;margin-bottom:6px}
 
   /* ---- bildirim ---- */
   .alert{display:flex;gap:12px;background:var(--glass);
@@ -711,11 +725,18 @@
 </main>
 
 <div class="chat-input" id="chat-input">
-  <input id="chat-text" type="text" placeholder="Bota bir şey sor…"
-         autocomplete="off" enterkeyhint="send"
-         onfocus="kbWatch(true)" onblur="kbWatch(false)"
-         onkeydown="if(event.key==='Enter')sendChat()">
-  <button class="send" onclick="sendChat()">➤</button>
+  <div class="chat-preview" id="chat-preview" style="display:none"></div>
+  <div class="chat-input-row">
+    <button class="chat-attach" onclick="document.getElementById('chat-file').click()"
+            title="Fotoğraf ekle" aria-label="Fotoğraf ekle">📎</button>
+    <input id="chat-file" type="file" accept="image/jpeg,image/jpg,image/png,image/webp"
+           style="display:none" onchange="chatPickPhoto(event)">
+    <input id="chat-text" type="text" placeholder="Bota bir şey sor…"
+           autocomplete="off" enterkeyhint="send"
+           onfocus="kbWatch(true)" onblur="kbWatch(false)"
+           onkeydown="if(event.key==='Enter')sendChat()">
+    <button class="send" onclick="sendChat()">➤</button>
+  </div>
 </div>
 
 <nav>
@@ -1323,14 +1344,41 @@ function copyFallback(t){try{const ta=document.createElement("textarea");ta.valu
   ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();
   document.execCommand("copy");document.body.removeChild(ta)}catch(e){}}
 function scrollChat(){const m=document.querySelector("main");if(m)m.scrollTop=m.scrollHeight}
-async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();if(!q)return;
+/* ---- Bota Sor fotograf yukleme ---- */
+let CHAT_PHOTO=null;   // {path, dataUrl}
+function showChatPreview(dataUrl,loading){const p=document.getElementById("chat-preview");
+  p.style.display="flex";
+  p.innerHTML=`<img src="${dataUrl}" alt="">`+
+    `<span class="cp-lbl">${loading?"Yükleniyor…":"Fotoğraf hazır"}</span>`+
+    `<button class="cp-rm" onclick="chatClearPhoto()" aria-label="Kaldır">✕</button>`}
+function chatClearPhoto(){CHAT_PHOTO=null;const p=document.getElementById("chat-preview");
+  p.style.display="none";p.innerHTML="";const f=document.getElementById("chat-file");if(f)f.value=""}
+function chatPickPhoto(e){const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;
+  if(!CUR_USER){toast("Önce kullanıcı seç");return}
+  if(!/image\/(jpe?g|png|webp)/i.test(f.type)){toast("jpg, png veya webp olmalı");return}
+  if(f.size>5*1024*1024){toast("En fazla 5MB");return}
+  const rd=new FileReader();
+  rd.onload=async()=>{const dataUrl=rd.result;showChatPreview(dataUrl,true);
+    const fd=new FormData();fd.append("foto",f);fd.append("kullanici",CUR_USER);
+    try{const r=await fetch("/api/upload",{method:"POST",body:fd});const d=await r.json();
+      if(d.ok){CHAT_PHOTO={path:d.dosya_yolu,dataUrl};showChatPreview(dataUrl,false)}
+      else{toast(d.hata||"Yüklenemedi");chatClearPhoto()}
+    }catch(err){toast("Yüklenemedi");chatClearPhoto()}};
+  rd.readAsDataURL(f)}
+async function sendChat(){const inp=document.getElementById("chat-text");const q=(inp.value||"").trim();
+  const photo=CHAT_PHOTO;
+  if(!q&&!photo)return;
   inp.value="";
   const gecmis=CHAT.slice(-12).map(m=>({role:m.rol==="bot"?"assistant":"user",content:m.metin}));
-  CHAT.push({rol:"user",metin:q});const c=document.getElementById("chat");
-  c.insertAdjacentHTML("beforeend",renderBubble({rol:"user",metin:q}));
+  CHAT.push({rol:"user",metin:q||"📷 Fotoğraf"});const c=document.getElementById("chat");
+  const userHtml=photo
+    ?`<div class="bubble user"><img class="bubble-img" src="${photo.dataUrl}" alt="">${q?`<div>${esc(q)}</div>`:""}</div>`
+    :renderBubble({rol:"user",metin:q});
+  c.insertAdjacentHTML("beforeend",userHtml);
+  chatClearPhoto();
   c.insertAdjacentHTML("beforeend",`<div class="bubble bot" id="typing" style="opacity:.6;font-style:italic;font-size:13px">yazıyor...</div>`);scrollChat();
   try{
-    const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER,gecmis})});
+    const resp=await fetch("/api/chat-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soru:q,mesaj:q,kullanici:CUR_USER,gecmis,image_path:photo?photo.path:null})});
     const reader=resp.body.getReader();const dec=new TextDecoder();
     let buf="",allText="";
     while(true){
