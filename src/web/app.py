@@ -2442,6 +2442,73 @@ _TICKER_STOP = {
 _TICKER_RE_ANY = re.compile(r"\b[A-Za-z]{2,5}\b")   # kucuk/karisik harf dahil
 
 
+# Turkce sirket adi / yaygin takma ad -> BIST sembolu. Kullanici "Aselsan",
+# "Garanti", "THY" gibi yazinca sembole cevrilir. Anahtarlar _norm() ile (kucuk
+# harf + tr->ascii) yazilir; eslestirme buyuk/kucuk ve Turkce karakter duyarsizdir.
+_COMPANY_ALIASES = {
+    "thy": "THYAO",
+    "turk hava yollari": "THYAO",
+    "garanti": "GARAN",
+    "garanti bbva": "GARAN",
+    "akbank": "AKBNK",
+    "aselsan": "ASELS",
+    "koc": "KCHOL",
+    "koc holding": "KCHOL",
+    "tupras": "TUPRS",
+    "eregli": "EREGL",
+    "yapi kredi": "YKBNK",
+    "yapikredi": "YKBNK",
+    "sisecam": "SISE",
+    "turkcell": "TCELL",
+    "bim": "BIMAS",
+    "ford otosan": "FROTO",
+    "tofas": "TOASO",
+    "koza altin": "KOZAL",
+    "emlak konut": "EKGYO",
+    "petkim": "PETKM",
+    "arcelik": "ARCLK",
+    "sabanci": "SAHOL",
+    "sabanci holding": "SAHOL",
+    "halkbank": "HALKB",
+    "vakifbank": "VAKBN",
+    "is bankasi": "ISCTR",
+    "tav": "TAVHL",
+    "tav havalimanlari": "TAVHL",
+    "pegasus": "PGSUS",
+    "migros": "MGROS",
+    "ulker": "ULKER",
+    "coca cola": "CCOLA",
+    "coca cola icecek": "CCOLA",
+    "dogan holding": "DOHOL",
+    "enka": "ENKAI",
+    "enka insaat": "ENKAI",
+    "kordsa": "KORDS",
+    "turk telekom": "TTKOM",
+}
+
+# Tam sirket adlari (COMPANY_NAMES) + yukaridaki takma adlardan tek bir
+# normalize-edilmis ad -> sembol haritasi. Uzun adlar once eslessin diye
+# uzunluga gore siralanmis tek regex derlenir ("yapi kredi" -> "kredi"den once).
+_NAME_TICKER_MAP = {_norm(_ad): _tk for _tk, _ad in COMPANY_NAMES.items()}
+_NAME_TICKER_MAP.update(_COMPANY_ALIASES)
+_NAME_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in
+                      sorted(_NAME_TICKER_MAP, key=len, reverse=True)) + r")\b")
+
+
+def _detect_company_tickers(text: str) -> list[str]:
+    """Metindeki Turkce sirket adlarini BIST sembolune cevirir.
+
+    'Aselsan'->ASELS, 'Garanti'->GARAN, 'THY'->THYAO ... Buyuk/kucuk harf ve
+    Turkce karakter duyarsizdir (or. 'tüpraş', 'TÜPRAŞ', 'Tupras' hepsi TUPRS)."""
+    out = []
+    for m in _NAME_RE.findall(_norm(text or "")):
+        tk = _NAME_TICKER_MAP.get(m)
+        if tk and tk not in out:
+            out.append(tk)
+    return out
+
+
 def _known_tickers() -> set[str]:
     """Sistemin tanidigi tum semboller (commentary + portfoy + watchlist + BIST evreni).
 
@@ -2473,11 +2540,17 @@ def _known_tickers() -> set[str]:
 def _detect_tickers(text: str, limit: int = 4) -> list[str]:
     """Metindeki olasi hisse sembollerini dondurur.
 
+    0) Turkce sirket adi / takma ad (or. 'Aselsan'->ASELS, 'THY'->THYAO).
     1) BUYUK harf yazilmis 2-5 harfli kelimeler (klasik sembol yazimi).
     2) Kucuk/karisik harfle yazilmis ama SISTEMCE BILINEN semboller (or. 'spcx',
        'Thyao') -- boylece kullanici sembolu kucuk yazinca da fiyat cekilir."""
     txt = text or ""
     out = []
+    for tk in _detect_company_tickers(txt):
+        if tk not in out:
+            out.append(tk)
+            if len(out) >= limit:
+                return out[:limit]
     for m in _TICKER_RE.findall(txt):
         if m in _TICKER_STOP or m in out:
             continue
