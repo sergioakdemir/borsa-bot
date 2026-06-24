@@ -633,6 +633,31 @@ def _bigpara_price(slug: str) -> dict:
     return out
 
 
+def _bigpara_slug(ticker: str) -> str | None:
+    """BIST ticker -> bigpara hisse detay slug'i.
+
+    Or. 'ASELS' -> 'asels-aselsan-detay'. Slug, COMPANY_NAMES'teki unvandan
+    uretilir (tr->ascii, harf-disi -> '-'); bot evreninde olmayan ticker icin
+    None doner (o zaman bigpara yedegine dusulmez)."""
+    t = (ticker or "").upper().split(".")[0]
+    name = COMPANY_NAMES.get(t)
+    if not name:
+        return None
+    nm = re.sub(r"[^a-z0-9]+", "-", _norm(name)).strip("-")
+    return f"{t.lower()}-{nm}-detay" if nm else None
+
+
+def _bist_fiyat_yedek(ticker: str) -> dict | None:
+    """BIST hissesi icin yfinance basarisiz olunca bigpara yedegi. {fiyat, gunluk} veya None."""
+    slug = _bigpara_slug(ticker)
+    if not slug:
+        return None
+    d = _bigpara_price(slug)
+    if d and d.get("fiyat") is not None:
+        return {"fiyat": d["fiyat"], "gunluk": d.get("gunluk")}
+    return None
+
+
 def search_crypto(q: str) -> list[dict]:
     """Kripto paralar: CoinGecko arama + toplu fiyat/24s degisim."""
     q = (q or "").strip()
@@ -2632,15 +2657,45 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
                 break
         if bulundu:
             continue
-        # YEDEK: batch download bos dondu (yfinance ara sira sapitiyor, or. SPCX) ->
+        # YEDEK 1: batch download bos dondu (yfinance ara sira sapitiyor, or. SPCX) ->
         # her aday sembolu tek tek Ticker.history / fast_info ile yeniden dene
         for sym, mkt in cands:
             d = _yf_single_price(sym)
             if d and d.get("fiyat") is not None:
                 out.append({"hisse": t, "fiyat": d["fiyat"], "gunluk": d.get("gunluk"),
                             "para_birimi": "$" if mkt == "abd" else "₺"})
+                bulundu = True
                 break
+        if bulundu:
+            continue
+        # YEDEK 2: yfinance her iki yoldan da bos/429 dondu -> BIST hissesi ise
+        # bigpara'dan cek (TR cikisli proxy). Sadece BIST adayi olanlar icin.
+        if any(mkt == "bist" for _, mkt in cands):
+            d = _bist_fiyat_yedek(t)
+            if d and d.get("fiyat") is not None:
+                out.append({"hisse": t, "fiyat": d["fiyat"], "gunluk": d.get("gunluk"),
+                            "para_birimi": "₺", "kaynak": "bigpara"})
+                _dbg("bigpara yedegi kullanildi", t)
+                bulundu = True
+        if not bulundu:
+            # Hicbir kaynak veri vermedi: ticker tespit edildi ama fiyat alinamadi.
+            # Bunu isaretle ki bot "guncel verim yok" yerine "gecici olarak
+            # alinamiyor" desin (sembol gecerli, sorun kaynakta).
+            out.append({"hisse": t, "fiyat": None, "hata": "alinamadi"})
     return out
+
+
+def _anlik_satir(a: dict) -> str:
+    """Anlik fiyat kaydini sistem promptu icin tek satira cevirir.
+
+    Fiyat alinamadiysa (her iki kaynak da basarisiz) 'gecici olarak alinamiyor'
+    der; boylece bot 'guncel verim yok' demez."""
+    if a.get("fiyat") is None or a.get("hata"):
+        return f"{a['hisse']} fiyati su an GECICI OLARAK ALINAMIYOR (kaynak hatasi)"
+    if a.get("gunluk") is not None:
+        return (f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}, "
+                f"bugün %{a['gunluk']:+g} degisim")
+    return f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}"
 
 
 def _yf_single_price(sym: str) -> dict | None:
@@ -3196,11 +3251,8 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
         f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
         f"Makro: {json.dumps(makro, ensure_ascii=False)}"
-        + ("\nAnlik veri (yfinance, su an): " + "; ".join(
-            (f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}, bugün "
-             f"%{a['gunluk']:+g} degisim") if a.get("gunluk") is not None
-            else f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}"
-            for a in anlik_fiyatlar) if anlik_fiyatlar else "")
+        + ("\nAnlik veri (su an): " + "; ".join(
+            _anlik_satir(a) for a in anlik_fiyatlar) if anlik_fiyatlar else "")
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
            if plan_modu else ""))
 
@@ -3233,6 +3285,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "Baglamda 'Anlik veri' varsa bir hissenin guncel fiyat/gunluk degisim "
         "sorusunu DOGRUDAN o veriyle cevapla; bu durumda 'gercek zamanli verim yok' "
         "DEME, gercek fiyati ve degisimi soyle. "
+        "Eger 'Anlik veri'de bir hisse icin 'GECICI OLARAK ALINAMIYOR' yaziyorsa o "
+        "hissenin fiyatini soramadigini, fiyatin SU AN GECICI OLARAK ALINAMADIGINI "
+        "(birazdan tekrar denenebilecegini) soyle; ASLA 'guncel verim yok' veya "
+        "'bu konuda verim yok' DEME -- sembol gecerli, sorun yalniz veri kaynaginda. "
         "KULLANICININ PORTFOYU hakkinda EMIN olmadigin bir sey SOYLEME. Portfoy "
         "verisi ('Portfoyu') sana acikca verilmisse kullan; verilmemisse veya bos "
         "ise 'portfoy bilgine erisimim yok' de. Bir hissenin portfoyde olup "
