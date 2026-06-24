@@ -37,6 +37,12 @@ DATA = ROOT / "data"
 CONFIG = ROOT / "config"
 DB_PATH = DATA / "borsa.db"
 WATCHLIST_PATH = CONFIG / "watchlist.json"
+# Toplu fiyat cache'i (src.ops.update_fiyat_cache cron'u yazar; Bota Sor okur).
+FIYAT_CACHE_PATH = DATA / "fiyat_cache.json"
+# Acik borsada cache bu dakikadan eskiyse bayat sayilir -> canli kaynaga dusulur.
+_FIYAT_CACHE_TAZE_DK = 10
+# Para birimi tespitinde her zaman ABD ($) sayilacak sabit semboller.
+_SABIT_ABD = {"NVDA", "SPCX", "RXT", "CNCK"}
 
 # src paketini import edebilmek icin (app.py dogrudan script olarak calisir)
 if str(ROOT) not in sys.path:
@@ -2611,8 +2617,43 @@ def _detect_tickers(text: str, limit: int = 4) -> list[str]:
     return out[:limit]
 
 
+def _fiyat_cache_oku() -> dict:
+    """data/fiyat_cache.json'i okur (cron toplu yazar). Yoksa/bozuksa bos dict."""
+    try:
+        with open(FIYAT_CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _cache_yas_dk(guncelleme: str):
+    """Cache kaydinin yasini dakika cinsinden dondurur ('YYYY-MM-DD HH:MM'). None=cozulemedi."""
+    try:
+        dt = datetime.strptime(guncelleme, "%Y-%m-%d %H:%M").replace(
+            tzinfo=ZoneInfo("Europe/Istanbul"))
+        now = datetime.now(ZoneInfo("Europe/Istanbul"))
+        return max(0, int((now - dt).total_seconds() // 60))
+    except Exception:
+        return None
+
+
+def _cache_fiyat(ticker: str) -> dict | None:
+    """Bir ticker icin cache kaydi {fiyat, gunluk, kapali, guncelleme, yas_dk} veya None.
+
+    Taze sayilma kurali _anlik_fiyatlar'da uygulanir; bu fonksiyon sadece kaydi
+    ve yasini dondurur."""
+    rec = _fiyat_cache_oku().get((ticker or "").upper().split(".")[0])
+    if not rec or rec.get("fiyat") is None:
+        return None
+    return {**rec, "yas_dk": _cache_yas_dk(rec.get("guncelleme"))}
+
+
 def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
-    """Verilen TUM sembollerin yfinance'ten ANLIK fiyat + gunluk degisimini dondurur.
+    """Verilen TUM sembollerin ANLIK fiyat + gunluk degisimini dondurur.
+
+    Once data/fiyat_cache.json'a bakar (cron'un topladigi toplu fiyatlar): kayit
+    tazeyse (borsa kapaliysa her zaman, acikken <=10 dk) cache'ten doner ve
+    kaynak='cache' isaretler. Cache yoksa/bayatsa yfinance -> BigPara zincirine duser.
 
     Portfoyde olup olmadigina BAKMAZ; soruda gecen her hisse icin fiyat ceker.
     Commentary + portfoy + watchlist yalniz pazar (BIST/.IS vs ABD) tespitinde
@@ -2633,9 +2674,36 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
     wl = _load_watchlist()
     for t in (wl.get("bist_endeks", []) + wl.get("kisisel", [])):
         bist.add((t or "").upper().split(".")[0])
+    for d in wl.get("kisisel_diger", []):          # ABD/diger izlenenler (or. NVDA)
+        base = (d.get("ticker") or "").upper().split(".")[0]
+        if base:
+            (us if d.get("market") == "abd" else bist).add(base)
+    us |= _SABIT_ABD            # her zaman ABD say: NVDA, SPCX, RXT, CNCK
+
+    out = []
+    kalan = []    # cache'ten karsilanamayan (taze degil/yok) ticker'lar
+    # 0) CACHE: cron'un topladigi toplu fiyatlar. Borsa kapaliysa kayit her zaman
+    # gecerli (deger son kapanis); acikken sadece <=10 dk taze ise kullanilir.
+    for t in tickers:
+        c = _cache_fiyat(t)
+        if c is None:
+            kalan.append(t)
+            continue
+        kapali = bool(c.get("kapali"))
+        yas = c.get("yas_dk")
+        taze = kapali or (yas is not None and yas <= _FIYAT_CACHE_TAZE_DK)
+        if not taze:
+            kalan.append(t)
+            continue
+        out.append({"hisse": t, "fiyat": c["fiyat"], "gunluk": c.get("gunluk"),
+                    "para_birimi": "$" if t in us else "₺", "kaynak": "cache",
+                    "kapali": kapali, "yas_dk": yas})
+        _dbg("cache'ten", f"{t} (yas={yas} dk, kapali={kapali})")
+    if not kalan:
+        return out
 
     plan = {}    # ticker -> [(yf_symbol, market), ...] denenecek formlar
-    for t in tickers:
+    for t in kalan:
         if t in us:
             plan[t] = [(t, "abd")]
         elif t in bist:
@@ -2645,7 +2713,6 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
 
     syms = [s for cands in plan.values() for s, _ in cands]
     px = _yf_prices(syms)
-    out = []
     for t, cands in plan.items():
         bulundu = False
         for sym, mkt in cands:
@@ -2688,14 +2755,22 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
 def _anlik_satir(a: dict) -> str:
     """Anlik fiyat kaydini sistem promptu icin tek satira cevirir.
 
-    Fiyat alinamadiysa (her iki kaynak da basarisiz) 'gecici olarak alinamiyor'
-    der; boylece bot 'guncel verim yok' demez."""
+    - Fiyat alinamadiysa (tum kaynaklar basarisiz): 'gecici olarak alinamiyor'.
+    - Cache'ten geldiyse: borsa kapaliysa 'son kapanis', 5-10 dk eskiyse '(N dk
+      oncesi)' nitelemesi eklenir; <=5 dk ise canli gibi 'su an' der.
+    - Canli (yfinance/bigpara): 'su an'."""
     if a.get("fiyat") is None or a.get("hata"):
         return f"{a['hisse']} fiyati su an GECICI OLARAK ALINAMIYOR (kaynak hatasi)"
-    if a.get("gunluk") is not None:
-        return (f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}, "
-                f"bugün %{a['gunluk']:+g} degisim")
-    return f"{a['hisse']} su an {a['para_birimi']}{a['fiyat']}"
+    pb, fiyat = a.get("para_birimi", ""), a["fiyat"]
+    g = a.get("gunluk")
+    deg = f", bugün %{g:+g} degisim" if g is not None else ""
+    if a.get("kaynak") == "cache":
+        if a.get("kapali"):
+            return f"{a['hisse']} son kapanis {pb}{fiyat}{deg} (borsa kapali)"
+        yas = a.get("yas_dk")
+        if yas is not None and yas > 5:
+            return f"{a['hisse']} {pb}{fiyat}{deg} ({yas} dk oncesi)"
+    return f"{a['hisse']} su an {pb}{fiyat}{deg}"
 
 
 def _yf_single_price(sym: str) -> dict | None:
@@ -3284,7 +3359,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "'bu konuda guncel verim yok' de; asla tahmin yapma, uydurma. "
         "Baglamda 'Anlik veri' varsa bir hissenin guncel fiyat/gunluk degisim "
         "sorusunu DOGRUDAN o veriyle cevapla; bu durumda 'gercek zamanli verim yok' "
-        "DEME, gercek fiyati ve degisimi soyle. "
+        "DEME, gercek fiyati ve degisimi soyle. 'Anlik veri'deki nitelemeyi AYNEN "
+        "yansit: 'son kapanis' yaziyorsa borsanin kapali oldugunu ve bunun son "
+        "kapanis fiyati oldugunu soyle; '(N dk oncesi)' yaziyorsa fiyatin o kadar "
+        "once alindigini belirt; aksi halde 'su an' olarak guncel ver. "
         "Eger 'Anlik veri'de bir hisse icin 'GECICI OLARAK ALINAMIYOR' yaziyorsa o "
         "hissenin fiyatini soramadigini, fiyatin SU AN GECICI OLARAK ALINAMADIGINI "
         "(birazdan tekrar denenebilecegini) soyle; ASLA 'guncel verim yok' veya "

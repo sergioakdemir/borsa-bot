@@ -35,3 +35,5 @@ CRON_TZ=Europe/Istanbul
 30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_portfoy_snapshot >> /root/borsa-bot/logs/portfoy_snapshot.log 2>&1
 # Gun sonu ozeti (borsa kapanisi): hafta ici 18:20 (portfoy guncellendikten sonra)
 20 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.gun_sonu >> /root/borsa-bot/logs/gun_sonu.log 2>&1
+# Toplu fiyat cache guncelle (Bota Sor anlik fiyat): hafta ici 09:00-18:55 her 5 dk
+*/5 9-18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_fiyat_cache >> /root/borsa-bot/logs/fiyat_cache.log 2>&1
