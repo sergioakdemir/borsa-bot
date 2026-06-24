@@ -2773,6 +2773,117 @@ def _anlik_satir(a: dict) -> str:
     return f"{a['hisse']} su an {pb}{fiyat}{deg}"
 
 
+# Haber kaynaklari surec ici onbellegi: RSS feed'lerini ve KAP kaynagini her
+# soruda bastan kurmamak icin. Uzun calisan web servisinde ilk soru kaynaklari
+# isitir, sonraki sorular 5 sn butcesine rahat sigar.
+_HABER_KAYNAK_CACHE = {"ts": 0.0, "news_src": None, "rss_src": None}
+_HABER_KAYNAK_TTL = 300.0   # 5 dk (fiyat cache'i ile ayni tazelik penceresi)
+
+
+def _haber_kaynaklari(within_hours: int = 24):
+    """(news_src, rss_src) - 5 dk surec ici onbellekli. RSS'in _entries onbellegi
+    de instance ile korunur; boylece ayni feed'ler tekrar tekrar cekilmez."""
+    now = time.time()
+    c = _HABER_KAYNAK_CACHE
+    if c["news_src"] is not None and (now - c["ts"]) < _HABER_KAYNAK_TTL:
+        return c["news_src"], c["rss_src"]
+    news_src = None
+    try:
+        from src.news.service import get_news_source
+        news_src, _ = get_news_source(verbose=False)
+    except Exception:
+        news_src = None
+    rss_src = None
+    try:
+        from src.news.rss_source import RSSNewsSource
+        rss_src = RSSNewsSource(within_hours=within_hours)
+        # RSS feed'lerini arka planda isit: ilk soru beklemeden sonraki sorular
+        # 5 sn butcesine rahat sigar (_all_entries surec ici cache'i doldurur).
+        threading.Thread(target=lambda: _sessiz(rss_src._all_entries),
+                         daemon=True).start()
+    except Exception:
+        rss_src = None
+    c.update(ts=now, news_src=news_src, rss_src=rss_src)
+    return news_src, rss_src
+
+
+def _sessiz(fn):
+    """Bir fonksiyonu cagirir, her turlu hatayi yutar (arka plan isitma icin)."""
+    try:
+        fn()
+    except Exception:
+        pass
+
+
+def _hisse_haberleri(tickers: list[str], anlik_fiyatlar: list[dict] | None = None,
+                     limit_hisse: int = 2, within_hours: int = 24,
+                     timeout: float = 5.0) -> dict:
+    """Tespit edilen hisseler icin son `within_hours` saatlik haber + KAP bildirimi.
+
+    gather_news()'i (KAP + RSS birlesik) bir is parcaciginda cagirir ve EN FAZLA
+    `timeout` saniye bekler; asarsa habersiz devam eder ({} doner). Pazar (BIST/ABD)
+    anlik_fiyatlar'daki para biriminden ('$' -> ABD) tahmin edilir.
+
+    Doner: {ticker: ["HH:MM [Kaynak] Baslik (fiyatlanma)", ...]} (bos olabilir)."""
+    if not tickers:
+        return {}
+    para = {a.get("hisse"): a.get("para_birimi") for a in (anlik_fiyatlar or [])}
+    secili = tickers[:limit_hisse]
+
+    def _topla() -> dict:
+        from src.ai.commentary import gather_news
+        news_src, rss = _haber_kaynaklari(within_hours)
+        tz = ZoneInfo("Europe/Istanbul")
+        cutoff = datetime.now(tz) - timedelta(hours=within_hours)
+        sonuc = {}
+        for t in secili:
+            market = "abd" if para.get(t) == "$" else "bist"
+            try:
+                g = gather_news(t, news_src=news_src, rss_src=rss, market=market)
+            except Exception:
+                continue
+            satirlar, gorulen = [], set()
+            # 'bildirimler' = KAP (30g) + RSS birlesik tam liste; 24 saate filtrele.
+            for r in (g.get("bildirimler") or []):
+                tarih = r.get("tarih") or ""
+                try:
+                    dt = datetime.strptime(tarih, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+                    if dt < cutoff:
+                        continue
+                except Exception:
+                    pass                          # tarih cozulemezse ele alma, dahil et
+                baslik = _cap((r.get("baslik") or "").strip(), 120)
+                if not baslik or baslik.lower() in gorulen:
+                    continue
+                gorulen.add(baslik.lower())
+                saat = tarih[11:16] if len(tarih) >= 16 else ""
+                kaynak = r.get("kaynak") or "haber"
+                fiy = r.get("fiyatlanma")
+                etiket = " (fiyatlanmamis)" if fiy == "FIYATLANMADI" else ""
+                satirlar.append(f"{saat} [{kaynak}] {baslik}{etiket}".strip())
+                if len(satirlar) >= 6:
+                    break
+            if satirlar:
+                sonuc[t] = satirlar
+        return sonuc
+
+    import concurrent.futures
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_topla)
+    try:
+        res = fut.result(timeout=timeout)
+        ex.shutdown(wait=False)
+        return res or {}
+    except concurrent.futures.TimeoutError:
+        ex.shutdown(wait=False)               # arka plandaki is parcacigi kendi biter
+        _dbg("haber taramasi", f"timeout (>{timeout}s) -> habersiz devam")
+        return {}
+    except Exception as e:
+        ex.shutdown(wait=False)
+        _dbg("haber taramasi HATA", f"{type(e).__name__}: {e}")
+        return {}
+
+
 def _yf_single_price(sym: str) -> dict | None:
     """Tek sembol icin yedek fiyat cekme (batch yf.download bos donerse).
 
@@ -3254,7 +3365,16 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
             _dbg("UYARI", "ticker bulundu ama fiyat bos (yfinance bos/429 olabilir)")
     except Exception as e:
         _dbg("_anlik_fiyatlar HATA", f"{type(e).__name__}: {e}")
-        anlik_fiyatlar = []
+        _tickers, anlik_fiyatlar = [], []
+
+    # ANLIK HABER: soruda hisse gecince son 24 saatlik haber + KAP bildirimlerini
+    # tara (gather_news, en fazla 5 sn; asarsa habersiz devam et).
+    try:
+        hisse_haberleri = _hisse_haberleri(_tickers, anlik_fiyatlar) if _tickers else {}
+        _dbg("_hisse_haberleri", {k: len(v) for k, v in hisse_haberleri.items()})
+    except Exception as e:
+        _dbg("_hisse_haberleri HATA", f"{type(e).__name__}: {e}")
+        hisse_haberleri = {}
 
     try:
         from src.news.macro import get_macro
@@ -3318,6 +3438,13 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         portfoy_analiz = {"available": False}
 
     # Guncel baglam sistem promptuna eklenir (her soruda taze); konusma gecmisi messages'ta
+    # Hisse haberleri bloku: "ASELS icin bugünkü haberler: [liste]"
+    haber_metni = ""
+    if hisse_haberleri:
+        parcalar = [f"{t} icin bugünkü haberler (son 24 saat):\n- " + "\n- ".join(satirlar)
+                    for t, satirlar in hisse_haberleri.items()]
+        haber_metni = "\n\nHISSE HABERLERI (anlik tarama):\n" + "\n\n".join(parcalar)
+
     baglam_metni = (
         "\n\nGÜNCEL BAĞLAM (her soruda yenilenir):\n"
         f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
@@ -3328,6 +3455,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         f"Makro: {json.dumps(makro, ensure_ascii=False)}"
         + ("\nAnlik veri (su an): " + "; ".join(
             _anlik_satir(a) for a in anlik_fiyatlar) if anlik_fiyatlar else "")
+        + haber_metni
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
            if plan_modu else ""))
 
@@ -3367,6 +3495,12 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "hissenin fiyatini soramadigini, fiyatin SU AN GECICI OLARAK ALINAMADIGINI "
         "(birazdan tekrar denenebilecegini) soyle; ASLA 'guncel verim yok' veya "
         "'bu konuda verim yok' DEME -- sembol gecerli, sorun yalniz veri kaynaginda. "
+        "Baglamda 'HISSE HABERLERI' varsa MUTLAKA analiz et ve yorumla. Habere "
+        "dayanarak hissenin neden dustugu/yukseldigi tahminini yap (or. 'su KAP "
+        "bildirimi / su haber yuzunden satis gelmis olabilir'); fiyat hareketini "
+        "haberle iliskilendir. Haber yoksa 'bugün dikkat ceken bir haber/KAP "
+        "bildirimi gormuyorum, dusus muhtemelen genel piyasa/teknik kaynakli' de; "
+        "haber UYDURMA, sadece verilen basliklara dayan. "
         "KULLANICININ PORTFOYU hakkinda EMIN olmadigin bir sey SOYLEME. Portfoy "
         "verisi ('Portfoyu') sana acikca verilmisse kullan; verilmemisse veya bos "
         "ise 'portfoy bilgine erisimim yok' de. Bir hissenin portfoyde olup "
