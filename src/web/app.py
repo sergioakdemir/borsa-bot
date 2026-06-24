@@ -58,6 +58,24 @@ def _load_dotenv():
 
 _load_dotenv()
 
+# Bota Sor hata ayiklama gunlugu. BOTASOR_DEBUG=1 ise stderr'e adim adim yazar.
+# Akisin hangi adimda takildigini (ticker tespiti, anlik fiyat, plan modu, AI
+# cagrisi) gormek icin kullanilir; kapaliyken hicbir maliyeti yoktur.
+_DEBUG = os.environ.get("BOTASOR_DEBUG", "").strip() not in ("", "0", "false", "False")
+
+
+def _dbg(adim: str, *args) -> None:
+    if not _DEBUG:
+        return
+    try:
+        ek = " ".join(
+            (a if isinstance(a, str) else json.dumps(a, ensure_ascii=False, default=str))
+            for a in args)
+        print(f"[botasor] {adim}: {ek}".rstrip(), file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 app = Flask(__name__)
 
 # DB semasini/migrasyonlari hazirla (para_birimi, telegram_id kolonlari vb.)
@@ -2945,11 +2963,13 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     soru = (soru or "").strip()
     if not soru:
         return {"ok": False, "cevap": "Bir soru yaz."}
+    _dbg("ask_bot basladi", {"soru": soru, "kullanici": str(kullanici)})
 
     # --- POZISYON HATIRLATMA: "aldım / sattım / pozisyon açtım" (AI anahtari gerekmez) ---
     try:
         poz_res = _pozisyon_hatirlatma_yakala(soru)
         if poz_res is not None:
+            _dbg("erken donus", "pozisyon_hatirlatma")
             return poz_res
     except Exception:
         pass
@@ -2958,6 +2978,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     try:
         prof_res = _profil_tamamla(kullanici, soru)
         if prof_res is not None:
+            _dbg("erken donus", "profil_tamamla")
             return prof_res
     except Exception:
         pass
@@ -2966,6 +2987,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     try:
         alarm_res = _alarm_yakala(kullanici, soru)
         if alarm_res is not None:
+            _dbg("erken donus", "alarm")
             return alarm_res
     except Exception:
         pass
@@ -2974,6 +2996,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     try:
         sektor_res = _sektor_yakala(soru)
         if sektor_res is not None:
+            _dbg("erken donus", "sektor")
             return sektor_res
     except Exception:
         pass
@@ -2982,17 +3005,25 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
     try:
         gb_res = _geri_bildirim_yakala(soru)
         if gb_res is not None:
+            _dbg("erken donus", "geri_bildirim")
             return gb_res
     except Exception:
         pass
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
+        _dbg("erken donus", "ANTHROPIC_API_KEY yok")
         return {"ok": False, "cevap": "AI anahtarı ayarlı değil; şu an soru yanıtlayamıyorum."}
 
     # GUNLUK PLAN niyeti: "bugun ne yapmaliyim / bugunku plan nedir" vb.
+    # DIKKAT: 1. tekil sahis ("ne yapmaliyim/yapayim/yapsam") niyetini yakalar;
+    # 3. sahis gecmis/simdiki zaman ("Aselsan bugun ne yapTI/yapIYOR") bir HISSE
+    # sorusudur, plan modunu TETIKLEMEMELI (yoksa cevap plan formatina kayar).
     plan_modu = bool(re.search(
-        r"bug[uü]n.*(ne yap|yapmal[ıi]|plan)|bug[uü]nk[uü]\s+plan|g[uü]nl[uü]k\s+plan",
+        r"bug[uü]n.*(ne\s+yap(?:mal[ıi]|ay[ıi]m|al[ıi]m|sa[mk]?|ar[ıi]z)|yapmal[ıi]y[ıi]m"
+        r"|g[uü]nl[uü]k\s+plan|bug[uü]nk[uü]\s+plan)"
+        r"|bug[uü]nk[uü]\s+plan|g[uü]nl[uü]k\s+plan",
         soru, re.I))
+    _dbg("plan_modu", plan_modu)
 
     # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi ---
     try:
@@ -3085,8 +3116,14 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     # ANLIK FIYAT: soruda gecen hisse sembolleri icin yfinance'ten guncel veri
     try:
-        anlik_fiyatlar = _anlik_fiyatlar(_detect_tickers(soru), comm)
-    except Exception:
+        _tickers = _detect_tickers(soru)
+        _dbg("_detect_tickers", _tickers)
+        anlik_fiyatlar = _anlik_fiyatlar(_tickers, comm)
+        _dbg("_anlik_fiyatlar", anlik_fiyatlar)
+        if _tickers and not anlik_fiyatlar:
+            _dbg("UYARI", "ticker bulundu ama fiyat bos (yfinance bos/429 olabilir)")
+    except Exception as e:
+        _dbg("_anlik_fiyatlar HATA", f"{type(e).__name__}: {e}")
         anlik_fiyatlar = []
 
     try:
@@ -3245,6 +3282,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
 
     try:
         import anthropic
+        _dbg("AI cagrisi", {"model": _CHAT_MODEL, "anlik_fiyat_var": bool(anlik_fiyatlar)})
         client = anthropic.Anthropic()
         resp = client.messages.create(
             model=_CHAT_MODEL, max_tokens=700 if plan_modu else 400,
@@ -3256,6 +3294,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         cevap = re.sub(r"^[#>\-\*\s]*\|.*$", "", cevap, flags=re.M)   # tablo satirlari
         cevap = re.sub(r"[#*`_]+", "", cevap).strip()
         cevap = cevap or "Yanıt üretemedim."
+        _dbg("cevap uretildi", _cap(cevap, 120))
         # Sohbeti hafizaya kaydet
         if uid:
             try:
@@ -3266,6 +3305,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
                 pass
         return {"ok": True, "cevap": cevap}
     except Exception as e:
+        _dbg("AI HATA", f"{type(e).__name__}: {e}")
         return {"ok": False, "cevap": f"Hata: {type(e).__name__}"}
 
 
