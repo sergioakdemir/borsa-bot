@@ -397,7 +397,15 @@ def _minimal_card(ticker: str) -> dict:
 def _commentary_by_ticker() -> dict:
     out = {}
     for x in _read_json(DATA / "ai_commentary.json", []):
-        out[(x.get("ticker") or "").upper()] = x
+        k = (x.get("ticker") or "").upper()
+        if not k:
+            continue
+        # Ayni ticker icin birden cok kayit olabilir (gercek karar + market=None
+        # 'skipped' artigi). SKIPPED kayit, gercek karar iceren kaydi EZMESIN.
+        prev = out.get(k)
+        if prev is not None and prev.get("skipped") is False and x.get("skipped"):
+            continue
+        out[k] = x
     return out
 
 
@@ -3266,6 +3274,17 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         soru, re.I))
     _dbg("plan_modu", plan_modu)
 
+    # ANALIZ niyeti: "neden dustu/yukseldi", "yorumla", "analiz", "degerlendir",
+    # "ne durumda/nasil gidiyor" -> daha uzun, cok-paragrafli analiz cevabi istenir.
+    # _norm ile tr->ascii normalize edip ascii desenle eslestiriyoruz (or. "düştü"
+    # -> "dustu"); boylece Turkce karakterler (s/ş, c/ç ...) sorun cikarmaz.
+    analiz_modu = bool(re.search(
+        r"neden\s+(dus|yuksel|art|geril|cik|ind|in)|"
+        r"yorumla|analiz|degerlendir|ne durumda|nasil gidiyor|"
+        r"alir miyim|ne dersin|yorum yap",
+        _norm(soru)))
+    _dbg("analiz_modu", analiz_modu)
+
     # --- KOD MODU: guvenli arayuz (HTML/CSS/JS) degisikligi ---
     try:
         from src.web import code_mode
@@ -3376,6 +3395,26 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         _dbg("_hisse_haberleri HATA", f"{type(e).__name__}: {e}")
         hisse_haberleri = {}
 
+    # SORULAN HISSE: ai_commentary.json'daki son karar + gerekce (zengin) -> AI
+    # bunu fiyat/haberle birlikte yorumlasin. comm zaten _commentary_by_ticker().
+    sorulan_karar = []
+    for t in _tickers[:3]:
+        r = comm.get((t or "").upper())
+        if not r or r.get("skipped"):
+            continue
+        sorulan_karar.append({
+            "hisse": t,
+            "ai_karari": r.get("final_decision") or r.get("karar"),
+            "puan": r.get("score"),
+            "risk": (r.get("risk") or {}).get("score"),
+            "gerekce": _ilk_cumleler(r.get("gerekce", ""), 3),
+            "neden_simdi": _cap(r.get("neden_simdi") or "", 200),
+            "stop_loss": r.get("stop_loss") or r.get("stop_loss_seviyesi") or "",
+            "hedef_fiyat": r.get("hedef_fiyat") or "",
+            "tetikleyici_kosul": r.get("tetikleyici_kosul") or r.get("tekrar_bak_kosulu") or "",
+        })
+    _dbg("sorulan_karar", [s["hisse"] for s in sorulan_karar])
+
     try:
         from src.news.macro import get_macro
         makro = get_macro()
@@ -3455,6 +3494,8 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         f"Makro: {json.dumps(makro, ensure_ascii=False)}"
         + ("\nAnlik veri (su an): " + "; ".join(
             _anlik_satir(a) for a in anlik_fiyatlar) if anlik_fiyatlar else "")
+        + (f"\nSorulan hisse(ler) AI karari + gerekce: "
+           f"{json.dumps(sorulan_karar, ensure_ascii=False)}" if sorulan_karar else "")
         + haber_metni
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
            if plan_modu else ""))
@@ -3473,6 +3514,24 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
             "aksiyon listesi ver (her madde tek satir, somut). SADECE verilen baglami "
             "kullan, veri uydurma.")
 
+    analiz_notu = ""
+    if analiz_modu and _tickers:
+        analiz_notu = (
+            "\n\nANALIZ MODU — kullanici bir hissenin durumunu/neden hareket "
+            "ettigini soruyor. Bu soruda 'EN FAZLA 3 paragraf' ust limiti GECERSIZ; "
+            "EN AZ 3 paragraf, doyurucu bir analiz ver (baslik yazma, akici "
+            "cumlelerle):\n"
+            "1) Fiyat hareketi + bugünkü haber/KAP: 'Anlik veri'deki fiyat/gunluk "
+            "degisimi ver; 'HISSE HABERLERI' varsa hangi haber/bildirim etkili "
+            "olabilir soyle, yoksa 'bugün dikkat ceken haber yok' de.\n"
+            "2) Teknik gorunum: gunluk degisim + trend; 'Sorulan hisse AI karari + "
+            "gerekce'yi (karar/puan/risk/gerekce) yorumla.\n"
+            "3) Makro/sektor baglami: makro veriler + genel piyasa havasi (kac hisse "
+            "dusuyor/yukseliyor, USD-TRY, faiz vb.) ile iliskilendir.\n"
+            "Sonda kisa net bir degerlendirme/aksiyon. SADECE verilen baglami kullan; "
+            "haber/rakam UYDURMA ama elindeki tum bilgiyi (fiyat, AI karari, makro) "
+            "kullanarak en iyi yorumu yap. 'Guncel verim yok' DEME.")
+
     sistem = (
         "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani ve "
         "kullanicinin kisisel asistanisin. Karakterin: direkt, net, gereksiz "
@@ -3483,8 +3542,12 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "paragraf olsun. Gereksiz bilgi ekleme, SADECE sorulan seyi cevapla. "
         "Soru sormak istersen SADECE 1 soru sor, asla birden fazla soru sorma. "
         "Turkce konus; jargon (RSI/MACD) yok. Markdown/tablo/yildiz KULLANMA. "
-        "Yanitlarini SADECE verilen baglama dayandir; elinde bu konuda veri yoksa "
-        "'bu konuda guncel verim yok' de; asla tahmin yapma, uydurma. "
+        "Yanitlarini verilen baglama dayandir. Baglamda haber listesi varsa analiz "
+        "et. Haber yoksa TEKNIK ANALIZ yap (fiyat trendi/gunluk degisim, 'Sorulan "
+        "hisse(ler) AI karari + gerekce', sektor durumu, makro ortam). ASLA 'guncel "
+        "verim yok' / 'bu konuda verim yok' DEME -- her zaman elindeki mevcut "
+        "bilgilerle (fiyat, AI karari/gerekce, makro, gecmis) en iyi yorumu yap. "
+        "UYDURMA (olmayan haber/rakam icat etme) ama BILDIKLERINI soyle. "
         "Baglamda 'Anlik veri' varsa bir hissenin guncel fiyat/gunluk degisim "
         "sorusunu DOGRUDAN o veriyle cevapla; bu durumda 'gercek zamanli verim yok' "
         "DEME, gercek fiyati ve degisimi soyle. 'Anlik veri'deki nitelemeyi AYNEN "
@@ -3534,7 +3597,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
         "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
         "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
-        "sekilde yonetilir.)" + plan_notu + davranis_notu + baglam_metni)
+        "sekilde yonetilir.)" + plan_notu + analiz_notu + davranis_notu + baglam_metni)
 
     # Konusma gecmisi (ayni oturum, frontend'den): user/assistant siralamasi
     mesajlar = []
@@ -3553,7 +3616,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None) -> dict:
         _dbg("AI cagrisi", {"model": _CHAT_MODEL, "anlik_fiyat_var": bool(anlik_fiyatlar)})
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model=_CHAT_MODEL, max_tokens=700 if plan_modu else 400,
+            model=_CHAT_MODEL, max_tokens=700 if (plan_modu or analiz_modu) else 400,
             system=sistem,
             messages=mesajlar,
         )
