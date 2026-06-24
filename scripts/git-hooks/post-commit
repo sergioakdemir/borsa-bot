@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Otomatik changelog: her commit sonrasi commit mesajini data/changelog.json
+# BASINA ekler (en fazla 20 kayit tutar). Commit'i DEGISTIRMEZ ve yeniden commit
+# ETMEZ; sadece calisma agacindaki changelog.json'u gunceller (bir sonraki
+# commit'e dahil edilir). Kaynak: scripts/git-hooks/post-commit
+#   Kurulum: cp scripts/git-hooks/post-commit .git/hooks/ && chmod +x .git/hooks/post-commit
+set -u
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+CHANGELOG="$ROOT/data/changelog.json"
+
+# Yorumlayici: once repo venv'i, yoksa sistem python3
+PY="$ROOT/venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
+[ -n "$PY" ] || exit 0
+
+MSG="$(git log -1 --pretty=%B)"
+DATE="$(git log -1 --pretty=%cd --date=format:%Y-%m-%d)"
+
+CHANGELOG="$CHANGELOG" COMMIT_MSG="$MSG" COMMIT_DATE="$DATE" "$PY" - <<'PYEOF'
+import json, os, sys
+
+path = os.environ["CHANGELOG"]
+msg = (os.environ.get("COMMIT_MSG") or "").strip()
+date = (os.environ.get("COMMIT_DATE") or "").strip()
+if not msg:
+    sys.exit(0)
+
+subject = msg.splitlines()[0].strip()
+
+# Changelog bakim commit'lerini (otomatik kaydin push'lanmasi) tekrar loglama;
+# boylece sonsuz "her commit yeni kayit" dongusu olmaz.
+if subject.lower().startswith("changelog"):
+    sys.exit(0)
+
+baslik = subject[:50]
+
+# Onemli mi? Mesajda su anahtar kelimelerden biri geciyorsa onemli=true.
+low = msg.lower()
+ONEMLI_KEYW = ("kritik", "yeni özellik", "eklendi", "önemli", "feature")
+onemli = any(k in low for k in ONEMLI_KEYW)
+
+entry = {"tarih": date, "baslik": baslik, "detay": msg, "onemli": onemli}
+
+# Mevcut changelog'u oku (bozuksa/yoksa bos listeden basla, commit'i kirma).
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        data = []
+except (FileNotFoundError, json.JSONDecodeError):
+    data = []
+
+# Ayni commit iki kez eklenmesin (or. hook elle tekrar calistirilirsa).
+if data and data[0].get("detay") == msg and data[0].get("tarih") == date:
+    sys.exit(0)
+
+data.insert(0, entry)
+data = data[:20]   # en fazla 20 kayit
+
+# Mevcut dosya stiline uy: her kayit tek satirda (temiz diff).
+lines = [json.dumps(e, ensure_ascii=False) for e in data]
+out = "[\n  " + ",\n  ".join(lines) + "\n]\n"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(out)
+PYEOF
+exit 0
