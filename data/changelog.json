@@ -1,4 +1,5 @@
 [
+  {"tarih": "2026-06-24", "baslik": "Otomatik changelog post-commit hook eklendi", "detay": "Otomatik changelog post-commit hook eklendi", "onemli": true},
   {"tarih": "2026-06-24", "baslik": "Bota Sor'a fotoğraf yükleme", "detay": "Artık Bota Sor'da 📎 butonuyla grafik, haber veya portföy ekranı gönderebilirsin. Bot görseli analiz edip yatırım yorumu yapıyor. Her kullanıcı max 10 fotoğraf saklayabilir.", "onemli": true},
   {"tarih": "2026-06-24", "baslik": "Ufuk için teknoloji sistemi", "detay": "MIT, Stanford, Berkeley, arXiv, NASA, DARPA gibi 20 akademik ve kurum kaynağı takibe alındı. NVDA, AMD, TSM, ASML ve diğer teknoloji hisseleri Ufuk'un watchlist'ine eklendi.", "onemli": true},
   {"tarih": "2026-06-24", "baslik": "Bota Sor güçlendi", "detay": "Artık hisse sorunca fiyat + haber + teknik analiz birleştirilerek ChatGPT seviyesinde yorum yapıyor. Şirket adı yazınca (Aselsan, THY vb.) otomatik tanıyor.", "onemli": true},
