@@ -26,3 +26,4 @@ logs/
 # Uretilen veri ciktilari
 data/*.json
 config/drive_credentials.json
+src/web/templates/index.backup-*.html
