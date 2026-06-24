@@ -2789,6 +2789,78 @@ def _anlik_satir(a: dict) -> str:
     return f"{a['hisse']} su an {pb}{fiyat}{deg}"
 
 
+# --- HISSE KARSILASTIRMA: "THYAO mu PGSUS mu" / "X vs Y" / "X mi Y mi daha iyi" ---
+def _karsilastirma_intent(soru: str) -> bool:
+    """Soru iki hisseyi karsilastirma niyeti tasiyor mu? (ticker sayisindan bagimsiz)
+
+    - 'vs' / 'versus' / 'karsilastir' / 'hangisi' / 'daha iyi' gecerse, VEYA
+    - iki soru eki (mu...mu / mi...mi: 'THYAO mu PGSUS mu') varsa True."""
+    low = _norm(soru)
+    if re.search(r"\b(vs|versus)\b|karsilastir|hangisi|daha iyi", low):
+        return True
+    if len(re.findall(r"\bm[ui]\b", low)) >= 2:      # 'mu...mu' / 'mi...mi'
+        return True
+    return False
+
+
+def _karsilastirma_satiri(t: str, comm: dict, anlik_map: dict, haber_map: dict) -> str:
+    """Tek bir hisse icin karsilastirma satiri: fiyat/gunluk/karar/puan/risk/
+    analist konsensusu/F-K/son haber. SADECE mevcut veriyi kullanir (uydurmaz)."""
+    t = (t or "").upper()
+    r = comm.get(t, {}) or {}
+    a = anlik_map.get(t, {}) or {}
+    parcalar = []
+    fiyat = a.get("fiyat")
+    if fiyat is not None:
+        pb = a.get("para_birimi", "")
+        parcalar.append(f"fiyat {pb}{fiyat}")
+        g = a.get("gunluk")
+        if g is not None:
+            parcalar.append(f"gunluk %{g:+g}")
+    else:
+        parcalar.append("fiyat alinamadi")
+    karar = r.get("final_decision") or r.get("karar")
+    if karar:
+        parcalar.append(f"karar {karar}")
+    if r.get("score") is not None:
+        parcalar.append(f"puan {r.get('score')}")
+    risk = (r.get("risk") or {}).get("score")
+    if risk is not None:
+        parcalar.append(f"risk {risk}")
+    an = r.get("analist") or {}
+    if an.get("available"):
+        parcalar.append(
+            f"analist: {an.get('konsensus', '—')} "
+            f"({an.get('al_sayisi', 0)} AL/{an.get('tut_sayisi', 0)} TUT/"
+            f"{an.get('sat_sayisi', 0)} SAT, ort. hedef {an.get('ortalama_hedef')}, "
+            f"potansiyel %{an.get('potansiyel')})")
+    tm = r.get("temel") or {}
+    if tm.get("available") and tm.get("fk") is not None:
+        parcalar.append(f"F/K {tm.get('fk')}")
+    haberler = haber_map.get(t) or []
+    if haberler:
+        parcalar.append(f"son haber: {haberler[0]}")
+    return f"{t}: " + ", ".join(parcalar)
+
+
+def _karsilastirma_blok(tickers: list[str], comm: dict, anlik_fiyatlar: list[dict],
+                        haber_map: dict, portfoy_tickerlari: set | None = None) -> str:
+    """Iki hisse icin AI'ya verilecek karsilastirma metnini olusturur."""
+    if len(tickers) < 2:
+        return ""
+    h1, h2 = tickers[0].upper(), tickers[1].upper()
+    anlik_map = {(a.get("hisse") or "").upper(): a for a in (anlik_fiyatlar or [])}
+    blok = (f"\n\nKARSILASTIRMA: {h1} vs {h2}\n"
+            + _karsilastirma_satiri(h1, comm, anlik_map, haber_map) + "\n"
+            + _karsilastirma_satiri(h2, comm, anlik_map, haber_map))
+    sahip = portfoy_tickerlari or set()
+    sahip_olunan = [h for h in (h1, h2) if h in sahip]
+    if sahip_olunan:
+        blok += ("\nKullanicinin portfoyunde: " + ", ".join(sahip_olunan)
+                 + " (bunu degerlendirmende goz onunde bulundur).")
+    return blok
+
+
 # Haber kaynaklari surec ici onbellegi: RSS feed'lerini ve KAP kaynagini her
 # soruda bastan kurmamak icin. Uzun calisan web servisinde ilk soru kaynaklari
 # isitir, sonraki sorular 5 sn butcesine rahat sigar.
@@ -3216,6 +3288,136 @@ def _pozisyon_hatirlatma_yakala(soru):
         "ekleyebilir veya çıkarabilirsin.")}
 
 
+# --- OTOMATIK PORTFOY GUNCELLEME (vision): foto + 'portfoy/guncelle/kaydet/ekle' ---
+# Fotograftan okunan hisseler kullaniciya gosterilir; onay gelince DB'ye yazilir.
+# Bekleyen guncelleme kullanici_hafiza KV'sinde 'pending_portfoy' anahtarinda tutulur.
+_PORTFOY_FOTO_KW = ("portfoy", "guncelle", "kaydet", "ekle")     # _norm'lu kontrol
+_PORTFOY_ONAY_RE = re.compile(
+    r"\b(evet|kaydet|tamam|onayla|olur|ekle|kaydedebilirsin|dogru|kaydet)\b", re.I)
+_PORTFOY_RED_RE = re.compile(
+    r"\b(hayir|iptal|vazgec|yanlis|duzelt|olmaz)\b", re.I)
+
+
+def _tr_fiyat(x) -> str:
+    """Float fiyati Turkce gosterime cevirir (1234.5 -> '1.234,50')."""
+    if x is None:
+        return "?"
+    return f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _tr_adet(x) -> str:
+    """Adet: tam sayiysa binlik noktayla, degilse ondalik virgulle."""
+    if x is None:
+        return "?"
+    f = float(x)
+    if f.is_integer():
+        return f"{int(f):,}".replace(",", ".")
+    return f"{f:g}".replace(".", ",")
+
+
+def _portfoy_holding_satiri(h: dict) -> str:
+    pb = h.get("para_birimi") or "TL"
+    return f"• {h.get('ticker')}: {_tr_adet(h.get('adet'))} adet @ {_tr_fiyat(h.get('fiyat'))} {pb}"
+
+
+def _portfoy_foto_yakala(kullanici, soru, foto):
+    """Kullanici foto + 'portfoy/guncelle/kaydet/ekle' gonderince fotograftaki
+    hisseleri okur, kullaniciya gosterip onay ister; bekleyen guncellemeyi KV'ye yazar.
+
+    foto yoksa veya anahtar kelime yoksa None (normal akis devam etsin)."""
+    if not foto:
+        return None
+    low = _norm(soru)
+    if not any(k in low for k in _PORTFOY_FOTO_KW):
+        return None
+    uid = _uid(kullanici)
+    if uid is None:
+        return {"ok": True, "cevap": "Önce bir kullanıcı seç, sonra portföyünü kaydedeyim."}
+    # Fotografi base64 data-url'e cevirip mevcut vision okuyucuya ver
+    try:
+        ext = foto.suffix.lstrip(".").lower()
+        media = _UPLOAD_MIME.get(ext, "image/jpeg")
+        b64 = base64.b64encode(foto.read_bytes()).decode("ascii")
+    except OSError:
+        return {"ok": True, "cevap": "Fotoğrafı okuyamadım, tekrar gönderir misin?"}
+    res = parse_portfolio_image([f"data:{media};base64,{b64}"])
+    if not res.get("ok"):
+        return {"ok": True, "cevap": (
+            "Fotoğraftan portföyü okuyamadım. Daha net bir ekran görüntüsü "
+            "gönderir misin ya da hisseyi manuel yazar mısın?")}
+    holdings = res.get("holdings") or []
+    iyi = [h for h in holdings if h.get("ticker") and h.get("adet") is not None
+           and h.get("fiyat") is not None]
+    eksik = [h.get("ticker") for h in holdings
+             if h.get("ticker") and (h.get("adet") is None or h.get("fiyat") is None)]
+    if not iyi:
+        return {"ok": True, "cevap": (
+            "Fotoğraftaki hisseleri net okuyamadım (adet/fiyat seçilemedi). "
+            "Manuel girer misin?")}
+    # Bekleyen guncellemeyi KV'ye yaz (onay gelince kullanilacak)
+    from src.db import database as db
+    try:
+        db.hafiza_kv_set(uid, "pending_portfoy", json.dumps(iyi, ensure_ascii=False))
+    except Exception:
+        pass
+    satirlar = "\n".join(_portfoy_holding_satiri(h) for h in iyi)
+    cevap = "Şunları tespit ettim:\n" + satirlar
+    if eksik:
+        cevap += ("\nŞunları net okuyamadım, manuel girer misin: "
+                  + ", ".join(t for t in eksik if t) + ".")
+    cevap += "\nPortföyüne kaydedeyim mi?"
+    return {"ok": True, "cevap": cevap}
+
+
+def _portfoy_onay_takip(kullanici, soru):
+    """Bekleyen portfoy guncellemesi varsa kullanicinin onay/red yanitini isler.
+
+    'evet/kaydet/tamam' -> pozisyonlari DB'ye yazar; 'hayir/duzelt' -> iptal eder.
+    Bekleyen yoksa veya yanit belirsizse None (normal akis devam eder)."""
+    uid = _uid(kullanici)
+    if uid is None:
+        return None
+    from src.db import database as db
+    try:
+        ham = db.hafiza_kv_get(uid, "pending_portfoy")
+    except Exception:
+        ham = None
+    if not ham:
+        return None
+    try:
+        bekleyen = json.loads(ham)
+    except (ValueError, TypeError):
+        bekleyen = None
+    if not bekleyen:
+        db.hafiza_kv_set(uid, "pending_portfoy", "")
+        return None
+    low = _norm(soru)
+    if _PORTFOY_RED_RE.search(low):        # red/duzelt -> iptal, tekrar iste
+        db.hafiza_kv_set(uid, "pending_portfoy", "")
+        return {"ok": True, "cevap": (
+            "Tamam, kaydetmedim. Doğrusunu yazabilir ya da düzeltilmiş bir "
+            "ekran görüntüsü gönderebilirsin.")}
+    if not _PORTFOY_ONAY_RE.search(low):   # belirsiz yanit -> normal akisa birak
+        return None
+    eklendi, hatali = [], []
+    for h in bekleyen:
+        r = portfolio_add({"kullanici": kullanici, "ticker": h.get("ticker"),
+                           "adet": h.get("adet"), "fiyat": h.get("fiyat"),
+                           "para_birimi": h.get("para_birimi")})
+        if r.get("ok"):
+            eklendi.append(h)
+        else:
+            hatali.append(h.get("ticker"))
+    db.hafiza_kv_set(uid, "pending_portfoy", "")
+    if not eklendi:
+        return {"ok": True, "cevap": "Kaydederken sorun oldu, manuel ekler misin?"}
+    satirlar = "\n".join(_portfoy_holding_satiri(h) for h in eklendi)
+    cevap = "Portföyüne kaydettim:\n" + satirlar
+    if hatali:
+        cevap += "\nŞunları kaydedemedim: " + ", ".join(t for t in hatali if t) + "."
+    return {"ok": True, "cevap": cevap}
+
+
 def _safe_upload_path(image_path) -> Path | None:
     """Verilen yolu UPLOADS_DIR icinde, var olan bir dosyaya cozer. Disari
     cikan/uydurma yollari (path traversal) reddeder -> None."""
@@ -3282,6 +3484,26 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         return {"ok": False, "cevap": "Bir soru yaz."}
     _dbg("ask_bot basladi", {"soru": soru, "kullanici": str(kullanici),
                              "foto": bool(foto)})
+
+    # --- PORTFOY ONAY TAKIBI: bekleyen foto-portfoy guncellemesi varsa onay/red isle ---
+    # (AI anahtari gerekmez; fotosuz 'evet/kaydet/hayir' yanitlarini yakalar)
+    try:
+        onay_res = None if foto else _portfoy_onay_takip(kullanici, soru)
+        if onay_res is not None:
+            _dbg("erken donus", "portfoy_onay")
+            return onay_res
+    except Exception:
+        pass
+
+    # --- OTOMATIK PORTFOY GUNCELLEME (vision): foto + 'portfoy/guncelle/kaydet/ekle' ---
+    # Fotograftaki hisseleri okuyup onay ister; foto varsa diger kural yollarindan once.
+    try:
+        pfoto_res = _portfoy_foto_yakala(kullanici, soru, foto)
+        if pfoto_res is not None:
+            _dbg("erken donus", "portfoy_foto")
+            return pfoto_res
+    except Exception as e:
+        _dbg("portfoy_foto HATA", f"{type(e).__name__}: {e}")
 
     # --- POZISYON HATIRLATMA: "aldım / sattım / pozisyon açtım" (AI anahtari gerekmez) ---
     # Fotograf varsa kural-tabanli kisa yollar atlanir; dogrudan gorsel analizine gidilir.
@@ -3467,6 +3689,20 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         _dbg("_hisse_haberleri HATA", f"{type(e).__name__}: {e}")
         hisse_haberleri = {}
 
+    # HISSE KARSILASTIRMA: "X mu Y mu" / "X vs Y" -> iki hisseyi yan yana ver
+    karsilastirma_modu = bool(foto is None and _karsilastirma_intent(soru)
+                              and len(_tickers) >= 2)
+    karsilastirma_metni = ""
+    if karsilastirma_modu:
+        try:
+            portfoy_set = {(p.get("hisse") or "").upper() for p in baglam}
+            karsilastirma_metni = _karsilastirma_blok(
+                _tickers[:2], comm, anlik_fiyatlar, hisse_haberleri, portfoy_set)
+            _dbg("karsilastirma_modu", _tickers[:2])
+        except Exception as e:
+            _dbg("karsilastirma HATA", f"{type(e).__name__}: {e}")
+            karsilastirma_modu, karsilastirma_metni = False, ""
+
     # SORULAN HISSE: ai_commentary.json'daki son karar + gerekce (zengin) -> AI
     # bunu fiyat/haberle birlikte yorumlasin. comm zaten _commentary_by_ticker().
     sorulan_karar = []
@@ -3569,6 +3805,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         + (f"\nSorulan hisse(ler) AI karari + gerekce: "
            f"{json.dumps(sorulan_karar, ensure_ascii=False)}" if sorulan_karar else "")
         + haber_metni
+        + karsilastirma_metni
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
            if plan_modu else ""))
 
@@ -3603,6 +3840,23 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
             "Sonda kisa net bir degerlendirme/aksiyon. SADECE verilen baglami kullan; "
             "haber/rakam UYDURMA ama elindeki tum bilgiyi (fiyat, AI karari, makro) "
             "kullanarak en iyi yorumu yap. 'Guncel verim yok' DEME.")
+
+    karsilastirma_notu = ""
+    if karsilastirma_modu:
+        karsilastirma_notu = (
+            "\n\nKARSILASTIRMA MODU — kullanici iki hisseyi karsilastiriyor. "
+            "Bu soruda 'EN FAZLA 3 paragraf' ust limiti GECERSIZ. Baglamdaki "
+            "'KARSILASTIRMA' blogunu kullan ve su sirayla ver:\n"
+            "1) Once KISA bir ozet karsilastirma (her hisse icin tek satir, dogal "
+            "cumleyle: fiyat/gunluk, karar, puan, risk, analist konsensusu, F/K, "
+            "varsa son haber). Tablo/yildiz/markdown YOK, satir satir duz metin.\n"
+            "2) Iki-uc cumlelik kiyas: hangisi hangi acidan (deger/F-K, analist "
+            "beklentisi, risk, momentum/haber) one cikiyor.\n"
+            "3) Sonunda NET bir satir: 'Tercihim: X' diyerek hangisini sectigini ve "
+            "NEDEN sectigini soyle. Kullanicinin portfoyunde biri varsa ('Kullanicinin "
+            "portfoyunde' notu) bunu mutlaka degerlendirmene kat.\n"
+            "SADECE verilen baglami kullan; rakam/haber UYDURMA. Veri eksikse "
+            "(or. fiyat alinamadi/analist yok) bunu acikca soyle, uydurma.")
 
     sistem = (
         "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani ve "
@@ -3669,7 +3923,8 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
         "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
         "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
-        "sekilde yonetilir.)" + plan_notu + analiz_notu + davranis_notu + baglam_metni)
+        "sekilde yonetilir.)" + plan_notu + analiz_notu + karsilastirma_notu
+        + davranis_notu + baglam_metni)
 
     # Konusma gecmisi (ayni oturum, frontend'den): user/assistant siralamasi
     mesajlar = []
@@ -3715,7 +3970,8 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         client = anthropic.Anthropic()
         resp = client.messages.create(
             model=_model,
-            max_tokens=900 if foto else (700 if (plan_modu or analiz_modu) else 400),
+            max_tokens=900 if foto else (
+                700 if (plan_modu or analiz_modu or karsilastirma_modu) else 400),
             system=sistem,
             messages=mesajlar,
         )
