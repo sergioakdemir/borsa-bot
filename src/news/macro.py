@@ -263,6 +263,31 @@ def _borsapy_macro() -> dict:
     return out
 
 
+# TCMB 1 hafta repo (politika faizi) EVDS serisi - gunluk, borsapy uzerinden cekilir
+_EVDS_POLITIKA_SERISI = "TP.APIFON4"
+
+
+def _evds_borsapy_policy_rate():
+    """borsapy EVDS ile GUNCEL politika faizi (1 hafta repo, TP.APIFON4 serisi).
+
+    EVDS_API_KEY gerekir. borsapy.policy_rate() yanlis (7.0) donerken bu seri dogru
+    guncel degeri verir. Makul aralik (20-80) disi deger / hata / anahtar yok -> None."""
+    key = os.environ.get("EVDS_API_KEY")
+    if not key:
+        return None
+    try:
+        import borsapy as bp
+        bp.set_evds_key(key)
+        df = bp.evds_series(_EVDS_POLITIKA_SERISI)
+        seri = df["Value"].dropna()         # Date index + Value sutunu; son = en guncel
+        if seri.empty:
+            return None
+        v = round(float(seri.iloc[-1]), 2)
+    except Exception:
+        return None
+    return v if 20 <= v <= 80 else None
+
+
 def _investing_cpi_yoy(url=None):
     """investing.com ekonomik-takvim event sayfasindan TUFE (yillik) degerini ceker.
 
@@ -347,14 +372,25 @@ def get_macro() -> dict:
         if sv is not None and "son_bilinen" not in out["kaynaklar"]:
             out["kaynaklar"].append("son_bilinen")
 
-    # 2) EVDS3 -> politika_faizi, tufe_yillik (KYC sonrasi otomatik devreye girer)
+    # 2) Politika faizi + TUFE
     out["politika_faizi"] = None
     out["tufe_yillik"] = None
 
-    # 2a) borsapy (opsiyonel): TUFE + politika faizi. Basarisiz/yok ise sessizce atla.
+    # 2-pre) POLITIKA FAIZI BIRINCIL: EVDS (borsapy ile, EVDS_API_KEY). borsapy'nin
+    # policy_rate()'i yanlis (7.0) doner; EVDS serisi (TP.APIFON4, 1H repo) dogru
+    # guncel degeri verir. Basarisizsa asagidaki borsapy/EVDS3/TCMB zinciri devralir.
+    pf_evds = _evds_borsapy_policy_rate()
+    if pf_evds is not None:
+        out["politika_faizi"] = pf_evds
+        taze["politika_faizi"] = pf_evds
+        if "EVDS(borsapy)" not in out["kaynaklar"]:
+            out["kaynaklar"].append("EVDS(borsapy)")
+
+    # 2a) borsapy (opsiyonel): TUFE + politika faizi. Zaten dolu alani EZMEZ;
+    # politika faizi yukarida EVDS'ten geldiyse korunur. Basarisiz/yok ise atla.
     bpy = _borsapy_macro()
     for ad in ("tufe_yillik", "politika_faizi"):
-        if bpy.get(ad) is not None:
+        if bpy.get(ad) is not None and out.get(ad) is None:
             out[ad] = bpy[ad]
             taze[ad] = bpy[ad]
             if "borsapy" not in out["kaynaklar"]:

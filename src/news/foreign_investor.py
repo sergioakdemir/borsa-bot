@@ -10,13 +10,25 @@ get_foreign_flow() -> {
   available, haftalik_net_alim_tl, yabanci_payi_yuzde, yon ("ALIYOR"/"SATIYOR"/"NOTR"),
   ozet, kaynak
 }
+
+KALICI KAYIT: her basarili cekimde piyasa geneli data/yabanci_pay.json'a (tarihe
+gore) yazilir; bellekte 6 saat TTL korunur. guncelle_yabanci_pay() (haftalik cron)
+ayrica her watchlist hissesinin yabanci payini (borsapy foreignRatio) ekler.
 """
+import json
 import os
 import re
 import time
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 _CACHE = {}
 _TTL = 6 * 3600.0          # haftalik veri; 6 saat onbellek
+
+_TZ = ZoneInfo("Europe/Istanbul")
+_PAY_PATH = Path(__file__).resolve().parents[2] / "data" / "yabanci_pay.json"
+_MAX_KAYIT = 60            # en fazla son 60 tarihi sakla (~1 yil haftalik)
 
 _DEFAULT_URL = ("https://www.borsaistanbul.com/tr/data/borsa-istanbul-verileri/"
                 "uluslararasi-yatirimcilar")
@@ -109,6 +121,90 @@ def _parse_page(html: str) -> dict | None:
     return {"net": net, "yon": yon, "pay": pay}
 
 
+def _bugun() -> str:
+    return datetime.now(_TZ).strftime("%Y-%m-%d")
+
+
+def _yukle_pay() -> dict:
+    """data/yabanci_pay.json'i okur (tarih -> kayit). Yoksa/bozuksa {}."""
+    try:
+        return json.loads(_PAY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _yaz_pay(d: dict) -> None:
+    """Kayitlari diske yazar; en yeni _MAX_KAYIT tarihi tutar (eskileri budar)."""
+    try:
+        if len(d) > _MAX_KAYIT:
+            for k in sorted(d)[:-_MAX_KAYIT]:
+                d.pop(k, None)
+        _PAY_PATH.parent.mkdir(exist_ok=True)
+        _PAY_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=1),
+                             encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _kaydet_piyasa(out: dict) -> None:
+    """Basarili get_foreign_flow sonucunu bugunku kayda 'piyasa' olarak yazar."""
+    if not out.get("available"):
+        return
+    d = _yukle_pay()
+    gun = _bugun()
+    kayit = d.get(gun) or {}
+    kayit["piyasa"] = {
+        "haftalik_net_alim_tl": out.get("haftalik_net_alim_tl"),
+        "yabanci_payi_yuzde": out.get("yabanci_payi_yuzde"),
+        "yon": out.get("yon"),
+    }
+    kayit["guncelleme"] = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
+    d[gun] = kayit
+    _yaz_pay(d)
+
+
+def _hisse_paylari() -> dict:
+    """Watchlist'teki her hisse icin borsapy foreignRatio (yabanci pay %). {ticker: oran}.
+    borsapy yoksa / hata olursa {} doner."""
+    try:
+        import borsapy as bp
+        from src.watchlist import load_watchlist
+    except Exception:
+        return {}
+    out = {}
+    for t in load_watchlist():
+        try:
+            v = bp.Ticker(t).info.todict().get("foreignRatio")
+            if v is not None:
+                out[t] = round(float(v), 2)
+        except Exception:
+            continue
+    return out
+
+
+def guncelle_yabanci_pay() -> dict:
+    """HAFTALIK tam guncelleme (cron): piyasa geneli + her watchlist hissesinin
+    yabanci payi -> data/yabanci_pay.json (tarihe gore). Ozet dondurur."""
+    flow = get_foreign_flow()              # aggregate (icinde _kaydet_piyasa calisir)
+    hisseler = _hisse_paylari()
+    d = _yukle_pay()
+    gun = _bugun()
+    kayit = d.get(gun) or {}
+    if flow.get("available"):
+        kayit["piyasa"] = {
+            "haftalik_net_alim_tl": flow.get("haftalik_net_alim_tl"),
+            "yabanci_payi_yuzde": flow.get("yabanci_payi_yuzde"),
+            "yon": flow.get("yon"),
+        }
+    if hisseler:
+        kayit["hisseler"] = hisseler
+    kayit["guncelleme"] = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
+    d[gun] = kayit
+    _yaz_pay(d)
+    return {"tarih": gun, "piyasa_available": flow.get("available"),
+            "hisse_sayisi": len(hisseler), "dosya": str(_PAY_PATH)}
+
+
 def get_foreign_flow() -> dict:
     """Haftalik yabanci net alim/satim + yabanci payi + yon."""
     now = time.monotonic()
@@ -138,6 +234,8 @@ def get_foreign_flow() -> dict:
     else:
         out["neden"] = "Borsa Istanbul verisi alinamadi (cografi/JS engeli)."
 
+    if out.get("available"):
+        _kaydet_piyasa(out)          # her basarili cekimde dosyaya da yaz
     _CACHE["flow"] = (now, out)
     return out
 
@@ -173,6 +271,9 @@ def briefing_line() -> str | None:
 
 
 if __name__ == "__main__":
-    import json
+    # Haftalik cron giris noktasi: piyasa + her hisse yabanci payini json'a yazar.
+    ozet = guncelle_yabanci_pay()
+    print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] yabanci pay guncellendi: "
+          f"piyasa={'var' if ozet['piyasa_available'] else 'yok'}, "
+          f"{ozet['hisse_sayisi']} hisse -> {ozet['dosya']}")
     print(json.dumps(get_foreign_flow(), ensure_ascii=False, indent=2))
-    print("brifing:", briefing_line())
