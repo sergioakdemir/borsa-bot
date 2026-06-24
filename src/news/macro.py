@@ -298,11 +298,31 @@ def get_macro() -> dict:
         return hit[1]
 
     out = {"available": False, "kaynaklar": []}
-
-    # 1) usdtry + tr_10y_faiz: investing.com -> Yahoo Finance -> son bilinen deger
     son_bilinen = _load_son_bilinen()
     taze = {}
+
+    # 0) BORSA MCP (BIRINCIL): USD/TRY + gram altin (+ EUR/TRY, brent bonus).
+    # Basarisizsa asagidaki investing.com -> yahoo -> son_bilinen zinciri devralir.
+    try:
+        from src.news.borsa_mcp import get_macro as _mcp_macro
+        mcp = _mcp_macro()
+    except Exception:
+        mcp = None
+    if mcp:
+        for kaynak_ad, hedef in (("usdtry", "usdtry"), ("gram_altin", "gram_altin"),
+                                 ("eur_try", "eur_try"), ("brent", "brent")):
+            v = mcp.get(kaynak_ad)
+            if v is not None:
+                out[hedef] = v
+                taze[hedef] = v
+        if any(out.get(a) is not None for a in
+               ("usdtry", "gram_altin", "eur_try", "brent")):
+            out["kaynaklar"].append("borsa_mcp")
+
+    # 1) usdtry + tr_10y_faiz: Borsa MCP gelmediyse investing.com -> Yahoo -> son bilinen
     for ad, url in _INVESTING.items():
+        if out.get(ad) is not None:        # MCP'den (or. usdtry) zaten geldi -> atla
+            continue
         v = _investing_last(url)
         if v is not None:
             out[ad] = v

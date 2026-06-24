@@ -213,6 +213,47 @@ def unpriced_fresh_news(ticker, news_src=None):
     return None
 
 
+def _kap_baslik_norm(baslik: str) -> str:
+    """KAP basligini dedup icin normalize eder (yildiz/bosluk/kucuk-buyuk farkini siler)."""
+    s = (baslik or "").lower().replace("*", " ")
+    return " ".join(s.split())[:80]
+
+
+def _mcp_kap_ekle(ticker, items, limit=10):
+    """Borsa MCP'den KAP haberi cekip mevcut (scraping) listesine EK olarak katar.
+
+    Ayni bildirimi iki kez islemesin diye normalize edilmis basliga gore tekrar
+    edenler elenir. MCP erisilemezse liste DEGISMEDEN doner (sessizce)."""
+    try:
+        from src.news.borsa_mcp import get_kap_news
+        mcp_haberler = get_kap_news(ticker, limit=limit)
+    except Exception:
+        mcp_haberler = None
+    if not mcp_haberler:
+        return items
+    from src.news.base import NewsItem
+    gorulen = {_kap_baslik_norm(getattr(it, "title", "")) for it in items}
+    gorulen_id = {getattr(it, "disclosure_id", None) for it in items}
+    birlesik = list(items)
+    eklenen = 0
+    for h in mcp_haberler:
+        pub = h.get("published_at")
+        if pub is None:                       # tarihsiz bildirimi 'taze' sayamayiz
+            continue
+        norm = _kap_baslik_norm(h.get("baslik"))
+        if norm in gorulen or (h.get("id") and h.get("id") in gorulen_id):
+            continue                          # ayni bildirim scraping'den de gelmis
+        gorulen.add(norm)
+        birlesik.append(NewsItem(
+            ticker=ticker, symbol=ticker, title=h.get("baslik"),
+            published_at=pub, source=h.get("kaynak") or "KAP-MCP",
+            url=h.get("url"), disclosure_id=h.get("id")))
+        eklenen += 1
+    if eklenen:
+        print(f"[KAP-MCP] {ticker}: Borsa MCP'den {eklenen} ek KAP bildirimi katildi.")
+    return birlesik
+
+
 # Bildirimler sekmesinin okudugu KAP yorum deposu (web app.py get_alerts)
 _KAP_YORUM_PATH = Path(__file__).resolve().parents[2] / "data" / "kap_yorumlar.json"
 
@@ -367,6 +408,9 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
             items = news_src.get_news(ticker, limit=20)
         except Exception:
             continue
+        # EK KAYNAK: Borsa MCP'den de KAP bildirimlerini cek, mevcutla birlestir
+        # (tekrar edenler elenir). MCP yoksa items aynen kalir.
+        items = _mcp_kap_ekle(ticker, items)
         checked += 1
         # son window_min dakika icindeki bildirimler
         taze = []

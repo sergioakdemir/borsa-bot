@@ -12,3 +12,6 @@ google-auth
 # NOT: agir bagimliliklar (onnxruntime ~52MB, openai); politika_faizi parse'i
 # bozuk (7.0 doner) - makro tarafinda makullik guard'i ile reddediliyor.
 borsapy==0.10.1
+# Borsa MCP (https://borsamcp.fastmcp.app/mcp) - EK veri kaynagi (fiyat/KAP/doviz).
+# Yoksa/erisilemezse src/news/borsa_mcp.py sessizce None doner -> mevcut zincir devralir.
+fastmcp==3.4.2

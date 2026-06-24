@@ -196,18 +196,57 @@ def _bigpara_fiyat(slug: str):
             "gunluk": round(gunluk, 2) if gunluk is not None else None}
 
 
+def _mcp_batch(tickers_market: dict) -> dict:
+    """Borsa MCP'den toplu fiyat ceker. {ticker: {fiyat, gunluk, kaynak}}.
+
+    MCP/fastmcp yoksa veya erisilmezse {} doner (sessizce) -> yfinance devralir."""
+    if not tickers_market:
+        return {}
+    try:
+        from src.news.borsa_mcp import get_prices_batch
+        return get_prices_batch(list(tickers_market.items()))
+    except Exception as e:
+        print(f"[uyari] Borsa MCP toplu fiyat alinamadi: {type(e).__name__}: {e}")
+        return {}
+
+
 def guncelle() -> dict:
-    """Tum hisseleri cekip data/fiyat_cache.json'a yazar; ozet sayilari dondurur."""
+    """Tum hisseleri cekip data/fiyat_cache.json'a yazar; ozet sayilari dondurur.
+
+    Once Borsa MCP'den (borsapy) toplu fiyat denenir; MCP'nin getiremedigi hisseler
+    yfinance batch'ine, o da yanlis fiyatladiklari ise bigpara'ya duser.
+    """
     now = datetime.now(_TZ)
     sembol_market = _semboller()
     zaman = now.strftime("%Y-%m-%d %H:%M")
     cache = {}
 
-    # 1) yfinance batch (BIGPARA_ONLY enstrumanlar haric)
-    yf_tickers = {t: m for t, m in sembol_market.items() if t not in BIGPARA_ONLY}
+    # 0) BORSA MCP (birincil): BIGPARA_ONLY enstrumanlar haric tum hisseler
+    mcp_aday = {t: m for t, m in sembol_market.items() if t not in BIGPARA_ONLY}
+    mcp_sonuc = _mcp_batch(mcp_aday)
+    mcp_sayi = 0
+    for t, market in mcp_aday.items():
+        d = mcp_sonuc.get(t)
+        if not d or d.get("fiyat") is None:
+            continue
+        gunluk = d.get("gunluk")
+        if gunluk is not None and abs(gunluk) > _MAKUL_GUNLUK_LIMIT:
+            gunluk = None                 # anormal gunluk -> guvenilmez, fiyati koru
+        cache[t] = {
+            "fiyat": d["fiyat"],
+            "gunluk": gunluk,
+            "guncelleme": zaman,
+            "kapali": not _piyasa_acik(market, now),
+            "kaynak": "borsa_mcp",
+        }
+        mcp_sayi += 1
+
+    # 1) yfinance batch (MCP'den GELMEYEN + BIGPARA_ONLY haric hisseler)
+    yf_tickers = {t: m for t, m in sembol_market.items()
+                  if t not in BIGPARA_ONLY and t not in cache}
     yf_map = {t: _yf_sembol(t, m) for t, m in yf_tickers.items()}
     ters = {sym: t for t, sym in yf_map.items()}
-    fiyatlar = _batch_cek(sorted(ters.keys()))
+    fiyatlar = _batch_cek(sorted(ters.keys())) if yf_map else {}
     for t, market in yf_tickers.items():
         d = fiyatlar.get(yf_map[t])
         if not d or d.get("fiyat") is None:
@@ -217,6 +256,7 @@ def guncelle() -> dict:
             "gunluk": d.get("gunluk"),
             "guncelleme": zaman,
             "kapali": not _piyasa_acik(market, now),
+            "kaynak": "yfinance",
         }
 
     # 2) yfinance'in yanlis fiyatladigi enstrumanlar -> bigpara'dan dogru fiyat
@@ -232,11 +272,13 @@ def guncelle() -> dict:
             "gunluk": d.get("gunluk"),
             "guncelleme": zaman,
             "kapali": not _piyasa_acik("bist", now),
+            "kaynak": "bigpara",
         }
 
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
                           encoding="utf-8")
     return {"istenen": len(sembol_market), "cekilen": len(cache),
+            "borsa_mcp": mcp_sayi, "diger": len(cache) - mcp_sayi,
             "basarisiz": len(sembol_market) - len(cache), "dosya": str(CACHE_PATH)}
 
 
@@ -245,7 +287,8 @@ def main() -> None:
     ozet = guncelle()
     print(f"[{now:%Y-%m-%d %H:%M}] fiyat cache guncellendi: "
           f"{ozet['cekilen']}/{ozet['istenen']} hisse cekildi "
-          f"({ozet['basarisiz']} basarisiz) -> {ozet['dosya']}")
+          f"(borsa_mcp={ozet.get('borsa_mcp', 0)}, diger={ozet.get('diger', 0)}, "
+          f"{ozet['basarisiz']} basarisiz) -> {ozet['dosya']}")
 
 
 if __name__ == "__main__":
