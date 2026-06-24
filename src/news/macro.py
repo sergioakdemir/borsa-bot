@@ -263,32 +263,38 @@ def _borsapy_macro() -> dict:
     return out
 
 
-# TCMB politika faizi (1 hafta repo) EVDS serisi. DIKKAT: TP.APIFON4 GECELIK borc
-# verme faizini (%40) verir, politika faizini DEGIL. Dogru seri TP.BISPOLFAIZ.TUR
-# ("Merkez Bankalari Politika Faiz Orani" - Turkiye, aylik) = guncel %37.
-# (Onerilen TP.MB.B.B00 / TP.TF.TG.A1 serileri borsapy EVDS'te bulunamadi.)
-_EVDS_POLITIKA_SERISI = "TP.BISPOLFAIZ.TUR"
+# TCMB politika faizi (1 hafta repo) EVDS serileri - SIRAYLA denenir, ilk gecerli
+# deger kullanilir. DIKKAT: TP.APIFON4 GECELIK borc verme faizini (%40) verir,
+# politika faizini DEGIL -> KALDIRILDI. Politika faizi = haftalik repo = %37
+# (11 Haziran 2026 PPK karari). TP.MB.B.B00 / TP.TF.TG.A1 / TP.MB.B.G14 borsapy
+# EVDS'te bulunamadi; TP.BISPOLFAIZ.TUR ("Merkez Bankalari Politika Faiz Orani" -
+# Turkiye) %37 donduren tek calisan seri. Hicbiri donmezse sabit %37 (FALLBACK).
+_EVDS_POLITIKA_SERILERI = (
+    "TP.MB.B.B00", "TP.TF.TG.A1", "TP.MB.B.G14", "TP.BISPOLFAIZ.TUR")
 
 
 def _evds_borsapy_policy_rate():
-    """borsapy EVDS ile GUNCEL politika faizi (1 hafta repo, TP.BISPOLFAIZ.TUR serisi).
-
-    EVDS_API_KEY gerekir. borsapy.policy_rate() yanlis (7.0) donerken bu seri dogru
-    guncel degeri verir (%37). Makul aralik (20-80) disi deger / hata / anahtar yok -> None."""
+    """borsapy EVDS ile GUNCEL politika faizi (haftalik repo). Serileri sirayla dener;
+    ilk MAKUL (30-45 araliginda, ~%37) degeri dondurur. Hicbiri calismazsa veya
+    EVDS_API_KEY yoksa sabit _POLITIKA_FAIZI_FALLBACK (%37) dondurur."""
     key = os.environ.get("EVDS_API_KEY")
-    if not key:
-        return None
-    try:
-        import borsapy as bp
-        bp.set_evds_key(key)
-        df = bp.evds_series(_EVDS_POLITIKA_SERISI)
-        seri = df["Value"].dropna()         # Date index + Value sutunu; son = en guncel
-        if seri.empty:
-            return None
-        v = round(float(seri.iloc[-1]), 2)
-    except Exception:
-        return None
-    return v if 20 <= v <= 80 else None
+    if key:
+        try:
+            import borsapy as bp
+            bp.set_evds_key(key)
+            for kod in _EVDS_POLITIKA_SERILERI:
+                try:
+                    seri = bp.evds_series(kod)["Value"].dropna()
+                except Exception:
+                    continue                 # seri yok/erisilemez -> sonrakini dene
+                if seri.empty:
+                    continue
+                v = round(float(seri.iloc[-1]), 2)
+                if 30 <= v <= 45:            # guncel politika faizi makul bandi (7.0 bug'ini eler)
+                    return v
+        except Exception:
+            pass
+    return _POLITIKA_FAIZI_FALLBACK          # hicbiri calismadi -> sabit %37
 
 
 def _investing_cpi_yoy(url=None):
