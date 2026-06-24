@@ -801,6 +801,7 @@ def get_portfolio(kullanici: str | None = None) -> dict:
     pozisyonlar = []
     toplam_maliyet = toplam_deger = 0.0
     bist_deger = abd_deger = 0.0    # piyasa bazli deger (TL); snapshot icin
+    gunluk_kz_tl = dun_deger_tl = 0.0   # pozisyon bazli gunluk K/Z (snapshot'tan bagimsiz)
 
     with sqlite3.connect(DB_PATH) as c:
         c.row_factory = sqlite3.Row
@@ -866,6 +867,15 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         else:
             bist_deger += deger_tl
 
+        # Gunluk K/Z: pozisyonun gunluk % degisimini guncel TL degerine uygula.
+        # (snapshot kompozisyon degisiminden etkilenmez; haftalik/aylik snapshot'ta kalir)
+        if guncel is not None and isinstance(gunluk, (int, float)) and (1 + gunluk / 100) != 0:
+            dun_tl = deger_tl / (1 + gunluk / 100)
+        else:
+            dun_tl = deger_tl            # gunluk degisim bilinmiyorsa hareket 0 say
+        gunluk_kz_tl += deger_tl - dun_tl
+        dun_deger_tl += dun_tl
+
         birim = "$" if (r.get("para_birimi") or "TL").upper() == "USD" else "₺"
         market = "abd" if birim == "$" else "bist"
         st = _structured(rec) if rec else {}
@@ -907,9 +917,14 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             gun_once = None
     owned_recs = [comm[t] for t in {p["ticker"] for p in pozisyonlar}
                   if t in comm and not comm[t].get("skipped")]
-    # Snapshot bazli getiri (gunluk/haftalik/aylik) - yalniz tek kullanici sorusunda
+    # Haftalik/aylik snapshot bazli; gunluk ise pozisyon bazli (canli, kompozisyondan bagimsiz)
     getiri = _portfoy_getiri(_uid(kullanici), toplam_deger) if kullanici else \
         {"gunluk": None, "haftalik": None, "aylik": None}
+    getiri["gunluk"] = {
+        "tl": round(gunluk_kz_tl, 2),
+        "yuzde": round(gunluk_kz_tl / dun_deger_tl * 100, 2) if dun_deger_tl else None,
+        "ref_tarih": "canli",
+    } if dun_deger_tl else None
     result = {
         "pozisyonlar": pozisyonlar,
         "genel_yorum": _cap(_overview_fallback(owned_recs), 280),   # AI yorumu /api/overview ile asenkron
@@ -955,15 +970,21 @@ def _portfoy_getiri(uid, guncel_deger) -> dict:
 
 _VISION_PROMPT = (
     "Sen bir hisse senedi portföy ekran görüntüsü okuyucususun. Verilen görsel, "
-    "bir aracı kurum (örn. Midas) portföy/varlıklar ekranıdır. Görseldeki HER hisse "
-    "satırı için şunları çıkar:\n"
+    "bir aracı kurum (örn. Midas) portföy/varlıklar ekranıdır. Sayılar TÜRKÇE "
+    "biçimdedir: ONDALIK ayraç VİRGÜL (','), binlik ayraç NOKTA ('.'). Yani "
+    "'0,1' = sıfır virgül bir;  '73,20' = yetmiş üç tam yirmi;  "
+    "'1.234,56' = bin iki yüz otuz dört tam elli altı.\n"
+    "Görseldeki HER hisse satırı için şunları çıkar:\n"
     "- ticker: hisse kodu (BÜYÜK harf, örn. THYAO, AAPL). Yoksa şirket adından makul kod üret.\n"
-    "- adet: sahip olunan lot/adet (sayı).\n"
-    "- fiyat: ortalama alış/maliyet fiyatı (ondalık nokta ile sayı).\n"
+    "- adet: sahip olunan lot/adet. METİN (string) olarak yaz.\n"
+    "- fiyat: ortalama alış/maliyet fiyatı. METİN (string) olarak yaz.\n"
     "- para_birimi: 'TL' veya 'USD' (₺ -> TL, $ -> USD; belirsizse TL).\n"
+    "ÖNEMLİ: adet ve fiyat'ı ekranda göründüğü gibi yaz; ONDALIK için VİRGÜL kullan, "
+    "BİNLİK ayracı (nokta) KALDIR. Sayıyı dönüştürme/yuvarlama. Örnekler: ekranda "
+    "'1.234,56' -> \"1234,56\";  '0,1' -> \"0,1\";  '73,20' -> \"73,20\";  '100' -> \"100\".\n"
     "YALNIZCA şu JSON ile yanıt ver, başka hiçbir metin yazma:\n"
-    '{"holdings":[{"ticker":"THYAO","adet":100,"fiyat":285.5,"para_birimi":"TL"}]}\n'
-    "Okuyamadığın sayısal alan için null koy. Hiç hisse yoksa {\"holdings\":[]} dön."
+    '{"holdings":[{"ticker":"THYAO","adet":"0,1","fiyat":"73,20","para_birimi":"USD"}]}\n'
+    "Okuyamadığın alan için null koy. Hiç hisse yoksa {\"holdings\":[]} dön."
 )
 
 
@@ -1024,11 +1045,28 @@ def _image_block(image: str):
                                         "media_type": media_type, "data": b64}}
 
 
+def _read_one_image(client, image_block) -> list:
+    """Tek bir gorsel blogunu Claude vision ile okur; ham holdings listesi doner."""
+    resp = client.messages.create(
+        model=_VISION_MODEL, max_tokens=2000,
+        messages=[{"role": "user",
+                   "content": [image_block,
+                               {"type": "text", "text": _VISION_PROMPT}]}],
+    )
+    text = "".join(getattr(b, "text", "") for b in resp.content
+                   if getattr(b, "type", "") == "text")
+    data = _extract_json(text)
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("holdings")
+    return rows if isinstance(rows, list) else []
+
+
 def parse_portfolio_image(images) -> dict:
     """Bir veya birden cok base64 portfoy fotografini Claude vision ile okur.
 
-    Tum fotograflar tek istekte degerlendirilir; tum hisseler birlestirilmis
-    holdings listesi olarak doner.
+    HER gorsel AYRI bir istekte okunur (gorseller arasi satir karismasini onler);
+    okunan tum hisseler tek bir holdings listesinde birlestirilir (ayni ticker bir kez).
     """
     if isinstance(images, str):
         images = [images]
@@ -1038,33 +1076,30 @@ def parse_portfolio_image(images) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "hata": "AI anahtarı (ANTHROPIC_API_KEY) ayarlı değil."}
 
-    blocks = []
-    for im in images[:8]:                 # makul ust sinir
-        blk = _image_block(im)
-        if blk:
-            blocks.append(blk)
+    blocks = [blk for blk in (_image_block(im) for im in images[:8]) if blk]
     if not blocks:
         return {"ok": False, "hata": "Geçerli görsel çözülemedi."}
-    blocks.append({"type": "text", "text": _VISION_PROMPT})
 
     try:
         import anthropic
         client = anthropic.Anthropic()
-        resp = client.messages.create(
-            model=_VISION_MODEL, max_tokens=2000,
-            messages=[{"role": "user", "content": blocks}],
-        )
-        text = "".join(getattr(b, "text", "") for b in resp.content
-                       if getattr(b, "type", "") == "text")
     except Exception as e:
-        return {"ok": False, "hata": f"AI okuma hatası: {type(e).__name__}: {str(e)[:120]}"}
+        return {"ok": False, "hata": f"AI istemcisi başlatılamadı: {type(e).__name__}"}
 
-    data = _extract_json(text)
-    if not data or "holdings" not in data:
-        return {"ok": False, "hata": "Fotoğraf okunamadı (geçerli veri çıkmadı)."}
+    raw, okunan, hata = [], 0, None
+    for blk in blocks:
+        try:
+            raw.extend(_read_one_image(client, blk))
+            okunan += 1
+        except Exception as e:                # bir gorsel patlasa digerlerine devam
+            hata = f"{type(e).__name__}: {str(e)[:120]}"
+    if okunan == 0:
+        return {"ok": False, "hata": f"AI okuma hatası: {hata or 'görsel okunamadı'}"}
 
     holdings, seen = [], set()
-    for h in (data.get("holdings") or []):
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
         tkr = (str(h.get("ticker") or "").upper().replace(".IS", "").strip())
         if not tkr or tkr in seen:
             continue
@@ -1077,7 +1112,7 @@ def parse_portfolio_image(images) -> dict:
             "fiyat": _num(h.get("fiyat")),
             "para_birimi": pb,
         })
-    return {"ok": True, "holdings": holdings, "foto_sayisi": len(blocks) - 1}
+    return {"ok": True, "holdings": holdings, "foto_sayisi": okunan}
 
 
 def portfolio_add(d: dict) -> dict:
