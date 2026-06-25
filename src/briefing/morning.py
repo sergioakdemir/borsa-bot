@@ -190,6 +190,83 @@ def _portfolio_tickers():
         return set()
 
 
+def _us_watchlist_tickers():
+    """Watchlist'teki ABD hisseleri (kisisel_diger, market=abd). Ufuk'un izledigi
+    NVDA/AMD/TSM/IONQ... gibi semboller. Akademik haberleri bunlarla iliskilendiririz."""
+    try:
+        from src.watchlist import _data
+        wl = _data()
+        return {(d.get("ticker") or "").upper().replace(".IS", "")
+                for d in wl.get("kisisel_diger", [])
+                if d.get("market") == "abd" and d.get("ticker")}
+    except Exception:
+        return set()
+
+
+def _akademik_ozet_baglanti(akademik_gundem, izlenen_us, client=None, limit=3):
+    """ABD brifingi akademik/kurum haberlerini Haiku ile Turkce ozetler ve izlenen
+    ABD hisseleriyle iliskilendirir.
+
+    Doner: [{"ozet": TR ozet, "etkilenen": [ticker...], "yorum": kisa yorum}].
+    Anahtar yoksa/hata olursa [] -> cagiran ham (Ingilizce) listeye duser."""
+    if not akademik_gundem or not os.environ.get("ANTHROPIC_API_KEY"):
+        return []
+    izl = {(t or "").upper() for t in (izlenen_us or set()) if t}
+    haber_satir = []
+    for i, h in enumerate(akademik_gundem[:8]):
+        b = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+        k = h.get("kaynak") if isinstance(h, dict) else ""
+        oz = h.get("ozet") if isinstance(h, dict) else ""
+        if oz in (None, "None"):
+            oz = ""
+        if b:
+            haber_satir.append(f"{i + 1}. [{k}] {b}"
+                               + (f" — {oz}" if oz and oz != b else ""))
+    if not haber_satir:
+        return []
+    import json as _json
+    try:
+        import anthropic
+        client = client or anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=700,
+            system=("Sen bir ABD piyasalari analistisin. Sana akademik/kurum/teknoloji "
+                    "haber basliklari ve bir yatirimcinin izledigi ABD hisseleri verilir. "
+                    f"EN ONEMLI {limit} haberi sec; her birini KISA tek Turkce cumleyle "
+                    "ozetle (basligi kopyalama, gercekten cevir/ozetle), izlenen "
+                    "hisselerden hangilerini etkileyebilecegini SADECE verilen listeden "
+                    "sec (etkilemiyorsa bos birak), tek cumlelik kisa yorum/aksiyon ver "
+                    "(or. 'yari iletken trendi, uzun vadeli AL firsati' / 'kisa vadede "
+                    "notr'). Veri veya hisse UYDURMA, listede olmayan hisse yazma. "
+                    "SADECE su JSON dizisini dondur, baska hicbir metin yok:\n"
+                    '[{"ozet":"...","etkilenen":["NVDA","AMD"],"yorum":"..."}]'),
+            messages=[{"role": "user", "content":
+                       "Izlenen ABD hisseleri: " + ", ".join(sorted(izl))
+                       + "\n\nHaberler:\n" + "\n".join(haber_satir)}],
+        )
+        txt = "".join(getattr(b, "text", "") for b in resp.content
+                      if getattr(b, "type", "") == "text").strip()
+        a, z = txt.find("["), txt.rfind("]")
+        data = _json.loads(txt[a:z + 1]) if a >= 0 and z > a else []
+    except Exception as e:
+        print(f"  akademik ozet (Haiku) atlandi: {type(e).__name__}: {str(e)[:60]}")
+        return []
+    out = []
+    for it in (data if isinstance(data, list) else []):
+        if not isinstance(it, dict):
+            continue
+        ozet = (it.get("ozet") or "").strip()
+        if not ozet:
+            continue
+        etk = [str(x).upper() for x in (it.get("etkilenen") or [])
+               if str(x).upper() in izl]
+        out.append({"ozet": ozet, "etkilenen": etk,
+                    "yorum": (it.get("yorum") or "").strip()})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def select_targets(market="bist"):
     """AI brifingi icin hedef hisseleri sec.
 
@@ -338,9 +415,47 @@ def _plan_cumlesi(overview, now, is_us):
     return "Piyasa için net bir yön sinyali yok; temkinli başla."
 
 
+def _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio):
+    """AKADEMİK & KURUM bolumunu 'lines'a ekler (yerinde). akademik_ozet (Haiku ile
+    Turkce + izlenen ABD hisse baglantili) varsa zengin format; yoksa ham (Ingilizce)
+    listeye duser. Etkilenen ama portfoyde OLMAYAN izlenen hisseler '💡' firsat satiri."""
+    portfolio = portfolio or set()
+    if akademik_ozet:
+        lines.append("")
+        lines.append("<b>BUGÜN TAKİP · AKADEMİK & KURUM</b>")
+        firsatlar = {}      # ticker -> kisa not (portfoyde OLMAYAN izlenen hisseler)
+        for it in akademik_ozet[:3]:
+            ozet = (it.get("ozet") or "").strip()
+            if not ozet:
+                continue
+            etk = [str(x).upper() for x in (it.get("etkilenen") or [])]
+            yorum = (it.get("yorum") or "").strip()
+            if etk:
+                sag = ", ".join(etk) + (f" için {yorum}" if yorum else "")
+                lines.append(f"• {_esc(ozet)} → {_esc(sag)}")
+            else:
+                lines.append(f"• {_esc(ozet)}" + (f" — {_esc(yorum)}" if yorum else ""))
+            for t in etk:                       # portfoyde yok ama izlenen -> firsat
+                if t not in portfolio and t not in firsatlar:
+                    firsatlar[t] = yorum or ozet
+        for t, notu in list(firsatlar.items())[:3]:
+            notu = (notu[:90] + "…") if len(notu) > 90 else notu
+            lines.append(f"💡 Portföyünde yok ama izlemeye değer: {t} — {_esc(notu)}")
+    elif akademik_gundem:
+        lines.append("")
+        lines.append("<b>BUGÜN TAKİP · AKADEMİK & KURUM</b>")
+        for h in akademik_gundem[:5]:
+            baslik = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+            kaynak = h.get("kaynak") if isinstance(h, dict) else ""
+            if baslik:
+                ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
+                lines.append(f"• {_esc(baslik)}{ek}")
+
+
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
-                  portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None):
+                  portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
+                  akademik_ozet=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -361,6 +476,17 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     if not valid:
         lines.append("")
         lines.append("Bugün net bir sinyal yok. Aksiyon: BEKLE.")
+        # ABD brifinginde sinyal olmasa bile gundem + akademik/kurum gosterilir
+        if is_us and us_gundem:
+            lines.append("")
+            lines.append("<b>BUGÜN TAKİP · ABD GÜNDEMİ</b>")
+            for h in us_gundem[:5]:
+                b = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+                k = h.get("kaynak") if isinstance(h, dict) else ""
+                if b:
+                    lines.append(f"• {_esc(b)}" + (f" <i>[{_esc(k)}]</i>" if k else ""))
+        if is_us:
+            _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
         return "\n".join(lines)
 
     # Genel piyasa durumu (1-2 cümle)
@@ -419,16 +545,9 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                 ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
                 lines.append(f"• {_esc(baslik)}{ek}")
 
-    # AKADEMİK & KURUM — son 24 saatteki akademik/kurum gelişmeleri (yalnız ABD brifingi)
-    if is_us and akademik_gundem:
-        lines.append("")
-        lines.append("<b>BUGÜN TAKİP · AKADEMİK & KURUM</b>")
-        for h in akademik_gundem[:5]:
-            baslik = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
-            kaynak = h.get("kaynak") if isinstance(h, dict) else ""
-            if baslik:
-                ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
-                lines.append(f"• {_esc(baslik)}{ek}")
+    # AKADEMİK & KURUM (yalniz ABD): Turkce ozet + izlenen ABD hisse baglantisi
+    if is_us:
+        _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
 
     if profil_uyari:
         lines.append("")
@@ -517,6 +636,14 @@ def main(market="bist"):
         except Exception as e:
             print(f"  akademik gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
             akademik_gundem = []
+
+    # 2.6) AKADEMIK OZET: akademik/kurum haberlerini Haiku ile Turkceye cevir + izlenen
+    #      ABD hisseleriyle (watchlist + ABD portfoy) iliskilendir. Bir kez hesaplanir.
+    akademik_ozet = []
+    if is_us and akademik_gundem:
+        izlenen_us = _us_watchlist_tickers() | set(_us_portfolio_tickers())
+        akademik_ozet = _akademik_ozet_baglanti(akademik_gundem, izlenen_us, limit=3)
+        print(f"  akademik ozet: {len(akademik_ozet)} haber Turkce+baglantili")
 
     # 3) Karar gecmisi ogrenimi (hedef hisseler icin)
     try:
@@ -637,7 +764,8 @@ def main(market="bist"):
                             portfolio=pf, kullanici_ad=u.get("ad"),
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
-                            us_gundem=us_gundem, akademik_gundem=akademik_gundem)
+                            us_gundem=us_gundem, akademik_gundem=akademik_gundem,
+                            akademik_ozet=akademik_ozet)
         # GECE GELEN HABERLER: kullanicinin izledigi hisseleri etkileyenler (varsa)
         try:
             from src.watchlist import load_index, load_personal
@@ -657,7 +785,8 @@ def main(market="bist"):
     # DB'de kullanici olarak olmayan env alicilari (TELEGRAM_CHAT_ID/IDS) -> birlesik
     genel = build_message(results, sel, now, overview=overview,
                           senaryolar=senaryolar, us_gundem=us_gundem,
-                          akademik_gundem=akademik_gundem)   # portfolio=tum birlesik
+                          akademik_gundem=akademik_gundem,
+                          akademik_ozet=akademik_ozet)   # portfolio=tum birlesik
     gece_blok_genel = _gece_haber_blok()                    # filtresiz (tum hisseler)
     if gece_blok_genel:
         genel = genel + "\n\n" + gece_blok_genel
