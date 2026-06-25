@@ -44,6 +44,49 @@ ANI_ESIK = 5.0       # ani büyük gelişme (kendi mesaj tipi)
 _COMMENTARY_PATH = Path(__file__).resolve().parents[2] / "data" / "ai_commentary.json"
 _KARAR_MAP = None
 
+# --- Token/maliyet ozeti (briefing loglariyla ayni "TOKEN OZET" formati) ---
+# Tum AI cagrilari Haiku 4.5 (gercek-zamanli). MTok basina $: cache_write=1.25x
+# input, cache_read=0.10x input.
+_FIYAT_INPUT = 1.00 / 1_000_000
+_FIYAT_OUTPUT = 5.00 / 1_000_000
+_FIYAT_CACHE_WRITE = _FIYAT_INPUT * 1.25
+_FIYAT_CACHE_READ = _FIYAT_INPUT * 0.10
+_TOKEN_ACC = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+
+def _ai_create(**kwargs):
+    """Anthropic mesaj cagrisi + token kullanimini _TOKEN_ACC'ye toplar.
+    Tum run_alerts AI cagrilari bunun uzerinden gecer ki kosu sonunda
+    TOKEN OZET (alerts.log) basilabilsin."""
+    import anthropic
+    client = anthropic.Anthropic()
+    resp = client.messages.create(**kwargs)
+    try:
+        u = resp.usage
+        _TOKEN_ACC["input"] += getattr(u, "input_tokens", 0) or 0
+        _TOKEN_ACC["output"] += getattr(u, "output_tokens", 0) or 0
+        _TOKEN_ACC["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+        _TOKEN_ACC["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+    except Exception:
+        pass
+    return resp
+
+
+def _token_ozet():
+    """Kosu sonunda toplam token/maliyet ozetini basar (briefing'lerle ayni format).
+    Hic AI cagrisi olmadiysa (cogu */30 sektor kosusunda) sessizce atlar ki
+    alerts.log sifir satirlariyla dolmasin."""
+    a = _TOKEN_ACC
+    if not (a["input"] or a["output"] or a["cache_read"] or a["cache_write"]):
+        return
+    maliyet = (a["input"] * _FIYAT_INPUT + a["output"] * _FIYAT_OUTPUT
+               + a["cache_write"] * _FIYAT_CACHE_WRITE
+               + a["cache_read"] * _FIYAT_CACHE_READ)
+    tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
+    print(f"[{tarih}] TOKEN OZET: input={a['input']}, output={a['output']}, "
+          f"cache_hit={a['cache_read']}, cache_write={a['cache_write']}, "
+          f"tahmini_maliyet=${maliyet:.4f}")
+
 
 def _portfolio_set():
     """Tüm portföylerdeki benzersiz hisse kodları (normalize)."""
@@ -267,9 +310,7 @@ def _kap_yorum(ticker, haber):
     if not baslik:
         return None
     try:
-        import anthropic
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
+        resp = _ai_create(
             model="claude-haiku-4-5", max_tokens=120,
             system=("Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. "
                     "Direkt ve net, gereksiz yumusatmazsin. Verilen KAP bildiriminin "
@@ -299,9 +340,7 @@ def _kap_onemli_mi(ticker, baslik) -> bool:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return True
     try:
-        import anthropic
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
+        resp = _ai_create(
             model="claude-haiku-4-5", max_tokens=5,
             system=("Bir KAP bildiriminin hisse YATIRIM KARARINI etkileyip "
                     "etkilemedigini degerlendir. RUTIN/TEKNIK bildirimler yatirim "
@@ -357,9 +396,7 @@ def _hareket_sebebi(ticker, change, haberler, now=None):
         haber_txt = "(bugun bu hisseye dair KAP haberi yok)"
     yon = "yukseldi" if change > 0 else "dustu"
     try:
-        import anthropic
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
+        resp = _ai_create(
             model="claude-haiku-4-5", max_tokens=110,
             system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Bir hissenin "
                     "gun ici fiyat hareketinin OLASI nedenini TEK kisa cumlede acikla. "
@@ -651,9 +688,7 @@ def _haber_etki_notu(hisse, baslik, konu):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
-        import anthropic
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
+        resp = _ai_create(
             model="claude-haiku-4-5", max_tokens=80,
             system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Verilen "
                     "haberin bu hisseye OLASI etkisini TEK kisa cumlede soyle (or. "
@@ -1005,15 +1040,18 @@ def check_price_alarms(now=None) -> int:
 
 
 if __name__ == "__main__":
-    # 'sektor' argumani: proaktif sektor haber taramasi (30 dk'da bir, gece dahil)
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "sektor":
-        sys.exit(0 if _sektor_haber_tarama() >= 0 else 1)
-    # 'kap' argumani: gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "kap":
+    arg = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+    if arg == "sektor":
+        # proaktif sektor haber taramasi (30 dk'da bir, gece dahil)
+        rc = 0 if _sektor_haber_tarama() >= 0 else 1
+    elif arg == "kap":
+        # gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
         rc = scan_kap_unpriced()
         try:
             check_price_alarms()          # ayni 15 dk'lik kosuda fiyat alarmlari
         except Exception as e:
             print(f"[alarm] hata: {type(e).__name__}")
-        sys.exit(rc)
-    sys.exit(main())
+    else:
+        rc = main()
+    _token_ozet()                          # her modda token/maliyet ozeti (varsa)
+    sys.exit(rc)
