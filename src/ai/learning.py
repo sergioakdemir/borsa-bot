@@ -153,3 +153,56 @@ def weak_sector_warnings(esik: int = 50, min_karar: int = 2) -> dict:
                         f"({a['dogru']}/{a['toplam']} doğru, %{a['oran_%']}); "
                         "bu sektörde daha temkinli ol.")
     return out
+
+
+# ---------------------------------------------------------------------------
+# L4: Kullanici bazli sektor analizi
+# Botun kararlari sistem genelidir; bir KULLANICININ "sektor basarisi" =
+# o kullanicinin PORTFOYUNDEKI hisseler icin botun degerlendirilmis kararlarinin
+# isabeti (kullanicinin maruz kaldigi sektorlerde nasil gittigi).
+# ---------------------------------------------------------------------------
+def user_sector_success_rates(kullanici_id, limit: int = 800) -> dict:
+    """Kullanicinin portfoyundeki hisseler icin kararlari sektore gruplar ->
+    {sektor: {toplam, dogru, yanlis, oran_%}} (yalniz sonucu belli kararlar)."""
+    from src.db import database as db
+    try:
+        pf = {(p.get("ticker") or "").upper().replace(".IS", "")
+              for p in db.list_portfolio(kullanici_id) if p.get("ticker")}
+    except Exception:
+        pf = set()
+    if not pf:
+        return {}
+    try:
+        rows = db.list_decisions(limit=limit)
+    except Exception:
+        return {}
+    agg = {}
+    for r in rows:
+        t = (r.get("ticker") or "").upper().replace(".IS", "")
+        if t not in pf:
+            continue
+        w = _outcome_wrong(r.get("sonuc"))
+        if w is None:
+            continue
+        sek = _sektor_of(t)
+        if not sek:
+            continue
+        a = agg.setdefault(sek, {"toplam": 0, "dogru": 0, "yanlis": 0})
+        a["toplam"] += 1
+        a["yanlis" if w else "dogru"] += 1
+    for a in agg.values():
+        a["oran_%"] = round(a["dogru"] / a["toplam"] * 100) if a["toplam"] else None
+    return agg
+
+
+def user_weak_sector_warnings(kullanici_id, esik: int = 50,
+                              min_karar: int = 3) -> dict:
+    """Kullanicinin geçmişte zayıf kaldığı sektörler -> {sektor: uyari_metni}.
+    Basari < esik% ve >= min_karar değerlendirilmiş karar olan sektörler."""
+    out = {}
+    for sek, a in user_sector_success_rates(kullanici_id).items():
+        if a["toplam"] >= min_karar and a.get("oran_%") is not None and a["oran_%"] < esik:
+            out[sek] = (f"⚠️ {sek} hisselerinde geçmişte zayıf kaldın "
+                        f"({a['yanlis']}/{a['toplam']} yanlış, "
+                        f"%{100 - a['oran_%']} başarısız) — bu sektörde daha dikkatli ol.")
+    return out

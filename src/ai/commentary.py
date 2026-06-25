@@ -214,6 +214,11 @@ SYSTEM = (
     "sektorler: GYO, bankacilik dengesi, yuksek borclu sirketler); faiz dusus beklentisi "
     "destekleyicidir. Kuru ihracatci (lehte) / doviz borclusu (aleyhte) ayrimiyla yorumla. "
     "Bu gostergeleri tek basina belirleyici yapma; hisse verisiyle birlikte degerlendir.\n\n"
+    "COKLU FAKTOR SKORU: Veride 'coklu_faktor' varsa (skor + gerekceler), bu makro "
+    "yon faktorlerinin (dolar/petrol/faiz/piyasa) bu sektore BIRLESIK deterministik "
+    "etkisidir (+ olumlu, - olumsuz). Skoru ve gerekcesini degerlendirmene kat ve "
+    "kararinla tutarli kil; ancak tek basina belirleyici yapma, sirket/teknik veriyle "
+    "birlikte tart.\n\n"
     "KENDI KARAR GECMISIN: Veride 'karar_gecmisi_uyari' varsa, bu hissede gecmis "
     "kararlarinin isabetini gosterir. Gecmiste sik yanildiysan ayni yonde israr etme; "
     "daha temkinli ol ve eminligini buna gore ayarla.\n\n"
@@ -859,6 +864,19 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
     # Kendi karar gecmisi uyarisi (ogrenme)
     if learning_note:
         payload["karar_gecmisi_uyari"] = learning_note
+
+    # COKLU FAKTOR (zincir) skoru: makro yon faktorlerinin (dolar/petrol/faiz/piyasa)
+    # hissenin sektorune BIRLESIK deterministik etkisi. Yalniz BIST (sektor haritasi).
+    if not is_us:
+        try:
+            from src.ai import kombinasyon
+            skor, aciklama, sektor_ad = kombinasyon.skor_for(ticker)
+            if aciklama:
+                payload["coklu_faktor"] = {
+                    "skor": skor, "sektor": sektor_ad,
+                    "gerekceler": [m for _, m in aciklama]}
+        except Exception:
+            pass
 
     ctx = {"ticker": ticker, "is_us": is_us, "sig": sig, "news": news,
            "analist": analist, "temel": temel, "hacim_anom": hacim_anom,

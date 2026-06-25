@@ -238,6 +238,8 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE decisions ADD COLUMN ilk_gun_degisim REAL")
     if "piyasa_farki" not in cols_d:        # hisse degisimi - BIST-100 degisimi (piyasaya gore)
         c.execute("ALTER TABLE decisions ADD COLUMN piyasa_farki REAL")
+    if "kullanici_id" not in cols_d:        # karar kimin icin: 0=sistem geneli (brifing)
+        c.execute("ALTER TABLE decisions ADD COLUMN kullanici_id INTEGER DEFAULT 0")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -493,18 +495,20 @@ def list_portfoy_snapshots(kullanici_id, limit: int = 90) -> list[dict]:
 
 # ---- karar gunlugu (decisions) ----
 def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
-                    gerekce=None, tarih=None, sonuc=None, tahmini_sure=None) -> int:
+                    gerekce=None, tarih=None, sonuc=None, tahmini_sure=None,
+                    kullanici_id=0) -> int:
     """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None).
-    tahmini_sure: TUT kararinda AI'nin tahmin ettigi tutma penceresi (islem gunu)."""
+    tahmini_sure: TUT kararinda AI'nin tahmin ettigi tutma penceresi (islem gunu).
+    kullanici_id: karar kimin icin uretildi (0=sistem geneli/brifing; ileride kisiye ozel)."""
     init_db()
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
             """INSERT INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
-                                      tarih, sonuc, tahmini_sure)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      tarih, sonuc, tahmini_sure, kullanici_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
-             eminlik, gerekce, tarih, sonuc, tahmini_sure))
+             eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id))
         return cur.lastrowid
 
 
@@ -521,6 +525,16 @@ def list_decisions(limit: int = 100) -> list[dict]:
     with get_conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+def list_decisions_for(ticker: str, limit: int = 3) -> list[dict]:
+    """Bir hisse icin EN SON kararlar (yeni->eski). Bota Sor 'gecmis oneri' icin."""
+    init_db()
+    t = str(ticker or "").upper().replace(".IS", "")
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM decisions WHERE ticker=? ORDER BY id DESC LIMIT ?",
+            (t, limit))]
 
 
 def set_decision_outcome(decision_id, sonuc, yanlis_sebep=None,

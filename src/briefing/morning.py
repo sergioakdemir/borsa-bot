@@ -455,7 +455,7 @@ def _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio):
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
                   portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
-                  akademik_ozet=None):
+                  akademik_ozet=None, sektor_uyarilari=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -515,6 +515,11 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             lines += _hisse_blok(r, portfoyde=True)
     else:
         lines.append("Takip ettiğin portföy hissesi yok.")
+
+    # KISISEL SEKTOR UYARISI: kullanicinin geçmişte zayıf kaldığı sektör(ler)
+    for u in (sektor_uyarilari or [])[:2]:
+        if u:
+            lines.append(_esc(u))
 
     # FIRSATLAR (max 5) — portföy dışı AL sinyalleri
     firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"]
@@ -760,12 +765,19 @@ def main(market="bist"):
                 guncel_gun = (now.date() - d).days
         except Exception:
             guncel_gun = None
+        # KISISEL SEKTOR UYARISI: kullanicinin geçmişte zayıf kaldığı sektörler
+        sektor_uy = []
+        try:
+            from src.ai.learning import user_weak_sector_warnings
+            sektor_uy = list(user_weak_sector_warnings(u["id"]).values())
+        except Exception:
+            sektor_uy = []
         msg = build_message(results, sel, now, overview=overview,
                             portfolio=pf, kullanici_ad=u.get("ad"),
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
                             us_gundem=us_gundem, akademik_gundem=akademik_gundem,
-                            akademik_ozet=akademik_ozet)
+                            akademik_ozet=akademik_ozet, sektor_uyarilari=sektor_uy)
         # GECE GELEN HABERLER: kullanicinin izledigi hisseleri etkileyenler (varsa)
         try:
             from src.watchlist import load_index, load_personal

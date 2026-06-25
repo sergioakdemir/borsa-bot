@@ -3053,6 +3053,64 @@ def _hisse_haberleri(tickers: list[str], anlik_fiyatlar: list[dict] | None = Non
         return {}
 
 
+def _karar_gecmisi(ticker: str, guncel_fiyat, is_us: bool, limit: int = 3) -> list[dict]:
+    """Bir hisse icin botun SON `limit` kararini + 'o gunden bu yana' getiriyi dondurur.
+
+    decisions tablosundan kararlari ceker; her kararin tarihindeki kapanisi yfinance
+    ile bulup guncel fiyata gore yuzde getiri hesaplar. Doner:
+    [{tarih, gun_once, karar, getiri_%, sonuc}] (yeni->eski). Veri yoksa []."""
+    try:
+        from src.db import database as db
+        kararlar = db.list_decisions_for(ticker, limit=limit)
+    except Exception:
+        return []
+    if not kararlar:
+        return []
+    bugun = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    closes = None
+    if guncel_fiyat is not None:
+        try:
+            import yfinance as yf
+            tarihler = [k.get("tarih") for k in kararlar if k.get("tarih")]
+            en_eski = min(tarihler) if tarihler else None
+            if en_eski:
+                start = (datetime.fromisoformat(en_eski).date()
+                         - timedelta(days=4)).isoformat()
+                sym = ticker if is_us else f"{ticker}.IS"
+                h = yf.Ticker(sym).history(start=start)
+                if h is not None and not h.empty:
+                    closes = h["Close"].dropna()
+        except Exception:
+            closes = None
+
+    def _kapanis_on_or_after(kd):
+        if closes is None or not len(closes):
+            return None
+        for ts, val in closes.items():
+            try:
+                if ts.date() >= kd:
+                    return float(val)
+            except Exception:
+                continue
+        return None
+
+    out = []
+    for k in kararlar:
+        try:
+            kd = datetime.fromisoformat(k["tarih"]).date()
+        except (ValueError, TypeError, KeyError):
+            continue
+        getiri = None
+        if guncel_fiyat is not None:
+            kapanis = _kapanis_on_or_after(kd)
+            if kapanis:
+                getiri = round((guncel_fiyat - kapanis) / kapanis * 100, 1)
+        out.append({"tarih": k["tarih"], "gun_once": (bugun - kd).days,
+                    "karar": k.get("karar"), "getiri_%": getiri,
+                    "sonuc": k.get("sonuc")})
+    return out
+
+
 def _yf_single_price(sym: str) -> dict | None:
     """Tek sembol icin yedek fiyat cekme (batch yf.download bos donerse).
 
@@ -3821,6 +3879,36 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         })
     _dbg("sorulan_karar", [s["hisse"] for s in sorulan_karar])
 
+    # COKLU FAKTOR (zincir) skoru: sorulan hisselerin sektorune gore deterministik
+    # makro kombinasyon skoru (dolar/petrol/bist/faiz birlesimi). AI bunu yoruma katar.
+    kombinasyon_satirlari = []
+    try:
+        from src.ai import kombinasyon
+        for t in _tickers[:3]:
+            satir = kombinasyon.baglam_metni(t)
+            if satir:
+                kombinasyon_satirlari.append(f"{t}: {satir}")
+        _dbg("kombinasyon", kombinasyon_satirlari)
+    except Exception as e:
+        _dbg("kombinasyon HATA", f"{type(e).__name__}: {e}")
+
+    # GECMIS KARAR HAFIZASI: sorulan hisse icin botun son kararlari + o gunden bu
+    # yana getiri ("5 gun once ASELS icin AL, o gunden bu yana +8.2%").
+    karar_gecmisi_listesi = []
+    try:
+        _fiyat_map = {(a.get("hisse") or "").upper(): a for a in anlik_fiyatlar}
+        for t in _tickers[:2]:
+            a = _fiyat_map.get((t or "").upper()) or {}
+            gecmis_k = _karar_gecmisi(t, a.get("fiyat"), a.get("para_birimi") == "$")
+            for g in gecmis_k:
+                getiri = (f"{g['getiri_%']:+.1f}%" if g.get("getiri_%") is not None
+                          else "getiri hesaplanamadı")
+                karar_gecmisi_listesi.append(
+                    f"{t}: {g['gun_once']} gün önce {g['karar']}, o günden bu yana {getiri}")
+        _dbg("karar_gecmisi", karar_gecmisi_listesi)
+    except Exception as e:
+        _dbg("karar_gecmisi HATA", f"{type(e).__name__}: {e}")
+
     try:
         from src.news.macro import get_macro
         makro = get_macro()
@@ -3905,6 +3993,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
             _anlik_satir(a) for a in anlik_fiyatlar) if anlik_fiyatlar else "")
         + (f"\nSorulan hisse(ler) AI karari + gerekce: "
            f"{json.dumps(sorulan_karar, ensure_ascii=False)}" if sorulan_karar else "")
+        + ("\nÇoklu faktör (zincir) skoru:\n- " + "\n- ".join(kombinasyon_satirlari)
+           if kombinasyon_satirlari else "")
+        + ("\nGeçmiş öneriler (botun bu hisse için verdiği kararlar):\n- "
+           + "\n- ".join(karar_gecmisi_listesi) if karar_gecmisi_listesi else "")
         + haber_metni
         + karsilastirma_metni
         + (f"\nRadar firsatlari (AL): {json.dumps(radar_firsatlar, ensure_ascii=False)}"
@@ -3985,6 +4077,16 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         "hissenin fiyatini soramadigini, fiyatin SU AN GECICI OLARAK ALINAMADIGINI "
         "(birazdan tekrar denenebilecegini) soyle; ASLA 'guncel verim yok' veya "
         "'bu konuda verim yok' DEME -- sembol gecerli, sorun yalniz veri kaynaginda. "
+        "Baglamda 'Geçmiş öneriler' varsa kullaniciya HATIRLAT ve guncel durumla "
+        "karsilastir (or. '5 gun once ASELS icin AL demistim, o gunden bu yana +%8, "
+        "isabetli cikti' veya 'TUT demistim ama dustu, gozden geciriyorum'). Getiri "
+        "POZITIFSE basariyi sahiplen, NEGATIFSE durust ol ve guncel kararini soyle; "
+        "rakamlari baglamdaki gibi ver, uydurma. "
+        "Baglamda 'Çoklu faktör (zincir) skoru' varsa bunu MUTLAKA yorumuna kat: bu, "
+        "makro faktorlerin (dolar/petrol/faiz/piyasa yonu) hissenin sektorune BIRLESIK "
+        "etkisini gosteren deterministik bir puandir (+ olumlu, - olumsuz). Skoru ve "
+        "gerekcesini sade dille acikla (or. 'dolar yukselip petrol dusunce TUPRS marji "
+        "icin olumlu, +2'); skoru fiyat/karar yorumunla TUTARLI sekilde birlestir. "
         "Baglamda 'HISSE HABERLERI' varsa MUTLAKA analiz et ve yorumla. Habere "
         "dayanarak hissenin neden dustugu/yukseldigi tahminini yap (or. 'su KAP "
         "bildirimi / su haber yuzunden satis gelmis olabilir'); fiyat hareketini "
