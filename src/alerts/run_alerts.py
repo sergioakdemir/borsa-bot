@@ -7,7 +7,7 @@ seviyede tekrar gondermez. Bayat/tatil verisinde (bugun bari yoksa) uyarmaz.
 import hashlib
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -585,6 +585,258 @@ def _senaryo_kontrol_ve_bildir(now, basliklar=None):
         return 0
 
 
+# ---------------------------------------------------------------------------
+# PROAKTIF SEKTOR HABER TARAMASI (cron: her 30 dk)
+# RSS kaynaklarini tarar; sektor haberini etkilenen hisselere baglar ve
+# kullanicinin izledigi (portfoy/watchlist) hisse etkileniyorsa Telegram'a bildirir.
+# Gece (borsa kapali) gelen haberler ayrica sabah brifingine girsin diye
+# data/gece_haberleri.json'a yazilir.
+# ---------------------------------------------------------------------------
+
+# konu -> tetik anahtar kelimeler + etkilenen hisseler. Kelimeler NORMALIZE yazilir
+# (kucuk + tr->ascii) ve metinde KELIME BASINA cengellenir (bkz. _haber_konulari):
+# 'petrol fiyat' -> 'petrol fiyatlari'ni da yakalar. Cingil cok genel kelimelerden
+# (or. yalniz 'dolar' -> '295 milyon dolar') kacinmak icin baglam iceren ifadeler.
+SEKTOR_HABER_KURALLARI = [
+    {"konu": "Savunma / KAAN",
+     "kelimeler": ["kaan", "milli muharip", "insansiz hava", "siha", "jet motoru",
+                   "savunma sanayi", "savunma bakanlig", "msb", "ssb", "roketsan",
+                   "savunma ihrac", "savunma ihale", "savunma sozlesme"],
+     "hisseler": ["ASELS", "ROKET", "STFA"]},
+    {"konu": "Petrol / Brent",
+     "kelimeler": ["brent", "ham petrol", "petrol fiyat", "petrol varil", "opec",
+                   "namlu", "petrol uretim"],
+     "hisseler": ["TUPRS", "PETKM"]},
+    {"konu": "Faiz / TCMB",
+     "kelimeler": ["tcmb", "merkez bankas", "politika faiz", "faiz indir",
+                   "faiz artir", "ppk", "faiz karar"],
+     "hisseler": ["GARAN", "AKBNK", "YKBNK", "ISCTR", "HALKB", "VAKBN"]},
+    {"konu": "Döviz / Dolar",
+     "kelimeler": ["dolar kuru", "dolar/tl", "doviz kuru", "kurda", "kur rekor",
+                   "dolar rekor", "devaluasyon", "tl deger kayb", "tl deger kayip"],
+     "hisseler": ["ASELS", "FROTO", "TOASO", "EREGL", "TUPRS", "KRDMD"]},
+]
+
+_GECE_HABER_PATH = Path(__file__).resolve().parents[2] / "data" / "gece_haberleri.json"
+
+
+def _borsa_acik(now) -> bool:
+    """BIST o an acik mi? (hafta ici 10:00-18:00 Istanbul). Gece/hafta sonu False."""
+    if now.weekday() >= 5:
+        return False
+    hm = now.hour * 60 + now.minute
+    return 10 * 60 <= hm <= 18 * 60
+
+
+def _haber_konulari(text: str) -> list:
+    """Bir haber metnindeki (baslik+ozet) sektor kurallarini dondurur (eslesen).
+
+    Eslesme KELIME BASINA cengellidir (sona degil): '\\bpetrol fiyat' Turkce ekli
+    'petrol fiyatlari/fiyati'ni da yakalar. Boylece dilin ekleri recall'u kirmaz;
+    cok genel tek kelimelerden (or. 'dolar') kurallarda kacinilir."""
+    import re
+    from src.news.rss_source import _norm
+    n = _norm(text or "")
+    out = []
+    for kural in SEKTOR_HABER_KURALLARI:
+        for kw in kural["kelimeler"]:
+            if re.search(r"\b" + re.escape(_norm(kw)), n):
+                out.append(kural)
+                break
+    return out
+
+
+def _haber_etki_notu(hisse, baslik, konu):
+    """Bu haberin hisseye olasi gun ici/ertesi gun etkisi (1 kisa cumle). Haiku."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5", max_tokens=80,
+            system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Verilen "
+                    "haberin bu hisseye OLASI etkisini TEK kisa cumlede soyle (or. "
+                    "'yarin acilista yukari baski olabilir' / 'kisa vadede notr'). "
+                    "Kesin al/sat tavsiyesi verme, veri/rakam uydurma, sade Turkce, "
+                    "markdown yok, tek cumle."),
+            messages=[{"role": "user", "content":
+                       f"Hisse: {hisse}\nKonu: {konu}\nHaber: {baslik}\n"
+                       "Bu haber bu hisse icin ne anlama gelir? Tek cumle."}],
+        )
+        t = "".join(getattr(b, "text", "") for b in resp.content
+                    if getattr(b, "type", "") == "text").strip()
+        return t or None
+    except Exception:
+        return None
+
+
+def _haber_hash(baslik) -> str:
+    """Bir haber basligi icin kararli kisa dedup anahtari."""
+    base = " ".join((baslik or "").lower().split())
+    return hashlib.md5(base.encode("utf-8")).hexdigest()[:12]
+
+
+def _gece_haber_ekle(hisseler, baslik, link, konu, etki, tarih_iso):
+    """Gece (borsa kapali) gelen sektor haberini sabah brifingi icin biriktirir.
+    hisseler: bu haberden etkilenen (izlenen) hisse kodlari listesi."""
+    try:
+        import json
+        d = {"haberler": []}
+        if _GECE_HABER_PATH.exists():
+            d = json.loads(_GECE_HABER_PATH.read_text(encoding="utf-8")) or {"haberler": []}
+        haberler = d.get("haberler") or []
+        h = _haber_hash(baslik)
+        if any(x.get("hash") == h for x in haberler):
+            return                                 # ayni haber zaten biriktirildi
+        haberler.append({"hisseler": sorted(hisseler), "baslik": baslik, "link": link,
+                         "konu": konu, "etki": etki, "tarih": tarih_iso, "hash": h})
+        d["haberler"] = haberler[-50:]             # son 50 ile sinirla
+        _GECE_HABER_PATH.parent.mkdir(exist_ok=True)
+        _GECE_HABER_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+    except Exception as e:
+        print(f"[gece-haber] yazma hatasi: {type(e).__name__}")
+
+
+def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
+    """RSS kaynaklarini tarar; sektor haberini etkilenen hisselere baglar.
+
+    Etkilenen hisse bir kullanicinin portfoyunde VEYA genel watchlist'te ise o
+    haberi (AI etki notuyla) Telegram'a bildirir. Spam onleme: ayni (kullanici,
+    hisse, haber) gun icinde bir kez. Borsa kapaliyken gelen haberler ayrica
+    sabah brifingine girsin diye data/gece_haberleri.json'a yazilir.
+    """
+    now = now or datetime.now(_TZ)
+    today = now.date().isoformat()
+    gece = not _borsa_acik(now)
+
+    # 1) RSS girdilerini topla
+    try:
+        from src.news.rss_source import RSSNewsSource
+        entries = RSSNewsSource(within_hours=int(max(1, within_hours)))._all_entries()
+    except Exception as e:
+        print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] RSS alinamadi: {type(e).__name__}")
+        return 0
+    if not entries:
+        print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] taze haber yok.")
+        return 0
+
+    # 2) HABER-MERKEZLI esleme (taze, son within_hours saat): bir haber birden cok
+    # hisseyi etkileyebilir (or. faiz haberi -> 6 banka). Hisse basina ayri blok
+    # yerine TEK haber blogunda etkilenen hisseler listelenir (spam + AI maliyeti az).
+    cutoff = now - timedelta(hours=within_hours)
+    haberler = {}    # hash -> {baslik, link, konu, tarih, hisseler:set}
+    for e in entries:
+        tarih = e.get("tarih")
+        if tarih is not None and tarih < cutoff:
+            continue
+        metin = f"{e.get('baslik', '')} {e.get('ozet', '')}"
+        kurallar = _haber_konulari(metin)
+        if not kurallar:
+            continue
+        h = _haber_hash(e.get("baslik"))
+        rec = haberler.setdefault(h, {
+            "baslik": (e.get("baslik") or "").strip(), "link": e.get("link"),
+            "konu": kurallar[0]["konu"],
+            "tarih": tarih.isoformat() if tarih is not None else today,
+            "hisseler": set()})
+        for kural in kurallar:
+            rec["hisseler"].update(kural["hisseler"])
+    if not haberler:
+        print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] eslesen sektor haberi yok "
+              f"({len(entries)} haber tarandi).")
+        return 0
+
+    # 3) Kim izliyor? Genel watchlist + her kullanicinin portfoyu
+    try:
+        watch = {(t or "").upper().replace(".IS", "") for t in load_watchlist()}
+    except Exception:
+        watch = set()
+    try:
+        users = db.list_users()
+    except Exception:
+        users = []
+    pf_of = {}
+    for u in users:
+        try:
+            pf_of[u["id"]] = {(p.get("ticker") or "").upper().replace(".IS", "")
+                              for p in db.list_portfolio(u["id"]) if p.get("ticker")}
+        except Exception:
+            pf_of[u["id"]] = set()
+    izlenen_tum = set(watch)
+    for pf in pf_of.values():
+        izlenen_tum |= pf
+
+    etki_cache = {}     # hash -> etki notu (ayni haber icin AI'yi bir kez cagir)
+
+    def _etki(h, info):
+        if h not in etki_cache:
+            ornek = sorted(info["hisseler"] & izlenen_tum) or sorted(info["hisseler"])
+            etki_cache[h] = _haber_etki_notu(
+                ornek[0] if ornek else "", info["baslik"], info["konu"])
+        return etki_cache[h]
+
+    # 4) Gece (borsa kapali) gelen haberleri sabah brifingi icin biriktir (bir kez)
+    if gece:
+        for h, info in haberler.items():
+            etkilenen = info["hisseler"] & izlenen_tum
+            if not etkilenen:
+                continue
+            anahtar = sorted(etkilenen)[0]                  # dedup icin sabit ticker
+            tok = f"SEKTORHB:GECE:{h}"
+            if tok in db.alert_levels_today(anahtar, today):
+                continue
+            _gece_haber_ekle(etkilenen, info["baslik"], info["link"],
+                             info["konu"], _etki(h, info), info["tarih"])
+            db.record_alert(anahtar, today, tok, 0)
+
+    if not telegram.is_configured():
+        print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] Telegram yok; "
+              f"{'gece haberi biriktirildi' if gece else 'bildirim atlandi'}.")
+        return 0
+
+    # 5) Kullaniciya ozel bildirim: izledigi hisse(ler) etkilendiyse tek blokta gonder
+    gonderim = 0
+    for u in users:
+        tg = u.get("telegram_id")
+        if not tg:
+            continue
+        uid = u["id"]
+        izlenen = pf_of.get(uid, set()) | watch
+        bloklar = []
+        for h, info in haberler.items():
+            etkilenen = sorted(info["hisseler"] & izlenen)
+            if not etkilenen:
+                continue
+            tok = f"SEKTORHB:{uid}:{h}"
+            if tok in db.alert_levels_today(etkilenen[0], today):
+                continue
+            db.record_alert(etkilenen[0], today, tok, 0)
+            baslik = info["baslik"]
+            if info.get("link"):
+                baslik = f'<a href="{info["link"]}">{baslik}</a>'
+            blok = f"📰 <b>{', '.join(etkilenen)}</b> için önemli haber: {baslik}"
+            etki = _etki(h, info)
+            if etki:
+                blok += f"\n{etki}"
+            bloklar.append(blok)
+            if len(bloklar) >= 8:                           # mesaji sismekten koru
+                break
+        if not bloklar:
+            continue
+        bas = (f"<b>SEKTÖR HABERİ</b> — {now:%H:%M}"
+               + ("\n<i>Borsa kapalı; sabah brifinginde de göreceksin.</i>" if gece else ""))
+        try:
+            telegram.send_message(bas + "\n\n" + "\n\n".join(bloklar), chat_id=str(tg))
+            gonderim += 1
+        except Exception as e:
+            print(f"[sektor-haber] gonderim hatasi ({tg}): {type(e).__name__}")
+    print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] {len(haberler)} sektor haberi -> "
+          f"{gonderim} kullaniciya bildirildi{' (gece)' if gece else ''}.")
+    return gonderim
+
+
 def main():
     now = datetime.now(_TZ)
     if not telegram.is_configured():
@@ -753,6 +1005,9 @@ def check_price_alarms(now=None) -> int:
 
 
 if __name__ == "__main__":
+    # 'sektor' argumani: proaktif sektor haber taramasi (30 dk'da bir, gece dahil)
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "sektor":
+        sys.exit(0 if _sektor_haber_tarama() >= 0 else 1)
     # 'kap' argumani: gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
     if len(sys.argv) > 1 and sys.argv[1].lower() == "kap":
         rc = scan_kap_unpriced()

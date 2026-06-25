@@ -16,6 +16,55 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
+_GECE_HABER_PATH = Path(__file__).resolve().parents[2] / "data" / "gece_haberleri.json"
+
+
+def _gece_haber_blok(filtre=None) -> str:
+    """Gece (borsa kapaliyken) gelen sektor haberlerini brifing blogu olarak dondurur.
+
+    run_alerts._sektor_haber_tarama gece haberlerini data/gece_haberleri.json'a
+    yazar. filtre verilirse (kullanicinin portfoy/watchlist hisseleri) yalniz o
+    hisseler gosterilir. Haber yoksa '' doner."""
+    try:
+        import json
+        if not _GECE_HABER_PATH.exists():
+            return ""
+        haberler = (json.loads(_GECE_HABER_PATH.read_text(encoding="utf-8"))
+                    or {}).get("haberler") or []
+    except Exception:
+        return ""
+    if not haberler:
+        return ""
+    satirlar = []
+    for h in haberler:
+        hisseler = [str(x).upper() for x in (h.get("hisseler")
+                                             or ([h["hisse"]] if h.get("hisse") else []))]
+        if filtre is not None:
+            hisseler = [x for x in hisseler if x in filtre]
+        if not hisseler:
+            continue
+        baslik = (h.get("baslik") or "").strip()
+        if not baslik:
+            continue
+        link = h.get("link")
+        bs = f'<a href="{link}">{baslik}</a>' if link else baslik
+        satir = f"📰 <b>{', '.join(hisseler)}</b>: {bs}"
+        if h.get("etki"):
+            satir += f"\n{h['etki']}"
+        satirlar.append(satir)
+    if not satirlar:
+        return ""
+    return "🌙 <b>GECE GELEN HABERLER</b>\n" + "\n\n".join(satirlar)
+
+
+def _gece_haber_temizle() -> None:
+    """Brifinge eklenen gece haberlerini temizler (bir sonraki geceye hazir)."""
+    try:
+        import json
+        _GECE_HABER_PATH.write_text(json.dumps({"haberler": []}, ensure_ascii=False),
+                                    encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _load_dotenv():
@@ -589,6 +638,16 @@ def main(market="bist"):
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
                             us_gundem=us_gundem, akademik_gundem=akademik_gundem)
+        # GECE GELEN HABERLER: kullanicinin izledigi hisseleri etkileyenler (varsa)
+        try:
+            from src.watchlist import load_index, load_personal
+            izlenen = set(pf) | {(t or "").upper().replace(".IS", "")
+                                 for t in (load_index() + load_personal())}
+        except Exception:
+            izlenen = set(pf)
+        gece_blok = _gece_haber_blok(filtre=izlenen)
+        if gece_blok:
+            msg = msg + "\n\n" + gece_blok
         try:
             telegram.send_message(msg, chat_id=tg)
             sonuc[str(tg)] = "ok"
@@ -599,6 +658,9 @@ def main(market="bist"):
     genel = build_message(results, sel, now, overview=overview,
                           senaryolar=senaryolar, us_gundem=us_gundem,
                           akademik_gundem=akademik_gundem)   # portfolio=tum birlesik
+    gece_blok_genel = _gece_haber_blok()                    # filtresiz (tum hisseler)
+    if gece_blok_genel:
+        genel = genel + "\n\n" + gece_blok_genel
     for cid in telegram.recipient_ids():
         if str(cid) in gonderilen:
             continue
@@ -607,6 +669,9 @@ def main(market="bist"):
             sonuc[str(cid)] = "ok"
         except Exception as e:
             sonuc[str(cid)] = f"hata:{type(e).__name__}"
+
+    # Gece haberleri brifinge eklendi -> temizle (bir sonraki geceye hazir)
+    _gece_haber_temizle()
 
     ok = [c for c, s in sonuc.items() if s == "ok"]
     print(f"[{now:%Y-%m-%d %H:%M}] Telegram kisisel gonderim ({etiket}): {len(ok)}/{len(sonuc)} alici "

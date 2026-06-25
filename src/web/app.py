@@ -2664,6 +2664,68 @@ def _cache_fiyat(ticker: str) -> dict | None:
     return {**rec, "yas_dk": _cache_yas_dk(rec.get("guncelleme"))}
 
 
+_GUN_ICI_ALANLAR = ("acilis", "gun_ici_yuksek", "gun_ici_dusuk", "onceki_kapanis")
+
+
+def _gun_ici_detay(ticker: str, is_us: bool, timeout: float = 10.0) -> dict | None:
+    """Bir hissenin gun ici hareketi: acilis/yuksek/dusuk/onceki_kapanis.
+
+    Once Borsa MCP (borsapy OHLC), o vermezse yfinance Ticker().fast_info. En az
+    bir alan dolduysa dict doner; hicbiri yoksa None."""
+    market = "abd" if is_us else "bist"
+    try:
+        from src.news import borsa_mcp
+        d = borsa_mcp.get_intraday(ticker, market, timeout=timeout)
+    except Exception:
+        d = None
+    if d and any(d.get(k) is not None for k in _GUN_ICI_ALANLAR):
+        return {k: d.get(k) for k in _GUN_ICI_ALANLAR}
+    # YEDEK: yfinance fast_info (MCP bos/erisilemez). Kismi de olsa neyi bulursa.
+    try:
+        import yfinance as yf
+        sym = ticker if is_us else f"{ticker}.IS"
+        fi = yf.Ticker(sym).fast_info
+        g = (lambda k: fi.get(k) if hasattr(fi, "get") else getattr(fi, k, None))
+
+        def _r(v):
+            try:
+                return round(float(v), 2) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+        det = {"acilis": _r(g("open")), "gun_ici_yuksek": _r(g("day_high")),
+               "gun_ici_dusuk": _r(g("day_low")), "onceki_kapanis": _r(g("previous_close"))}
+        if any(v is not None for v in det.values()):
+            return det
+    except Exception:
+        pass
+    return None
+
+
+def _enrich_intraday(out: list[dict], us: set) -> None:
+    """out'taki (fiyati olan) kayitlara gun ici detay ekler (paralel, sureli).
+
+    Bota Sor'da tespit edilen az sayida (≤4) hisse icin calisir; toplam butce
+    asilirsa eksik kalanlar gun ici detaysiz birakilir (fiyat yine de vardir)."""
+    hedef = [a for a in out if a.get("fiyat") is not None and not a.get("hata")][:4]
+    if not hedef:
+        return
+    import concurrent.futures
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(hedef))
+    futs = {ex.submit(_gun_ici_detay, a["hisse"], a["hisse"] in us): a for a in hedef}
+    try:
+        for fut in concurrent.futures.as_completed(futs, timeout=12.0):
+            try:
+                det = fut.result()
+            except Exception:
+                det = None
+            if det:
+                futs[fut].update(det)
+    except concurrent.futures.TimeoutError:
+        _dbg("gun ici detay", "kismi timeout (>12s) -> eksikler detaysiz")
+    finally:
+        ex.shutdown(wait=False)
+
+
 def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
     """Verilen TUM sembollerin ANLIK fiyat + gunluk degisimini dondurur.
 
@@ -2716,6 +2778,7 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
                     "kapali": kapali, "yas_dk": yas})
         _dbg("cache'ten", f"{t} (yas={yas} dk, kapali={kapali})")
     if not kalan:
+        _enrich_intraday(out, us)
         return out
 
     plan = {}    # ticker -> [(yf_symbol, market), ...] denenecek formlar
@@ -2765,6 +2828,7 @@ def _anlik_fiyatlar(tickers: list[str], comm: dict | None = None) -> list[dict]:
             # Bunu isaretle ki bot "guncel verim yok" yerine "gecici olarak
             # alinamiyor" desin (sembol gecerli, sorun kaynakta).
             out.append({"hisse": t, "fiyat": None, "hata": "alinamadi"})
+    _enrich_intraday(out, us)
     return out
 
 
@@ -2782,11 +2846,28 @@ def _anlik_satir(a: dict) -> str:
     deg = f", bugün %{g:+g} degisim" if g is not None else ""
     if a.get("kaynak") == "cache":
         if a.get("kapali"):
-            return f"{a['hisse']} son kapanis {pb}{fiyat}{deg} (borsa kapali)"
-        yas = a.get("yas_dk")
-        if yas is not None and yas > 5:
-            return f"{a['hisse']} {pb}{fiyat}{deg} ({yas} dk oncesi)"
-    return f"{a['hisse']} su an {pb}{fiyat}{deg}"
+            base = f"{a['hisse']} son kapanis {pb}{fiyat}{deg} (borsa kapali)"
+        else:
+            yas = a.get("yas_dk")
+            base = (f"{a['hisse']} {pb}{fiyat}{deg} ({yas} dk oncesi)"
+                    if yas is not None and yas > 5
+                    else f"{a['hisse']} su an {pb}{fiyat}{deg}")
+    else:
+        base = f"{a['hisse']} su an {pb}{fiyat}{deg}"
+    # GUN ICI: acilis / yuksek / dusuk / onceki kapanis (varsa) -> "bugun 374 acti,
+    # 389 gordu, dip 373, onceki kapanis 367" — AI bununla gun ici hikayeyi anlatir.
+    g_par = []
+    if a.get("acilis") is not None:
+        g_par.append(f"açılış {pb}{a['acilis']:g}")
+    if a.get("gun_ici_yuksek") is not None:
+        g_par.append(f"gün içi yüksek {pb}{a['gun_ici_yuksek']:g}")
+    if a.get("gun_ici_dusuk") is not None:
+        g_par.append(f"gün içi dip {pb}{a['gun_ici_dusuk']:g}")
+    if a.get("onceki_kapanis") is not None:
+        g_par.append(f"önceki kapanış {pb}{a['onceki_kapanis']:g}")
+    if g_par:
+        base += " (" + ", ".join(g_par) + ")"
+    return base
 
 
 # --- HISSE KARSILASTIRMA: "THYAO mu PGSUS mu" / "X vs Y" / "X mi Y mi daha iyi" ---
@@ -2905,7 +2986,7 @@ def _sessiz(fn):
 
 def _hisse_haberleri(tickers: list[str], anlik_fiyatlar: list[dict] | None = None,
                      limit_hisse: int = 2, within_hours: int = 24,
-                     timeout: float = 5.0) -> dict:
+                     timeout: float = 10.0) -> dict:
     """Tespit edilen hisseler icin son `within_hours` saatlik haber + KAP bildirimi.
 
     gather_news()'i (KAP + RSS birlesik) bir is parcaciginda cagirir ve EN FAZLA

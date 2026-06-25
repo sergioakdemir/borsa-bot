@@ -145,6 +145,51 @@ def get_price(ticker: str, market: str = "bist") -> dict | None:
             "para_birimi": "$" if mkt == "us" else "₺", "kaynak": "borsa_mcp"}
 
 
+def get_intraday(ticker: str, market: str = "bist", timeout: float = 8.0) -> dict | None:
+    """Bir hissenin GUN ICI hareketini Borsa MCP'den (borsapy) ceker.
+
+    get_historical_data gunluk OHLC serisini verir; en SON satir bugunku bara
+    karsilik gelir (borsa acikken gun ici yuksek/dusuk gunceller). Doner:
+    {"fiyat", "acilis", "gun_ici_yuksek", "gun_ici_dusuk", "onceki_kapanis",
+     "tarih", "kaynak": "borsa_mcp"} veya None.
+    """
+    t = (ticker or "").upper().split(".")[0].strip()
+    if not t:
+        return None
+    mkt = "us" if market in ("us", "abd") else "bist"
+    try:
+        data = _run(_acall("get_historical_data", {"symbol": t, "market": mkt}),
+                    timeout=timeout)
+    except Exception:
+        return None
+    rows = (data or {}).get("data") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    try:
+        rows = sorted(rows, key=lambda r: r.get("date") or "")
+    except (TypeError, AttributeError):
+        return None
+    son = rows[-1]
+    onceki = rows[-2] if len(rows) >= 2 else {}
+
+    def _f(d, k):
+        v = (d or {}).get(k)
+        try:
+            return round(float(v), 2) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "fiyat": _f(son, "close"),
+        "acilis": _f(son, "open"),
+        "gun_ici_yuksek": _f(son, "high"),
+        "gun_ici_dusuk": _f(son, "low"),
+        "onceki_kapanis": _f(onceki, "close"),
+        "tarih": son.get("date"),
+        "kaynak": "borsa_mcp",
+    }
+
+
 def get_prices_batch(items: list[tuple]) -> dict:
     """Birden cok (ticker, market) icin fiyatlari ESZAMANLI ceker (tek baglanti).
 

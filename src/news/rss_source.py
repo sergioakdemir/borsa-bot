@@ -48,7 +48,9 @@ MACRO_FEEDS = [
 COMPANY_KEYWORDS = {
     "THYAO": ["THYAO", "Türk Hava Yolları", "THY"],
     "GARAN": ["GARAN", "Garanti BBVA", "Garanti Bankası"],
-    "ASELS": ["ASELS", "Aselsan"],
+    "ASELS": ["ASELS", "Aselsan", "KAAN", "SSB", "MSB", "Savunma Bakanlığı",
+              "savunma sanayi", "savunma ihracat", "savunma ihalesi",
+              "savunma sözleşmesi", "jet motoru"],
     "KCHOL": ["KCHOL", "Koç Holding"],
     "TUPRS": ["TUPRS", "Tüpraş"],
     "EREGL": ["EREGL", "Ereğli Demir", "Erdemir"],
