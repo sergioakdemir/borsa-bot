@@ -29,6 +29,14 @@ _YAHOO = {
 # Hicbir kaynak gelmezse kullanilacak son bilinen degerlerin kalici deposu
 _SON_BILINEN = Path(__file__).resolve().parents[2] / "data" / "macro_last.json"
 
+# Makullik araliklari: kaynaktan (or. Borsa MCP) gelen deger bu bandin disindaysa
+# "supheli veri" olarak loglanir ve macro_last.json'daki son bilinen deger kullanilir.
+# Gecici scraping/parse hatalari (or. gram altinin 597 ya da 59770 gelmesi) yayilmasin.
+_MAKUL_ARALIK = {
+    "gram_altin": (5000, 10000),
+    "brent": (40, 200),
+}
+
 # TCMB politika faizi (1 hafta repo): once resmi sayfa, sonra EVDS2
 _TCMB_FAIZ_URL = ("https://www.tcmb.gov.tr/wps/wcm/connect/TR/tcmb+tr/main+menu/"
                   "para+politikasi/merkez+bankasi+faiz+oranlari")
@@ -180,6 +188,17 @@ def _yahoo_last(symbol):
         return round(float(df["Close"].iloc[-1]), 4)
     except Exception:
         return None
+
+
+def _makul_mu(ad, v) -> bool:
+    """ad icin _MAKUL_ARALIK'ta band tanimliysa v'nin icinde olup olmadigini doner.
+    Band tanimli degilse veya v None ise True (o alan icin kontrol yok)."""
+    if v is None:
+        return True
+    band = _MAKUL_ARALIK.get(ad)
+    if not band:
+        return True
+    return band[0] <= v <= band[1]
 
 
 def _load_son_bilinen() -> dict:
@@ -346,9 +365,22 @@ def get_macro() -> dict:
         for kaynak_ad, hedef in (("usdtry", "usdtry"), ("gram_altin", "gram_altin"),
                                  ("eur_try", "eur_try"), ("brent", "brent")):
             v = mcp.get(kaynak_ad)
-            if v is not None:
-                out[hedef] = v
-                taze[hedef] = v
+            if v is None:
+                continue
+            if not _makul_mu(hedef, v):
+                # MCP supheli deger dondu -> logla + son bilinen degere dus, yayma
+                sv = son_bilinen.get(hedef)
+                _log_macro_hata(
+                    f"borsa_mcp:{kaynak_ad}",
+                    f"SUPHELI_VERI ({hedef}={v} makul aralik {_MAKUL_ARALIK[hedef]} "
+                    f"disinda; son bilinen deger={sv} kullanildi)")
+                if sv is not None:
+                    out[hedef] = sv
+                    if "son_bilinen" not in out["kaynaklar"]:
+                        out["kaynaklar"].append("son_bilinen")
+                continue
+            out[hedef] = v
+            taze[hedef] = v
         if any(out.get(a) is not None for a in
                ("usdtry", "gram_altin", "eur_try", "brent")):
             out["kaynaklar"].append("borsa_mcp")
