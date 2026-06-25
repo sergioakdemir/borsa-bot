@@ -99,7 +99,7 @@ _SEARCH_CACHE: dict[str, tuple[float, list]] = {}
 _SEARCH_TTL = 300.0  # saniye (5 dakika)
 
 _OPPORTUNITY_MIN = 7  # firsat bolgesine girmek icin gereken puan
-_VISION_MODEL = "claude-opus-4-8"  # portfoy fotografi okuma (Claude vision)
+_VISION_MODEL = "claude-sonnet-4-6"  # portfoy fotografi okuma (Claude vision)
 # Bota Sor fotograf yukleme (gorsel analiz)
 UPLOADS_DIR = DATA / "uploads"          # data/uploads/{kullanici_id}/{ts}.{ext}
 _MAX_UPLOADS = 10                       # kullanici basina saklanan max fotograf (FIFO)
@@ -107,7 +107,7 @@ _MAX_UPLOAD_BYTES = 5 * 1024 * 1024     # 5 MB
 _UPLOAD_EXTS = {"jpg", "jpeg", "png", "webp"}
 _UPLOAD_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
                 "png": "image/png", "webp": "image/webp"}
-_CHAT_VISION_MODEL = "claude-opus-4-6"  # Bota Sor sohbette gorsel yorumu (vision)
+_CHAT_VISION_MODEL = "claude-sonnet-4-6"  # Bota Sor sohbette gorsel yorumu (vision)
 
 # Portfoy ticker -> bigpara fiyat kaynagi (yfinance'de olmayan/yanlis gelen
 # enstrumanlar icin). KAP_PROXY_URL uzerinden cekilir. Deger = bigpara URL slug'i.
@@ -4119,7 +4119,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
             "SADECE verilen baglami kullan; rakam/haber UYDURMA. Veri eksikse "
             "(or. fiyat alinamadi/analist yok) bunu acikca soyle, uydurma.")
 
-    sistem = (
+    # SABIT TALIMATLAR (her soruda ayni) -> prompt cache breakpoint'i (asagida
+    # cache_control ile isaretlenir). Dinamik baglam AYRI blokta tutulur ki
+    # cache'i bozmasin. KARAR_TIPLERI sabit-degerli oldugu icin metin degismez.
+    sistem_statik = (
         "Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani ve "
         "kullanicinin kisisel asistanisin. Karakterin: direkt, net, gereksiz "
         "yumusatmazsin; piyasayi iyi okur, kullaniciyi korur, gerektiginde sert "
@@ -4195,8 +4198,12 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         "3) Onaylaninca degisikligi uygula ve servisi yeniden baslat. Yalniz "
         "HTML/CSS/JS degisikligi yapabilirsin; Python, veritabani, .env veya "
         "baska hicbir dosyaya DOKUNAMAZSIN. (Bu akis sistem tarafindan guvenli "
-        "sekilde yonetilir.)" + plan_notu + analiz_notu + karsilastirma_notu
-        + davranis_notu + baglam_metni)
+        "sekilde yonetilir.)")
+
+    # DINAMIK BAGLAM (her soruda degisir: mod notlari + fiyat/haber/portfoy/makro)
+    # -> AYRI blok; cache'e GIRMEZ (sabit kisim cache hit kalsin diye).
+    sistem_dinamik = (plan_notu + analiz_notu + karsilastirma_notu
+                      + davranis_notu + baglam_metni)
 
     # Konusma gecmisi (ayni oturum, frontend'den): user/assistant siralamasi
     mesajlar = []
@@ -4223,7 +4230,7 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
                 {"type": "image", "source": {"type": "base64",
                                              "media_type": media, "data": b64}},
                 {"type": "text", "text": metin}]})
-            sistem += (
+            sistem_dinamik += (
                 "\n\nFOTOGRAF: Kullanıcı bir fotoğraf gönderdi. Grafik, haber, "
                 "portföy ekranı olabilir. Görseli analiz et ve yatırım bağlamında "
                 "yorumla. Grafikse trend/seviye, haberse etki, portföy/broker "
@@ -4240,11 +4247,17 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         _dbg("AI cagrisi", {"model": _model, "foto": bool(foto),
                             "anlik_fiyat_var": bool(anlik_fiyatlar)})
         client = anthropic.Anthropic()
+        # Sabit talimatlar cache_control ile bir kez yazilir -> sonraki sorularda
+        # %90 ucuz okunur (cache hit). Dinamik baglam ayri (cache'siz) blokta.
+        sistem_bloklari = [{"type": "text", "text": sistem_statik,
+                            "cache_control": {"type": "ephemeral"}}]
+        if sistem_dinamik.strip():
+            sistem_bloklari.append({"type": "text", "text": sistem_dinamik})
         resp = client.messages.create(
             model=_model,
             max_tokens=900 if foto else (
                 700 if (plan_modu or analiz_modu or karsilastirma_modu) else 400),
-            system=sistem,
+            system=sistem_bloklari,
             messages=mesajlar,
         )
         cevap = "".join(getattr(b, "text", "") for b in resp.content
