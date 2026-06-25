@@ -446,31 +446,56 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         from src.markets.bist import BIST
         symbol = BIST().to_symbol(ticker)
     start = (datetime.now(_TZ).date() - timedelta(days=400)).isoformat()
-    try:
-        df = get_data_source().get_history(symbol, start=start)
-    except Exception:
-        return None
-    if df is None or df.empty:
-        return None
-    df_v = df[df["Volume"] > 0]
-    # Hacim verisi guvenilmez ETF/fonlarda (yfinance Volume=0) tum barlar elenebilir;
-    # bu durumda fiyat barlariyla devam et (hacim filtresiz).
-    df = df_v if len(df_v) >= 2 else df
-    if len(df) < 2:
-        return None
 
-    # KILL SWITCH icin: son bar tarihi + bayatlik kontrolu
-    try:
-        last_ts = df.index[-1]
-        son_bar = last_ts.date() if hasattr(last_ts, "date") else None
-    except Exception:
+    # FON/BYF (or. GMSTR.F): yfinance bu sembolleri yanlis/bayat fiyatliyor
+    # (araya 47.85 gibi placeholder barlar koyuyor -> sahte %1000 degisim).
+    # Bu yuzden fonlarda tarihsel veriyi guvenilir Borsa MCP'den (borsapy) al.
+    if (ticker or "").upper().strip().endswith(".F"):
+        closes = highs = lows = vols = None
         son_bar = None
-    bayat = _veri_bayat(son_bar, market=market) if son_bar else False
+        try:
+            from src.news import borsa_mcp
+            rows = borsa_mcp.get_history(ticker, market, gun=260)
+        except Exception:
+            rows = None
+        if rows and len(rows) >= 2:
+            closes = [r["c"] for r in rows]
+            highs = [r["hi"] if r.get("hi") is not None else r["c"] for r in rows]
+            lows = [r["lo"] if r.get("lo") is not None else r["c"] for r in rows]
+            vols = [float(r.get("v") or 0) for r in rows]
+            try:
+                son_bar = datetime.strptime(rows[-1]["t"], "%Y-%m-%d").date()
+            except (ValueError, KeyError):
+                son_bar = None
+        if not closes or len(closes) < 2:
+            return None
+        bayat = _veri_bayat(son_bar, market=market) if son_bar else False
+    else:
+        try:
+            df = get_data_source().get_history(symbol, start=start)
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+        df_v = df[df["Volume"] > 0]
+        # Hacim verisi guvenilmez ETF/fonlarda (yfinance Volume=0) tum barlar elenebilir;
+        # bu durumda fiyat barlariyla devam et (hacim filtresiz).
+        df = df_v if len(df_v) >= 2 else df
+        if len(df) < 2:
+            return None
 
-    closes = [float(x) for x in df["Close"].tolist()]
-    highs = [float(x) for x in df["High"].tolist()]
-    lows = [float(x) for x in df["Low"].tolist()]
-    vols = [float(x) for x in df["Volume"].tolist()]
+        # KILL SWITCH icin: son bar tarihi + bayatlik kontrolu
+        try:
+            last_ts = df.index[-1]
+            son_bar = last_ts.date() if hasattr(last_ts, "date") else None
+        except Exception:
+            son_bar = None
+        bayat = _veri_bayat(son_bar, market=market) if son_bar else False
+
+        closes = [float(x) for x in df["Close"].tolist()]
+        highs = [float(x) for x in df["High"].tolist()]
+        lows = [float(x) for x in df["Low"].tolist()]
+        vols = [float(x) for x in df["Volume"].tolist()]
 
     last, prev = closes[-1], closes[-2]
     gunluk = round((last - prev) / prev * 100, 2) if prev else None

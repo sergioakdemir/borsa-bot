@@ -190,6 +190,50 @@ def get_intraday(ticker: str, market: str = "bist", timeout: float = 8.0) -> dic
     }
 
 
+def get_history(ticker: str, market: str = "bist", gun: int = 40,
+                timeout: float = 12.0) -> list | None:
+    """Bir hissenin son `gun` gunluk OHLCV serisini Borsa MCP'den (borsapy) ceker.
+
+    yfinance'in yanlis/bayat fiyatladigi fon-BYF'ler (or. GMSTR) icin guvenilir
+    tarihsel kaynak. Doner: [{t, c, v, lo, hi}] (eski->yeni) veya None."""
+    t = (ticker or "").upper().split(".")[0].strip()
+    if not t:
+        return None
+    mkt = "us" if market in ("us", "abd") else "bist"
+    try:
+        data = _run(_acall("get_historical_data", {"symbol": t, "market": mkt}),
+                    timeout=timeout)
+    except Exception:
+        return None
+    rows = (data or {}).get("data") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    try:
+        rows = sorted(rows, key=lambda r: r.get("date") or "")
+    except (TypeError, AttributeError):
+        return None
+
+    def _f(v):
+        try:
+            return round(float(v), 2) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for r in rows:
+        c = _f(r.get("close"))
+        if c is None:
+            continue
+        tarih = str(r.get("date") or "")[:10]
+        try:
+            vol = int(r.get("volume") or 0)
+        except (TypeError, ValueError):
+            vol = 0
+        out.append({"t": tarih, "c": c, "v": vol,
+                    "lo": _f(r.get("low")), "hi": _f(r.get("high"))})
+    return out[-gun:] if out else None
+
+
 def get_prices_batch(items: list[tuple]) -> dict:
     """Birden cok (ticker, market) icin fiyatlari ESZAMANLI ceker (tek baglanti).
 

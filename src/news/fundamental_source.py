@@ -29,6 +29,8 @@ _METRIKLER = ("fk", "pddd", "roe_%", "kar_marji_%",
 
 def _sym(ticker: str, market: str = "bist") -> str:
     t = (ticker or "").upper().strip().replace(".IS", "")
+    if t.endswith(".F"):              # fon/BYF eki ('GMSTR.F' -> 'GMSTR')
+        t = t[:-2]
     if market in ("us", "abd"):
         return t                      # ABD: yfinance'te son ek yok
     return f"{t}.IS"

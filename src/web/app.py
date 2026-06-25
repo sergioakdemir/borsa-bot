@@ -150,11 +150,22 @@ COMPANY_NAMES = {
     "ENKAI": "Enka İnşaat",
     "KORDS": "Kordsa",
     "TTKOM": "Türk Telekom",
+    "GMSTR": "QNB Portföy Gümüş BYF",   # gümüş borsa yatırım fonu (.F eki ile tutulur)
 }
 
 
+def _base_kod(ticker: str) -> str:
+    """Ticker'i taban koda indirger: .IS / .F eklerini atar ('GMSTR.F' -> 'GMSTR')."""
+    t = (ticker or "").upper().strip()
+    if t.endswith(".IS"):
+        t = t[:-3]
+    elif t.endswith(".F"):
+        t = t[:-2]
+    return t
+
+
 def company_name(ticker: str) -> str:
-    t = (ticker or "").upper()
+    t = _base_kod(ticker)
     return COMPANY_NAMES.get(t, t)
 
 
@@ -405,7 +416,9 @@ def _minimal_card(ticker: str) -> dict:
 def _commentary_by_ticker() -> dict:
     out = {}
     for x in _read_json(DATA / "ai_commentary.json", []):
-        k = (x.get("ticker") or "").upper()
+        # Taban koda normalize et: kayit 'GMSTR.F' olabilir ama gosterim/arama
+        # taban kodu ('GMSTR') kullanir -> .F/.IS eki yuzunden eslesememe olmasin.
+        k = _base_kod(x.get("ticker") or "")
         if not k:
             continue
         # Ayni ticker icin birden cok kayit olabilir (gercek karar + market=None
@@ -2339,42 +2352,97 @@ def get_radar(market: str = "all") -> dict:
             "yakin_takip": yakin_takip, "riskli": riskli}
 
 
-def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
-    """Son ~gun gunluk kapanis serisi + destek/direnc icin yuksek/dusuk."""
-    from src.data.factory import get_data_source
-    t = (ticker or "").upper().replace(".IS", "")
-    symbol = t if market in ("abd", "kripto") else f"{t}.IS"
-    start = (datetime.now(ZoneInfo("Europe/Istanbul")).date()
-             - timedelta(days=gun + 20)).isoformat()
+_BOS_SERI = {"seri": [], "dusuk": None, "yuksek": None, "son": None}
+
+
+def _mcp_price_series(t: str, market: str, gun: int) -> dict:
+    """Borsa MCP (borsapy) tarihsel verisinden gunluk kapanis serisi.
+
+    yfinance'in yanlis/bayat fiyatladigi fon-BYF'ler (GMSTR gibi) icin guvenilir
+    kaynak; ayrica yfinance bos donerse genel yedek."""
     try:
-        df = get_data_source().get_history(symbol, start=start)
-        df = df[df["Volume"] > 0].tail(gun)
+        from src.news import borsa_mcp
+        rows = borsa_mcp.get_history(t, market, gun=gun)
     except Exception:
-        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
-    if df is None or df.empty:
-        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
-    import pandas as pd
-    seri = []
-    for ix, cl, vol in zip(df.index, df["Close"], df["Volume"]):
-        try:
-            cv = float(cl)
-        except (TypeError, ValueError):
-            continue
-        if cv != cv:                       # NaN kapanis (tamamlanmamis/eksik bar)
-            continue
-        seri.append({"t": pd.Timestamp(ix).date().isoformat(),
-                     "c": round(cv, 2),
-                     "v": int(vol) if vol == vol else 0})
+        rows = None
+    if not rows:
+        return dict(_BOS_SERI)
+    seri = [{"t": r["t"], "c": r["c"], "v": r.get("v", 0)}
+            for r in rows if r.get("c") is not None]
     if not seri:
-        return {"seri": [], "dusuk": None, "yuksek": None, "son": None}
+        return dict(_BOS_SERI)
+    los = [r["lo"] for r in rows if r.get("lo") is not None]
+    his = [r["hi"] for r in rows if r.get("hi") is not None]
     return {"seri": seri,
-            "dusuk": round(float(df["Low"].min()), 2),
-            "yuksek": round(float(df["High"].max()), 2),
+            "dusuk": round(min(los), 2) if los else None,
+            "yuksek": round(max(his), 2) if his else None,
             "son": seri[-1]["c"]}
 
 
+def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
+    """Son ~gun gunluk kapanis serisi + destek/direnc icin yuksek/dusuk.
+
+    Fon/BYF'ler (yfinance bozuk) -> dogrudan Borsa MCP. Normal hisseler ->
+    yfinance; bos donerse BIST icin MCP yedegi devreye girer."""
+    from src.data.factory import get_data_source
+    t = _base_kod(ticker)             # 'GMSTR.F'/'GMSTR.IS' -> 'GMSTR'
+    is_bist = market not in ("abd", "kripto")
+
+    # 1) Fon/BYF: yfinance bu sembolleri yanlis fiyatliyor -> dogrudan Borsa MCP.
+    if is_bist and f"{t}.F" in _BIGPARA_SOURCES:
+        mcp = _mcp_price_series(t, "bist", gun)
+        if mcp["seri"]:
+            return mcp
+
+    # 2) Normal yol: yfinance.
+    symbol = t if not is_bist else f"{t}.IS"
+    start = (datetime.now(ZoneInfo("Europe/Istanbul")).date()
+             - timedelta(days=gun + 20)).isoformat()
+    df = None
+    try:
+        df = get_data_source().get_history(symbol, start=start)
+        # Hacim=0 barlar (tatil/bayat) genelde eksik fiyat tasir; yeterli hacimli
+        # bar varsa onlari kullan, yoksa grafik bos kalmasin diye filtresiz devam et.
+        df_v = df[df["Volume"] > 0]
+        df = (df_v if len(df_v) >= 2 else df).tail(gun)
+    except Exception:
+        df = None
+    if df is not None and not df.empty:
+        import pandas as pd
+        seri = []
+        for ix, cl, lo, hi, vol in zip(df.index, df["Close"], df["Low"],
+                                       df["High"], df["Volume"]):
+            try:
+                cv = float(cl)
+            except (TypeError, ValueError):
+                continue
+            if cv != cv:                   # NaN kapanis (tamamlanmamis/eksik bar)
+                continue
+            seri.append({"t": pd.Timestamp(ix).date().isoformat(),
+                         "c": round(cv, 2),
+                         "v": int(vol) if vol == vol else 0,
+                         "_lo": lo, "_hi": hi})
+        if seri:
+            try:
+                dusuk = round(min(float(s["_lo"]) for s in seri if s["_lo"] == s["_lo"]), 2)
+                yuksek = round(max(float(s["_hi"]) for s in seri if s["_hi"] == s["_hi"]), 2)
+            except Exception:
+                dusuk = yuksek = None
+            for s in seri:                 # ic alanlari temizle (frontend'e gitmesin)
+                s.pop("_lo", None)
+                s.pop("_hi", None)
+            return {"seri": seri, "dusuk": dusuk, "yuksek": yuksek, "son": seri[-1]["c"]}
+
+    # 3) yfinance bos/bozuk -> BIST icin Borsa MCP yedegi.
+    if is_bist:
+        mcp = _mcp_price_series(t, "bist", gun)
+        if mcp["seri"]:
+            return mcp
+    return dict(_BOS_SERI)
+
+
 def get_stock_detail(ticker: str, market: str = "bist") -> dict:
-    tkr = (ticker or "").upper().replace(".IS", "")
+    tkr = _base_kod(ticker)            # 'GMSTR.F' -> 'GMSTR' (fon eki de elenir)
     comm = _commentary_by_ticker()
     rec = comm.get(tkr)
     base = _stock_card(rec) if rec else _minimal_card(tkr)
@@ -4715,7 +4783,7 @@ _PERIODS = {
 def _intraday_series(ticker: str, market: str, yf_period: str) -> dict:
     """5 dakikalik intraday seri (1G/1H). {seri:[{t,c}], acilis: ilk barin acilisi}."""
     import yfinance as yf
-    t = (ticker or "").upper().replace(".IS", "")
+    t = _base_kod(ticker)              # '.IS'/'.F' eklerini at ('GMSTR.F' -> 'GMSTR')
     symbol = t if market in ("abd", "kripto") else f"{t}.IS"
     try:
         df = yf.Ticker(symbol).history(period=yf_period, interval="5m")
@@ -4752,13 +4820,17 @@ def api_series(ticker):
     market = request.args.get("market", "bist")
     period = (request.args.get("period") or "1A").upper()
     cfg = _PERIODS.get(period) or _PERIODS["1A"]
-    intraday = cfg[1] == "5m"
+    # Fon/BYF'lerde guvenilir 5dk intraday yok (yfinance bozuk) -> her periyotta
+    # gunluk seriye dus, grafik bos/hatali kalmasin.
+    is_fon = _base_kod(ticker) and f"{_base_kod(ticker)}.F" in _BIGPARA_SOURCES
+    intraday = cfg[1] == "5m" and not is_fon
     acilis = None
     if intraday:
         r = _intraday_series(ticker, market, cfg[0])
         seri, acilis = r["seri"], r["acilis"]
     else:
-        seri = _price_series(ticker, market, cfg[0])["seri"]
+        gun = 7 if cfg[1] == "5m" else cfg[0]      # fon intraday istegi -> son ~7 gun
+        seri = _price_series(ticker, market, gun)["seri"]
     if len(seri) > 180:                       # seyrelt (son nokta korunur)
         step = len(seri) // 180 + 1
         seri = seri[::step] + ([seri[-1]] if (len(seri) - 1) % step else [])
