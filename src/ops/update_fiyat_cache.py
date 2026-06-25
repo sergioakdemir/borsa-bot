@@ -55,6 +55,11 @@ SABIT_ABD = ["NVDA", "SPCX", "RXT", "CNCK"]
 # Anahtar = .IS'siz taban kod (portfoy 'GMSTR.F' -> taban 'GMSTR').
 BIGPARA_ONLY = {"GMSTR": "gmstr-qnb-portfoy-gumus-katilim-byf-detay"}
 
+# Ayni enstrumanlar icin BIRINCIL kaynak: Investing.com enstruman sayfasi. yfinance
+# yanlis, bigpara ara sira erisilemez/eski olabiliyor; investing.com guvenilir fiyat
+# verir. Once buradan denenir, olmazsa BIGPARA_ONLY slug'ina (bigpara) duser.
+INVESTING_SOURCES = {"GMSTR": "https://tr.investing.com/etfs/non-financial-istanbul-20"}
+
 # Tek gunde mantikli sayilan azami |% degisim|. Ustu yfinance veri hatasi sayilir
 # (BIST gunluk fiyat limiti ~%10; fonlarda biraz daha genis tutuyoruz) -> gunluk
 # bilgisi guvenilmez kabul edilip None yazilir (fiyat korunur).
@@ -159,6 +164,64 @@ def _batch_cek(yf_syms: list[str]) -> dict:
     return out
 
 
+def _investing_fiyat(url: str):
+    """Investing.com enstruman sayfasindan {fiyat, gunluk} ceker (requests + bs4).
+
+    GMSTR.F gibi yfinance'in yanlis fiyatladigi BYF'ler icin BIRINCIL kaynak.
+    Once dogrudan requests (tarayici basligiyla); 403/engel olursa curl_cffi
+    (chrome taklidi) ile yeniden dener. Fiyat 'data-test=instrument-price-last',
+    gunluk degisim 'instrument-price-change-percent' elementlerinden okunur.
+    Basarisizsa None -> cagiran bigpara'ya duser."""
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0.0.0 Safari/537.36"),
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+    }
+    html_txt = None
+    try:
+        import requests
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code == 200 and r.text:
+            html_txt = r.text
+    except Exception:
+        html_txt = None
+    if html_txt is None:                       # engel/timeout -> chrome taklidi yedek
+        try:
+            from curl_cffi import requests as creq
+            r = creq.get(url, impersonate="chrome", timeout=25)
+            if r.status_code == 200 and r.text:
+                html_txt = r.text
+        except Exception:
+            return None
+    if not html_txt:
+        return None
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_txt, "html.parser")
+    except Exception:
+        return None
+
+    def _num(s):
+        s = (s or "").strip().strip("()").replace("%", "").replace("+", "").strip()
+        if not s:
+            return None
+        s = s.replace(".", "").replace(",", ".")     # TR sayi: 1.234,56 -> 1234.56
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    el = soup.select_one('[data-test="instrument-price-last"]')
+    fiyat = _num(el.get_text(strip=True)) if el else None
+    if fiyat is None:
+        return None
+    ch = soup.select_one('[data-test="instrument-price-change-percent"]')
+    gunluk = _num(ch.get_text(strip=True)) if ch else None
+    return {"fiyat": round(fiyat, 2),
+            "gunluk": round(gunluk, 2) if gunluk is not None else None}
+
+
 def _bigpara_fiyat(slug: str):
     """bigpara hisse/fon detay sayfasindan {fiyat, gunluk}. yfinance'in yanlis
     fiyatladigi enstrumanlar (or. GMSTR.F) icin yedek kaynak. Hata -> None."""
@@ -259,21 +322,37 @@ def guncelle() -> dict:
             "kaynak": "yfinance",
         }
 
-    # 2) yfinance'in yanlis fiyatladigi enstrumanlar -> bigpara'dan dogru fiyat
+    # 2) yfinance'in yanlis fiyatladigi enstrumanlar -> ONCE Investing.com,
+    #    olmazsa bigpara'dan dogru fiyat
     for t, slug in BIGPARA_ONLY.items():
         if t not in sembol_market:
             continue
-        d = _bigpara_fiyat(slug)
+        d, kaynak = None, None
+        inv_url = INVESTING_SOURCES.get(t)
+        if inv_url:
+            d = _investing_fiyat(inv_url)
+            if d and d.get("fiyat") is not None:
+                kaynak = "investing"
+            else:
+                d = None
+        if d is None:                                  # investing yok/basarisiz -> bigpara
+            d = _bigpara_fiyat(slug)
+            kaynak = "bigpara"
         if not d or d.get("fiyat") is None:
-            print(f"[uyari] {t} bigpara'dan alinamadi (slug={slug})")
+            print(f"[uyari] {t} fiyati alinamadi (investing+bigpara)")
             continue
+        gunluk = d.get("gunluk")
+        if gunluk is not None and abs(gunluk) > _MAKUL_GUNLUK_LIMIT:
+            gunluk = None                              # anormal gunluk -> guvenilmez
         cache[t] = {
             "fiyat": d["fiyat"],
-            "gunluk": d.get("gunluk"),
+            "gunluk": gunluk,
             "guncelleme": zaman,
             "kapali": not _piyasa_acik("bist", now),
-            "kaynak": "bigpara",
+            "kaynak": kaynak,
         }
+        print(f"[bilgi] {t} fiyati {kaynak}'ten: {d['fiyat']} "
+              f"(gunluk %{gunluk if gunluk is not None else '—'})")
 
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
                           encoding="utf-8")
