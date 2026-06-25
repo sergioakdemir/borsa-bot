@@ -254,6 +254,10 @@ SYSTEM = (
     "- tahmini_sure: TUT kararinda, kac ISLEM GUNU tutulmali? PPK/bilanco tarihi "
     "yakinsa kisa (5-7 gun), teknik hedef uzaksa uzun (15-20 gun). 5-30 arasi "
     "integer. Diger kararlarda 0.\n"
+    "- cikis_stratejisi: AL ve TUT kararlarinda doldur: stop-loss tetiklenirse, "
+    "hedef fiyata ulasirsa, veya tetikleyici kosul olusursa ne yapilmali? 1-2 kisa "
+    "cumle (orn. 'Stop tetiklenirse tamamen cik; hedefe ulasirsa yarisini sat, "
+    "kalanı yukselen stop ile tut'). Diger kararlarda bos.\n"
     "Fiyat seviyelerini verideki guncel fiyat (son_kapanis) uzerinden hesapla; "
     "para birimini dogru kullan (BIST: TL, ABD: $)."
 )
@@ -719,6 +723,10 @@ class Verdict(BaseModel):
     tahmini_sure: int = Field(
         default=0, description="TUT kararinda kac ISLEM GUNU tutulmali (5-30 arasi integer); "
                               "PPK/bilanco yakinsa kisa, teknik hedef uzaksa uzun. Diger kararlarda 0.")
+    cikis_stratejisi: str = Field(
+        default="", description="AL/TUT kararinda: stop-loss tetiklenirse, hedef fiyata "
+                               "ulasirsa veya tetikleyici kosul olusursa ne yapilmali "
+                               "(1-2 kisa cumle). Diger kararlarda bos.")
 
 
 def _ai_verdict(ticker: str, payload: dict, client=None, usage_acc=None) -> Verdict:
@@ -742,6 +750,24 @@ def _ai_verdict(ticker: str, payload: dict, client=None, usage_acc=None) -> Verd
 
 _LABEL = {"AL": "AL", "TUT": "TUT", "BEKLE": "BEKLE", "AZALT": "AZALT",
           "UZAK_DUR": "UZAK DUR"}
+
+# Eminlik (kategorik) -> sayisal guven skoru (pozisyon buyuklugu hesabi icin)
+_EMINLIK_GUVEN = {"Yüksek": 85, "Orta": 70, "Düşük": 50}
+
+
+def _pozisyon_buyuklugu(eminlik, kalite_skoru) -> str:
+    """AL kararinda onerilen pozisyon buyuklugu: guven (eminlik) + giris kalitesi
+    skorunu birlestirir.
+      - Yuksek guven (>80) + yuksek kalite (>80): tam pozisyon (%5-8)
+      - Dusuk guven (<60) veya dusuk kalite (<40): kucuk test pozisyonu (%1-2)
+      - aksi halde: yari pozisyon (%2-4)"""
+    guven = _EMINLIK_GUVEN.get((eminlik or "").strip(), 60)
+    kalite = kalite_skoru if isinstance(kalite_skoru, (int, float)) else 50
+    if guven > 80 and kalite > 80:
+        return "Tam pozisyon — portföyün %5-8'i"
+    if guven < 60 or kalite < 40:
+        return "Küçük test pozisyonu — portföyün %1-2'si"
+    return "Yarı pozisyon — portföyün %2-4'ü"
 
 
 # Verdict pydantic semasinin Batch API icin acik JSON-schema karsiligi
@@ -787,11 +813,15 @@ VERDICT_SCHEMA = {
                          "description": "TUT kararinda kac ISLEM GUNU tutulmali (5-30 arasi); "
                                         "PPK/bilanco yakinsa kisa, teknik hedef uzaksa uzun. "
                                         "Diger kararlarda 0"},
+        "cikis_stratejisi": {"type": "string",
+                             "description": "AL/TUT kararinda: stop-loss tetiklenirse, hedef "
+                                            "fiyata ulasirsa veya tetikleyici kosul olusursa ne "
+                                            "yapilmali (1-2 kisa cumle); diger kararlarda bos string"},
     },
     "required": ["karar", "puan", "risk", "eminlik", "gerekce", "sade_yorum",
                  "neden_simdi", "fiyatlanmis_mi", "tekrar_bak_kosulu",
                  "giris_seviyesi", "stop_loss", "hedef_fiyat", "tetikleyici_kosul",
-                 "tahmini_sure"],
+                 "tahmini_sure", "cikis_stratejisi"],
     "additionalProperties": False,
 }
 
@@ -964,12 +994,16 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     # Giris kalitesi skoru (yalniz AL kararinda): trend/volatilite/likidite/
     # momentum/risk bilesenlerinden 0-100 skor + yildiz + oneri.
     entry_quality = None
+    position_size_oneri = None
     if final_decision == "AL":
         try:
             from src.ai import entry_quality as eq
             entry_quality = eq.hesapla(sig, v.risk)
         except Exception:
             entry_quality = None
+        # Pozisyon buyuklugu onerisi: eminlik (guven) + giris kalitesi skoru
+        kalite_skoru = (entry_quality or {}).get("skor")
+        position_size_oneri = _pozisyon_buyuklugu(v.eminlik, kalite_skoru)
 
     # --- Karar tipine gore aksiyon + stop-loss (deterministik) ---
     son_kapanis = sig.get("son_kapanis")
@@ -1016,6 +1050,10 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "stop_loss": (getattr(v, "stop_loss", "") or "").strip(),
         "hedef_fiyat": (getattr(v, "hedef_fiyat", "") or "").strip(),
         "tetikleyici_kosul": (getattr(v, "tetikleyici_kosul", "") or "").strip(),
+        # Cikis stratejisi (AL/TUT): stop/hedef/tetikleyici olusunca ne yapilmali
+        "cikis_stratejisi": (getattr(v, "cikis_stratejisi", "") or "").strip(),
+        # Pozisyon buyuklugu onerisi (yalniz AL); diger kararlarda None
+        "position_size_oneri": position_size_oneri,
         # Giris kalitesi (yalniz AL): {skor, yildiz, oneri, kirilim} veya None
         "entry_quality": entry_quality,
         # TUT degerlendirme penceresi (AI tahmini, islem gunu); diger kararlarda 0

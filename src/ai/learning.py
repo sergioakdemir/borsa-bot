@@ -78,9 +78,11 @@ def build_learning_note(ticker: str, limit: int = 10) -> str | None:
 
 
 def build_learning_notes(tickers, limit: int = 10) -> dict:
-    """{ticker: not} - sadece not uretilebilen hisseler icin (sektor uyarisi dahil)."""
+    """{ticker: not} - sadece not uretilebilen hisseler icin (sektor uyarisi +
+    adaptif confidence ayari dahil)."""
     notes = {}
     zayif = weak_sector_warnings()
+    conf_cache = {}          # sektor -> confidence ayar metni (None=ayar yok)
     for raw in tickers or []:
         t = str(raw).split(":")[0].upper().replace(".IS", "")
         note = build_learning_note(t, limit=limit)
@@ -91,6 +93,14 @@ def build_learning_notes(tickers, limit: int = 10) -> dict:
             note = f"{note} {sek_uyari}"
         elif sek_uyari:
             note = sek_uyari
+        # Adaptif ogrenme: sektor bazli confidence ayari (son 30 karar) - AI baglamina
+        if sek:
+            if sek not in conf_cache:
+                adj = sector_confidence_adjustment(sek)
+                conf_cache[sek] = adj.get("metin") if adj else None
+            conf_metin = conf_cache[sek]
+            if conf_metin:
+                note = f"{note} {conf_metin}" if note else conf_metin
         if note:
             notes[t] = note
     return notes
@@ -142,6 +152,51 @@ def sector_success_rates(limit: int = 400) -> dict:
     for a in agg.values():
         a["oran_%"] = round(a["dogru"] / a["toplam"] * 100) if a["toplam"] else None
     return agg
+
+
+def sector_confidence_adjustment(sektor, limit: int = 30) -> dict | None:
+    """Adaptif ogrenme: son `limit` (vars. 30) degerlendirilmis kararin sektor
+    bazli basari oranina gore confidence ayari onerir.
+
+      - Basari < %60 : confidence -10 (bu sektorde daha temkinli ol)
+      - Basari > %80 : confidence +5  (bu sektorde guclusun)
+      - aksi halde   : ayar yok (None)
+
+    En az 3 degerlendirilmis karar gerekir; yetersiz veri / notr durumda None.
+    Doner: {sektor, oran_%, toplam, adjustment, metin}.
+    """
+    from src.db import database as db
+    if not sektor:
+        return None
+    try:
+        rows = db.list_decisions(limit=800)     # id DESC: en yeni kararlar once
+    except Exception:
+        return None
+    sonuclar = []
+    for r in rows:
+        if _sektor_of(r.get("ticker")) != sektor:
+            continue
+        w = _outcome_wrong(r.get("sonuc"))
+        if w is None:
+            continue
+        sonuclar.append(w)
+        if len(sonuclar) >= limit:              # yalniz son `limit` karar
+            break
+    if len(sonuclar) < 3:
+        return None
+    toplam = len(sonuclar)
+    dogru = sum(1 for w in sonuclar if not w)
+    oran = round(dogru / toplam * 100)
+    if oran < 60:
+        adjustment, ton = -10, "daha temkinli ol"
+    elif oran > 80:
+        adjustment, ton = 5, "bu sektörde güçlüsün"
+    else:
+        return None
+    metin = (f"{sektor}'da son {toplam} kararda başarı %{oran} — "
+             f"confidence {adjustment:+d} ({ton}).")
+    return {"sektor": sektor, "oran_%": oran, "toplam": toplam,
+            "adjustment": adjustment, "metin": metin}
 
 
 def weak_sector_warnings(esik: int = 50, min_karar: int = 2) -> dict:

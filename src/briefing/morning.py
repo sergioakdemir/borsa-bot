@@ -364,6 +364,8 @@ def _karar_motoru_satirlari(r):
     hedef = (r.get("hedef_fiyat") or "").strip()
     stop = (r.get("stop_loss") or "").strip()
     tetik = (r.get("tetikleyici_kosul") or "").strip()
+    cikis = (r.get("cikis_stratejisi") or "").strip()
+    pozisyon = (r.get("position_size_oneri") or "").strip()
     out = []
     if fd == "AL":
         eq = r.get("entry_quality") or {}
@@ -376,8 +378,12 @@ def _karar_motoru_satirlari(r):
         if stop: p.append(f"Stop: {stop}")
         if p:
             out.append(" | ".join(p))
+        if pozisyon:                     # pozisyon buyuklugu onerisi (yalniz AL)
+            out.append(f"Pozisyon: {pozisyon}")
     elif fd == "TUT" and stop:
         out.append(f"Stop: {stop}")
+    if cikis and fd in ("AL", "TUT"):    # cikis stratejisi (AL/TUT)
+        out.append(f"Çıkış: {cikis}")
     if tetik:                            # tetikleyici TUM kararlarda
         out.append(f"Tetikleyici: {tetik}")
     return out
