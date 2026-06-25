@@ -3680,8 +3680,17 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         return {"ok": False, "cevap": f"Kod modu hatası: {type(e).__name__}"}
 
     comm = _commentary_by_ticker()
-    # Derin portfoy baglami: alis/adet/guncel/kar-zarar/sure + bot karari+gerekce
+    # PROMPT KUCULTME: soruda gecen hisseleri ERKEN tespit et; portfoy ve piyasa
+    # bloklarini buna gore daralt (tum 30+ hisseyi dokmek yerine yalniz ilgili
+    # olanlar) -> sistem promptu kuculur, AI cevap suresi dramatik dusar.
+    _tickers = _detect_tickers(soru)
+    _dbg("_detect_tickers", _tickers)
+    _tset = {(t or "").upper() for t in _tickers}
+    # Derin portfoy baglami (alis/adet/guncel/kar-zarar/sure + bot karari+gerekce):
+    # DETAY yalniz soruyla ilgili pozisyonlar icin; sahip olunan tum semboller ayrica
+    # 'portfoy_semboller'da listelenir (sahiplik tespiti icin, ucuz).
     baglam = []
+    portfoy_semboller = []
     bugun = datetime.now(ZoneInfo("Europe/Istanbul")).date()
     try:
         port = get_portfolio(kullanici)
@@ -3690,6 +3699,10 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         pozisyonlar = []
     for p in pozisyonlar:
         t = (p.get("ticker") or "").upper()
+        if t:
+            portfoy_semboller.append(t)
+        if _tset and t not in _tset:
+            continue                 # soruyla ilgisiz pozisyon -> detay gonderme
         r = comm.get(t, {}) or {}
         # ne kadar suredir tutuluyor (gun)
         tutma_gun = None
@@ -3722,18 +3735,23 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
             "hedef_fiyat": r.get("hedef_fiyat") or "",
             "tetikleyici_kosul": r.get("tetikleyici_kosul") or "",
         })
-    # tum izlenen hisseler (sahip olunmayan hisse sorulari icin kisa baglam)
-    piyasa = []
-    for t, r in comm.items():
-        if r.get("skipped"):
-            continue
-        piyasa.append({"hisse": t, "karar": r.get("final_decision"),
-                       "puan": r.get("score"), "risk": (r.get("risk") or {}).get("score"),
-                       "not": _ilk_cumleler(r.get("gerekce", ""), 1),
-                       "giris_seviyesi": r.get("giris_seviyesi") or "",
-                       "stop_loss": r.get("stop_loss") or "",
-                       "hedef_fiyat": r.get("hedef_fiyat") or "",
-                       "tetikleyici_kosul": r.get("tetikleyici_kosul") or ""})
+    # PIYASA OZETI: soruda hisse YOKSA (genel soru) tum 30+ hisseyi dokmek yerine
+    # kisa ozet ver (karar dagilimi + one cikan AL firsatlari). Hisse VARSA bu blok
+    # bos kalir; o hisselerin detayi zaten "Sorulan hisse karari"nda gider.
+    piyasa_ozet = {}
+    if not _tickers:
+        dagilim, firsatlar = {}, []
+        for t, r in comm.items():
+            if r.get("skipped"):
+                continue
+            k = _karar5(r.get("final_decision"))[0]
+            dagilim[k] = dagilim.get(k, 0) + 1
+            if k == "AL":
+                firsatlar.append({"hisse": t, "puan": r.get("score"),
+                                  "risk": (r.get("risk") or {}).get("score")})
+        firsatlar.sort(key=lambda x: x.get("puan") or 0, reverse=True)
+        piyasa_ozet = {"izlenen_hisse": sum(dagilim.values()),
+                       "karar_dagilimi": dagilim, "one_cikan_al": firsatlar[:3]}
 
     # GUNLUK PLAN: radardaki firsatlar (AL sinyalleri, puana gore en iyi 3)
     radar_firsatlar = []
@@ -3749,17 +3767,16 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         radar_firsatlar.sort(key=lambda x: x.get("puan") or 0, reverse=True)
         radar_firsatlar = radar_firsatlar[:3]
 
-    # ANLIK FIYAT: soruda gecen hisse sembolleri icin yfinance'ten guncel veri
+    # ANLIK FIYAT: soruda gecen hisse sembolleri icin guncel/gun ici veri
+    # (_tickers yukarida erken tespit edildi).
     try:
-        _tickers = _detect_tickers(soru)
-        _dbg("_detect_tickers", _tickers)
         anlik_fiyatlar = _anlik_fiyatlar(_tickers, comm)
         _dbg("_anlik_fiyatlar", anlik_fiyatlar)
         if _tickers and not anlik_fiyatlar:
             _dbg("UYARI", "ticker bulundu ama fiyat bos (yfinance bos/429 olabilir)")
     except Exception as e:
         _dbg("_anlik_fiyatlar HATA", f"{type(e).__name__}: {e}")
-        _tickers, anlik_fiyatlar = [], []
+        anlik_fiyatlar = []
 
     # ANLIK HABER: soruda hisse gecince son 24 saatlik haber + KAP bildirimlerini
     # tara (gather_news, en fazla 5 sn; asarsa habersiz devam et).
@@ -3876,11 +3893,14 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
     baglam_metni = (
         "\n\nGÜNCEL BAĞLAM (her soruda yenilenir):\n"
         f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
-        f"Portfoyu: {json.dumps(baglam, ensure_ascii=False)}\n"
+        f"Portfoy hisseleri (sahip olunan tum semboller): "
+        f"{json.dumps(portfoy_semboller, ensure_ascii=False)}\n"
+        f"Portfoyu (soruyla ilgili pozisyon detayi): {json.dumps(baglam, ensure_ascii=False)}\n"
         f"Portfoy genel analizi: {json.dumps(portfoy_analiz, ensure_ascii=False)}\n"
-        f"Son kararlar (izlenen): {json.dumps(piyasa, ensure_ascii=False)}\n"
         f"Gecmis sohbet/hafiza ozeti: {json.dumps(hafiza_ozet, ensure_ascii=False)}\n"
         f"Makro: {json.dumps(makro, ensure_ascii=False)}"
+        + (f"\nPiyasa ozeti (izlenen): {json.dumps(piyasa_ozet, ensure_ascii=False)}"
+           if piyasa_ozet else "")
         + ("\nAnlik veri (su an): " + "; ".join(
             _anlik_satir(a) for a in anlik_fiyatlar) if anlik_fiyatlar else "")
         + (f"\nSorulan hisse(ler) AI karari + gerekce: "
@@ -3971,11 +3991,12 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         "haberle iliskilendir. Haber yoksa 'bugün dikkat ceken bir haber/KAP "
         "bildirimi gormuyorum, dusus muhtemelen genel piyasa/teknik kaynakli' de; "
         "haber UYDURMA, sadece verilen basliklara dayan. "
-        "KULLANICININ PORTFOYU hakkinda EMIN olmadigin bir sey SOYLEME. Portfoy "
-        "verisi ('Portfoyu') sana acikca verilmisse kullan; verilmemisse veya bos "
-        "ise 'portfoy bilgine erisimim yok' de. Bir hissenin portfoyde olup "
-        "olmadigini ancak verilen portfoy listesinde kesin goruyorsan soyle; "
-        "'portfoyunde yok / var' diye TAHMIN etme. "
+        "KULLANICININ PORTFOYU hakkinda EMIN olmadigin bir sey SOYLEME. Sahip "
+        "olunan hisseler 'Portfoy hisseleri' listesindedir; pozisyon DETAYI "
+        "(alis/adet/kar-zarar) yalniz soruyla ilgili hisseler icin 'Portfoyu'nda "
+        "verilir. Bir hisse 'Portfoy hisseleri'nde varsa sahip oldugunu, yoksa "
+        "sahip OLMADIGINI soyle; 'Portfoy hisseleri' bos ise 'portfoy bilgine "
+        "erisimim yok' de. 'portfoyunde yok / var' diye TAHMIN etme. "
         "Bu yatirim tavsiyesi degildir.\n\n"
         "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
         "kar-zarar/tutma_gun/bot_karari), portfoy genel analizi (cesitlendirme/en "
