@@ -31,7 +31,9 @@ _GENERAL_FEEDS = [
     {"ad": "CNBC", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml"
                           "?partnerId=wrss01&id=10000664"},
     {"ad": "MarketWatch", "url": "https://feeds.marketwatch.com/marketwatch/topstories"},
-    {"ad": "Seeking Alpha", "url": "https://seekingalpha.com/market_currents.xml"},
+    # Seeking Alpha ara sira yavaslayabiliyor -> kisa timeout (3s); takilirsa hizli atlanir.
+    {"ad": "Seeking Alpha", "url": "https://seekingalpha.com/market_currents.xml",
+     "timeout": 3},
     {"ad": "Benzinga", "url": "https://www.benzinga.com/feed"},
 ]
 
@@ -122,9 +124,9 @@ def _parse_dt(entry):
     return datetime.now(_TZ)
 
 
-def _entries(url: str):
+def _entries(url: str, timeout: int = 15):
     """Bir RSS feed'inin girdilerini (baslik/ozet/link/tarih) dondurur."""
-    text = _fetch(url)
+    text = _fetch(url, timeout=timeout)
     if not text:
         return []
     try:
@@ -174,7 +176,7 @@ def ticker_news(ticker: str, within_days: int = 7, limit: int = 12) -> list[dict
     # 2) Genel ABD finans akislari (Investing/CNBC/MarketWatch/SeekingAlpha/Benzinga)
     #    -> yalniz hisse adi/kodu gecen haberler
     for feed in _GENERAL_FEEDS:
-        for e in _entries(feed["url"]):
+        for e in _entries(feed["url"], timeout=feed.get("timeout", 10)):
             if e["tarih"] < cutoff:
                 continue
             if not _mentions(f"{e['baslik']} {e['ozet']}", ticker):
@@ -206,7 +208,7 @@ def market_news(within_hours: int = 24, limit: int = 8) -> list[dict]:
     cutoff = datetime.now(_TZ) - timedelta(hours=within_hours)
     seen, out = set(), []
     for feed in [_YAHOO_GENERAL] + _GENERAL_FEEDS:
-        for e in _entries(feed["url"]):
+        for e in _entries(feed["url"], timeout=feed.get("timeout", 10)):
             if e["tarih"] < cutoff:
                 continue
             key = e["baslik"].lower()

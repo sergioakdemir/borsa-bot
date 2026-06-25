@@ -31,9 +31,14 @@ CRON_TZ=Europe/Istanbul
 0 23 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.snapshot >> /root/borsa-bot/logs/snapshot.log 2>&1
 # Telegram komut yoklayici: her dakika
 * * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.telegram_bot.poller >> /root/borsa-bot/logs/poller.log 2>&1
-# Gunluk portfoy degeri snapshot'i (getiri takibi): her gece 23:30
-30 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_portfoy_snapshot >> /root/borsa-bot/logs/portfoy_snapshot.log 2>&1
+# Gunluk portfoy degeri snapshot'i (getiri takibi): her gece 23:32
+# (23:30'da update_decisions calistigi icin cakismayi onlemek uzere 23:32'ye alindi)
+32 23 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_portfoy_snapshot >> /root/borsa-bot/logs/portfoy_snapshot.log 2>&1
 # Gun sonu ozeti (borsa kapanisi): hafta ici 18:20 (portfoy guncellendikten sonra)
 20 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.gun_sonu >> /root/borsa-bot/logs/gun_sonu.log 2>&1
 # Toplu fiyat cache guncelle (Bota Sor anlik fiyat): hafta ici 09:00-18:55 her 5 dk
 */5 9-18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_fiyat_cache >> /root/borsa-bot/logs/fiyat_cache.log 2>&1
+# Yabanci pay (watchlist geneli): her Pazartesi 09:30
+30 9 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.foreign_investor >> /root/borsa-bot/logs/yabanci_pay.log 2>&1
+# Proaktif sektor haber taramasi (gece/hafta sonu dahil): her 30 dk
+*/30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts sektor >> /root/borsa-bot/logs/alerts.log 2>&1

@@ -21,8 +21,9 @@ TAKIP_PATH = ROOT / "data" / "senaryo_takip.json"
 HABER_MODEL = "claude-haiku-4-5"
 _TZ = ZoneInfo("Europe/Istanbul")
 
-# Anlam (Haiku) kontrolu icin gunluk butce: ~$0.001/kontrol -> 15 kontrol ~ $0.015/gun
-_MAX_HAIKU_GUNLUK = 15
+# Anlam (Haiku) kontrolu icin gunluk butce: ~$0.001/kontrol -> 25 kontrol ~ $0.025/gun
+# (yogun haber gunlerinde senaryo kontrolleri erken durmasin diye 15'ten 25'e cikarildi)
+_MAX_HAIKU_GUNLUK = 25
 
 # Haber basliginin senaryoyu ANLAMCA tetikleyip tetiklemedigini soran sema
 _TETIK_SCHEMA = {
