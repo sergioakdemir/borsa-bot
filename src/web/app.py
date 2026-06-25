@@ -4167,6 +4167,36 @@ def onboarding_step(kullanici, messages) -> dict:
         return {"ok": False, "reply": "Kullanıcı bulunamadı."}
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"ok": False, "reply": "AI anahtarı ayarlı değil."}
+    # ONBOARDING SIRASINDA HISSE SORUSU: Yeni kullanici (profil tamamlanmamis)
+    # "Bota Sor"a girince onboarding modali acilir; kullanici buraya "Aselsan
+    # bugun ne oldu?" gibi somut bir hisse sorusu yazarsa profil motorunun fiyat/
+    # haber verisi YOKTUR ve eskiden "guncel verim yok" derdi. Bunu ask_bot'a
+    # devret (gercek fiyat+haber+karar cevabini ver), sonra onboarding'e don.
+    son_user = ""
+    for m in reversed(messages or []):
+        rol = m.get("rol") or m.get("role")
+        if rol not in ("bot", "assistant"):
+            son_user = (m.get("metin") or m.get("content") or m.get("text") or "").strip()
+            if son_user:
+                break
+    if son_user and _detect_tickers(son_user):
+        try:
+            ans = ask_bot(son_user, kullanici=kullanici, gecmis=messages[:-1])
+        except Exception:
+            ans = None
+        cevap = (ans or {}).get("cevap") if (ans or {}).get("ok") else None
+        if cevap:
+            try:
+                profile = profiling.extract_profile_from_chat(uid, messages)
+            except Exception:
+                profile = db.get_profile(uid) or {}
+            skor = (profile or {}).get("profil_guven_skoru") or 0
+            reply = (cevap + "\n\nBu arada, sana daha isabetli yorum yapabilmem "
+                     "için seni biraz tanımak isterim — borsadaki toplam portföyün "
+                     "aşağı yukarı ne kadar?")
+            return {"ok": True, "reply": reply, "guven_skoru": skor,
+                    "eksik_alanlar": (profile or {}).get("eksik_alanlar") or [],
+                    "done": skor >= 85, "telegram_bagli": False}
     try:
         import anthropic
         client = anthropic.Anthropic()
