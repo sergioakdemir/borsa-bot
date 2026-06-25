@@ -1546,6 +1546,23 @@ def get_karne(kullanici: str | None = None) -> dict:
     }
 
 
+def get_performance(kullanici: str | None = None) -> dict:
+    """Gerçek performans metrikleri (trades tablosundaki kapalı işlemlerden).
+
+    kullanici (ad) verilirse o kullanıcının işlemleri; yoksa tümü. trades tablosu
+    birikene kadar 'yeterli_veri' False döner.
+    """
+    if kullanici is None:
+        kullanici = request.args.get("kullanici")
+    try:
+        from src.ai.performance import get_performance_metrics
+        from src.db import database as db
+        uid = db.user_id_by_ad(kullanici) if kullanici else None
+        return get_performance_metrics(kullanici_id=uid)
+    except Exception:
+        return {"yeterli_veri": False, "islem_sayisi": 0}
+
+
 def _karar_label(karar: str) -> str:
     return {"AL": "AL", "AL_TEMKINLI": "AL (temkinli)", "TUT": "TUT",
             "SAT": "SAT", "GUCLU_SAT": "Güçlü SAT", "VETO": "VETO",
@@ -4551,6 +4568,11 @@ def api_portfolio():
 @app.route("/api/karne")
 def api_karne():
     return jsonify(get_karne(request.args.get("kullanici")))
+
+
+@app.route("/api/performance")
+def api_performance():
+    return jsonify(get_performance())
 
 
 @app.route("/api/paper-trading")

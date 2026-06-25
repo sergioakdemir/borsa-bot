@@ -1174,15 +1174,17 @@ function modelPortfoyHTML(mp){
   }
   return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [k,btr,pr,her,agr]=await Promise.all([
+  try{const [k,btr,pr,her,agr,perf]=await Promise.all([
         fetch("/api/karne"+uq()).then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
         fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
         fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({})),
-        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false}))]);
+        fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false})),
+        fetch("/api/performance"+uq()).then(r=>r.json()).catch(()=>({}))]);
     let h=`<h2 style="font-size:21px;font-weight:700">📊 Karne</h2>
       <div class="tick" style="margin-bottom:6px">Botun gerçek kararları ve isabet performansı</div>`;
     h+=karneGenelHTML(k);
+    h+=performansHTML(perf);
     h+=karneSonKararlarHTML(k);
     h+=karneSektorHTML(k);
     h+=modelPortfoyHTML(k.model_portfoy||{var:false});
@@ -1223,6 +1225,27 @@ function karneGenelHTML(k){
       ${k.en_iyi?`<div class="row" style="margin-top:8px"><span class="muted">En iyi karar</span><b class="pos">${esc(k.en_iyi.ticker)} ${pct(k.en_iyi.degisim)}</b></div>`:""}
       ${k.en_kotu?`<div class="row" style="margin-top:8px"><span class="muted">En kötü karar</span><b class="neg">${esc(k.en_kotu.ticker)} ${pct(k.en_kotu.degisim)}</b></div>`:""}
     </div>${pkBlok}`}
+function performansHTML(p){
+  if(!p)return"";
+  // Trades tablosu birikene kadar bilgilendirici not göster
+  if(!p.yeterli_veri){
+    return`<div class="sec-title">📈 Gerçek Performans</div>
+      <div class="card"><div class="tick" style="line-height:1.5">Gerçek işlem metrikleri (hit rate, profit factor, expectancy) <b>trades</b> tablosu dolunca anlamlı olacak${p.islem_sayisi?` · ${p.islem_sayisi} işlem açıldı`:""}.</div></div>`}
+  const hr=p.hit_rate==null?null:Math.round(p.hit_rate*100);
+  const hrc=hr==null?"":(hr>=60?"pos":hr>=40?"flat":"neg");
+  const pfc=p.profit_factor==null?"":(p.profit_factor>=1.5?"pos":p.profit_factor>=1?"flat":"neg");
+  const exc=p.expectancy==null?"":(p.expectancy>0?"pos":"neg");
+  return`<div class="sec-title">📈 Gerçek Performans</div>
+    <div class="card">
+      <div class="krow">
+        <div class="kbox"><div class="kbig ${hrc}">${hr==null?"—":"%"+hr}</div><div class="ksub">Hit rate</div></div>
+        <div class="kbox"><div class="kbig ${pfc}">${p.profit_factor==null?"—":p.profit_factor}</div><div class="ksub">Profit factor</div></div>
+        <div class="kbox"><div class="kbig ${exc}">${p.expectancy==null?"—":pct(p.expectancy)}</div><div class="ksub">Expectancy</div></div>
+      </div>
+      <div class="row" style="margin-top:10px"><span class="muted">Kazanan ort. · Kaybeden ort.</span><b><span class="pos">${p.kazanan_ort==null?"—":pct(p.kazanan_ort)}</span> · <span class="neg">${p.kaybeden_ort==null?"—":pct(p.kaybeden_ort)}</span></b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">Kazanan / Kaybeden işlem</span><b>${p.kazanan_sayisi}/${p.kaybeden_sayisi} <span class="muted">(${p.kapali_sayisi} kapalı)</span></b></div>
+      <div class="row" style="margin-top:8px"><span class="muted">En kötü işlem (max drawdown)</span><b class="neg">${p.max_drawdown==null?"—":pct(p.max_drawdown)}</b></div>
+    </div>`}
 function karneSonKararlarHTML(k){
   const rows=(k&&k.son_kararlar)||[];
   if(!rows.length)return"";

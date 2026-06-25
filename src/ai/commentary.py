@@ -18,6 +18,7 @@ Calistir:  python -m src.ai.commentary [TICKER ...]
 """
 import json
 import os
+import re
 import statistics
 import sys
 from datetime import date, datetime, timedelta
@@ -337,6 +338,26 @@ UFUK_TEKNOLOJI_PROFILI = {
 }
 
 
+def parse_first_price(text) -> float | None:
+    """Verdict metin alanindan ('88 TL altina duserse cik', '120 TL'a ulasirsa
+    sat') ilk fiyat sayisini cikarir. Bulunamazsa None.
+
+    Turkce ondalik virgul (95,50) ve binlik nokta (1.234,50) destegi: virgul
+    varsa nokta binlik ayraci sayilir, virgul ondalik olur."""
+    if not text:
+        return None
+    m = re.search(r"\d[\d.,]*", str(text))
+    if not m:
+        return None
+    s = m.group(0).rstrip(".,")
+    if "," in s:                       # Turkce: nokta=binlik, virgul=ondalik
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def _load_dotenv():
     env_path = ROOT / ".env"
     if not env_path.exists():
@@ -514,6 +535,9 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
     ref = closes[-22] if len(closes) >= 22 else closes[0]   # ~1 ay
     donem = round((last - ref) / ref * 100, 2) if ref else None
 
+    ref5 = closes[-6] if len(closes) >= 6 else closes[0]    # son 5 islem gunu
+    son5g = round((last - ref5) / ref5 * 100, 2) if ref5 else None
+
     vwin = vols[-20:]
     avg_vol = sum(vwin) / len(vwin) if vwin else 0
     hacim_vs = round((vols[-1] / avg_vol - 1) * 100, 2) if avg_vol else None
@@ -531,6 +555,7 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "onceki_kapanis": round(prev, 2),
         "gunluk_degisim_%": gunluk,
         "donem_degisim_%": donem,
+        "son5g_degisim_%": son5g,
         "ma10": ma10,
         "ma50": ma50,
         "hafta52_yuksek": hafta52_yuksek,
@@ -936,6 +961,16 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         gozlemler.append(
             f"{len(news['haberler'])} taze haber; fiyatlanmis_mi={v.fiyatlanmis_mi}")
 
+    # Giris kalitesi skoru (yalniz AL kararinda): trend/volatilite/likidite/
+    # momentum/risk bilesenlerinden 0-100 skor + yildiz + oneri.
+    entry_quality = None
+    if final_decision == "AL":
+        try:
+            from src.ai import entry_quality as eq
+            entry_quality = eq.hesapla(sig, v.risk)
+        except Exception:
+            entry_quality = None
+
     # --- Karar tipine gore aksiyon + stop-loss (deterministik) ---
     son_kapanis = sig.get("son_kapanis")
     aksiyon = None
@@ -981,6 +1016,8 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "stop_loss": (getattr(v, "stop_loss", "") or "").strip(),
         "hedef_fiyat": (getattr(v, "hedef_fiyat", "") or "").strip(),
         "tetikleyici_kosul": (getattr(v, "tetikleyici_kosul", "") or "").strip(),
+        # Giris kalitesi (yalniz AL): {skor, yildiz, oneri, kirilim} veya None
+        "entry_quality": entry_quality,
         # TUT degerlendirme penceresi (AI tahmini, islem gunu); diger kararlarda 0
         "tahmini_sure": getattr(v, "tahmini_sure", 0) or 0,
         "gozlemler": gozlemler,
@@ -1015,6 +1052,69 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
 # ---------------------------------------------------------------------------
 # Zinciri calistir + kaydet + decisions tablosu
 # ---------------------------------------------------------------------------
+def _record_trades(results, verbose: bool = False, tarih=None):
+    """Karar sonuclarini gercek islem defterine (trades) yazar.
+
+    AL  -> acik trade yoksa yeni pozisyon ac (entry=son_kapanis, stop/hedef=verdict,
+           rr_oran=(hedef-entry)/(entry-stop)).
+    AZALT/UZAK_DUR/SAT/GUCLU_SAT -> acik trade varsa kapat (pnl + holding_days).
+    kullanici_id=0 (sistem geneli). Fiyatlar yerel para biriminde (BIST: TL, ABD: USD).
+    """
+    from src.db import database as db
+    bugun = tarih or datetime.now(_TZ).date().isoformat()
+    acilan = kapanan = 0
+    for r in results or []:
+        if r.get("skipped") or r.get("kill_switch"):
+            continue
+        ticker = (r.get("ticker") or "").upper().replace(".IS", "")
+        if not ticker:
+            continue
+        karar = (r.get("final_decision") or "").upper()
+        sig = r.get("kullanilan_on_sinyal") or {}
+        fiyat = sig.get("son_kapanis")
+        para_birimi = "USD" if (r.get("market") or "bist").lower() in ("us", "abd") else "TL"
+        try:
+            acik = db.get_open_trade(ticker)
+            if karar == "AL":
+                if acik or not fiyat:
+                    continue
+                stop = parse_first_price(r.get("stop_loss"))
+                hedef = parse_first_price(r.get("hedef_fiyat"))
+                rr = None
+                if stop is not None and hedef is not None and (fiyat - stop) != 0:
+                    rr = round((hedef - fiyat) / (fiyat - stop), 2)
+                db.open_trade(ticker, karar, fiyat, stop_fiyat=stop, hedef_fiyat=hedef,
+                              para_birimi=para_birimi, rr_oran=rr, acilis_tarihi=bugun)
+                acilan += 1
+                if verbose:
+                    print(f"  [trade] AL  {ticker} @ {fiyat} stop={stop} hedef={hedef} RR={rr}")
+            elif karar in ("AZALT", "UZAK_DUR", "SAT", "GUCLU_SAT"):
+                if not acik or not fiyat:
+                    continue
+                entry = acik.get("entry_fiyat") or 0.0
+                pnl_y = round((fiyat - entry) / entry * 100, 2) if entry else None
+                hold = _gun_farki(acik.get("acilis_tarihi"), bugun)
+                db.close_trade(acik["id"], fiyat, kapanis_sebep=f"karar:{karar}",
+                               pnl_yuzde=pnl_y, holding_days=hold, tarih=bugun)
+                kapanan += 1
+                if verbose:
+                    print(f"  [trade] {karar} {ticker} @ {fiyat} (giris {entry}) -> %{pnl_y}")
+        except Exception as e:
+            if verbose:
+                print(f"  [{ticker}] trade kaydi yazilamadi: {type(e).__name__}")
+    return {"acilan": acilan, "kapanan": kapanan}
+
+
+def _gun_farki(baslangic, bitis) -> int | None:
+    """Iki ISO tarih (YYYY-MM-DD) arasi gun farki; hata olursa None."""
+    try:
+        a = datetime.fromisoformat(str(baslangic)[:10]).date()
+        b = datetime.fromisoformat(str(bitis)[:10]).date()
+        return (b - a).days
+    except Exception:
+        return None
+
+
 def _persist(results, save: bool, verbose: bool):
     """Sonuclari decisions tablosuna yazar + ai_commentary.json'a kaydeder."""
     from src.db import database as db
@@ -1034,6 +1134,7 @@ def _persist(results, save: bool, verbose: bool):
         except Exception as e:
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")
+    _record_trades(results, verbose=verbose, tarih=today)
     if save:
         _save_results(results, verbose=verbose)
 
@@ -1258,6 +1359,9 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
         except Exception as e:
             if verbose:
                 print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
+
+    # Gercek islem defteri (trades): AL -> ac, AZALT/UZAK_DUR/SAT -> kapat
+    _record_trades(results, verbose=verbose, tarih=today)
 
     if save:
         _save_results(results, verbose=verbose)

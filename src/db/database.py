@@ -178,6 +178,30 @@ CREATE TABLE IF NOT EXISTS uploads (
     yukleme_tarihi  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_uploads_kullanici ON uploads(kullanici_id);
+CREATE TABLE IF NOT EXISTS trades (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    kullanici_id    INTEGER DEFAULT 0,
+    karar           TEXT NOT NULL,
+    entry_fiyat     REAL,
+    stop_fiyat      REAL,
+    hedef_fiyat     REAL,
+    position_size   REAL,
+    para_birimi     TEXT DEFAULT 'TL',
+    acilis_tarihi   TEXT NOT NULL,
+    kapanis_tarihi  TEXT,
+    kapanis_fiyat   REAL,
+    kapanis_sebep   TEXT,
+    holding_days    INTEGER,
+    rr_oran         REAL,
+    max_drawdown    REAL,
+    max_profit      REAL,
+    pnl_yuzde       REAL,
+    pnl_tl          REAL,
+    durum           TEXT DEFAULT 'acik'
+);
+CREATE INDEX IF NOT EXISTS ix_trades_ticker_durum ON trades(ticker, durum);
+CREATE INDEX IF NOT EXISTS ix_trades_kullanici ON trades(kullanici_id, durum);
 """
 
 # Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
@@ -926,6 +950,74 @@ def close_model_position(pos_id, kapanis_fiyati, kz_tl, kz_yuzde, tarih=None) ->
             "UPDATE model_portfoy SET durum='kapali', kapanis_fiyati=?, guncel_fiyat=?, "
             "kz_tl=?, kz_yuzde=?, kapanis_tarihi=? WHERE id=?",
             (kapanis_fiyati, kapanis_fiyati, kz_tl, kz_yuzde, tarih, pos_id))
+
+
+# ---- trades (gercek islem defteri: AL kararindan acilan pozisyonlar) ----
+def open_trade(ticker, karar, entry_fiyat, stop_fiyat=None, hedef_fiyat=None,
+               position_size=None, para_birimi="TL", rr_oran=None,
+               kullanici_id=0, acilis_tarihi=None) -> int:
+    """Yeni bir trade acar (durum='acik'). entry_fiyat o anki fiyat, stop/hedef
+    verdict'ten gelen seviyeler, rr_oran = (hedef-entry)/(entry-stop)."""
+    init_db()
+    acilis_tarihi = acilis_tarihi or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO trades
+                 (ticker, kullanici_id, karar, entry_fiyat, stop_fiyat, hedef_fiyat,
+                  position_size, para_birimi, acilis_tarihi, rr_oran, durum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
+            (str(ticker).upper().replace(".IS", ""), kullanici_id, karar, entry_fiyat,
+             stop_fiyat, hedef_fiyat, position_size, (para_birimi or "TL").upper(),
+             acilis_tarihi, rr_oran))
+        return cur.lastrowid
+
+
+def get_open_trade(ticker, kullanici_id=0):
+    """Hisseye ait acik trade (varsa, en yenisi)."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT * FROM trades WHERE ticker=? AND kullanici_id=? AND durum='acik' "
+            "ORDER BY id DESC LIMIT 1",
+            (str(ticker).upper().replace(".IS", ""), kullanici_id)).fetchone()
+        return dict(r) if r else None
+
+
+def list_trades(durum=None, kullanici_id=None, limit: int = 1000) -> list[dict]:
+    init_db()
+    q = "SELECT * FROM trades WHERE 1=1"
+    args = []
+    if durum:
+        q += " AND durum=?"
+        args.append(durum)
+    if kullanici_id is not None:
+        q += " AND kullanici_id=?"
+        args.append(kullanici_id)
+    q += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(q, args)]
+
+
+def update_trade_extremes(trade_id, max_drawdown, max_profit) -> None:
+    """Acik trade'in max_drawdown / max_profit (yuzde) degerlerini gunceller."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET max_drawdown=?, max_profit=? WHERE id=?",
+                  (max_drawdown, max_profit, trade_id))
+
+
+def close_trade(trade_id, kapanis_fiyat, kapanis_sebep=None, pnl_yuzde=None,
+                pnl_tl=None, holding_days=None, tarih=None) -> None:
+    """Trade'i kapatir (durum='kapali') ve pnl/sebep/holding bilgisini yazar."""
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        c.execute(
+            "UPDATE trades SET durum='kapali', kapanis_fiyat=?, kapanis_tarihi=?, "
+            "kapanis_sebep=?, pnl_yuzde=?, pnl_tl=?, holding_days=? WHERE id=?",
+            (kapanis_fiyat, tarih, kapanis_sebep, pnl_yuzde, pnl_tl, holding_days,
+             trade_id))
 
 
 if __name__ == "__main__":

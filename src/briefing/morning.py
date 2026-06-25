@@ -366,6 +366,10 @@ def _karar_motoru_satirlari(r):
     tetik = (r.get("tetikleyici_kosul") or "").strip()
     out = []
     if fd == "AL":
+        eq = r.get("entry_quality") or {}
+        if eq.get("skor") is not None:
+            out.append(f"Giriş kalitesi: {eq.get('yildiz', '')} ({eq['skor']}/100)"
+                       + (f" — {eq['oneri']}" if eq.get("oneri") else ""))
         p = []
         if giris: p.append(f"Giriş: {giris}")
         if hedef: p.append(f"Hedef: {hedef}")
@@ -377,6 +381,42 @@ def _karar_motoru_satirlari(r):
     if tetik:                            # tetikleyici TUM kararlarda
         out.append(f"Tetikleyici: {tetik}")
     return out
+
+
+def _firsat_siralamasi(valid):
+    """AL kararlarini expected_value'ya gore siralar (en iyi 3 firsat).
+
+    expected_value = (hedef_fiyat - guncel_fiyat) * entry_quality_skoru / 100
+    Yalniz hedef fiyati + giris kalitesi skoru olan AL'ler degerlendirilir.
+    Doner: [{ticker, yildiz, hedef_pct, ev}, ...] (en fazla 3, ev azalan)."""
+    from src.ai.commentary import parse_first_price
+    out = []
+    for r in valid:
+        if (r.get("final_decision") or "").upper() != "AL":
+            continue
+        eq = r.get("entry_quality") or {}
+        skor = eq.get("skor")
+        guncel = (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis")
+        hedef = parse_first_price(r.get("hedef_fiyat"))
+        if skor is None or not guncel or hedef is None or hedef <= guncel:
+            continue
+        ev = (hedef - guncel) * skor / 100
+        hedef_pct = (hedef - guncel) / guncel * 100
+        out.append({"ticker": (r.get("ticker") or "").upper(),
+                    "yildiz": eq.get("yildiz") or "",
+                    "hedef_pct": hedef_pct, "ev": ev})
+    out.sort(key=lambda x: x["ev"], reverse=True)
+    return out[:3]
+
+
+def _firsat_satirlari(firsatlar):
+    """Firsat siralamasini Telegram satirlarina cevirir."""
+    lines = ["", "<b>🎯 BUGÜNÜN EN İYİ FIRSATLARI</b>"]
+    for i, f in enumerate(firsatlar, 1):
+        lines.append(
+            f"{i}. <b>{_esc(f['ticker'])}</b> — Giriş: {f['yildiz']} | "
+            f"Hedef: +%{f['hedef_pct']:.0f} | EV: +{f['ev']:.1f}")
+    return lines
 
 
 def _hisse_blok(r, portfoyde=False):
@@ -520,6 +560,11 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     for u in (sektor_uyarilari or [])[:2]:
         if u:
             lines.append(_esc(u))
+
+    # BUGÜNÜN EN İYİ FIRSATLARI — AL kararlarini expected_value'ya gore sirala (max 3)
+    firsatlar = _firsat_siralamasi(valid)
+    if firsatlar:
+        lines += _firsat_satirlari(firsatlar)
 
     # FIRSATLAR (max 5) — portföy dışı AL sinyalleri
     firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"]
