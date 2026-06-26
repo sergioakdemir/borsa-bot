@@ -97,6 +97,88 @@ def kombinasyon_skoru(faktorler: dict, sektor: str):
     return skor, aciklama
 
 
+# --- Fed + TCMB surpriz analizi (saf, deterministik) -------------------------
+
+def fed_tcmb_analiz(fed_degisim_bp=None, fed_beklenti_bp=None,
+                    tcmb_degisim_bp=None, tcmb_beklenti_bp=None) -> dict:
+    """Fed ve TCMB son faiz kararlarini (ve varsa piyasa beklentisini) yorumlar.
+
+    surpriz_bp = gerceklesen_degisim - beklenti. Pozitif sürpriz = beklenenden
+    SAHIN (daha az indirim / daha cok artirim) -> risk-off egilimi; negatif =
+    GUVERCIN (beklenenden fazla gevseme) -> risk-on egilimi. Beklenti yoksa yon
+    kararin kendi isaretinden okunur. Saf fonksiyon; veri yoksa o banka None.
+    Donus: {"fed": {...}|None, "tcmb": {...}|None, "ozet": str}."""
+
+    def _banka(ad, degisim, beklenti):
+        if degisim is None:
+            return None
+        surpriz = (degisim - beklenti) if beklenti is not None else None
+        ref = surpriz if surpriz is not None else degisim
+        yon = "şahin" if ref > 0 else "güvercin" if ref < 0 else "nötr"
+        if degisim > 0:
+            kr = f"{ad} +{degisim}bp artırım"
+        elif degisim < 0:
+            kr = f"{ad} {degisim}bp indirim"
+        else:
+            kr = f"{ad} sabit (0bp)"
+        if surpriz is not None and surpriz != 0:
+            isaret = f"+{surpriz}" if surpriz > 0 else str(surpriz)
+            kr += f", beklentiye göre {isaret}bp {yon} sürpriz"
+        elif beklenti is not None:
+            kr += ", beklentiyle uyumlu"
+        return {"degisim_bp": degisim, "beklenti_bp": beklenti,
+                "surpriz_bp": surpriz, "yon": yon, "metin": kr}
+
+    fed = _banka("Fed", fed_degisim_bp, fed_beklenti_bp)
+    tcmb = _banka("TCMB", tcmb_degisim_bp, tcmb_beklenti_bp)
+    parcalar = [b["metin"] for b in (fed, tcmb) if b]
+    return {"fed": fed, "tcmb": tcmb, "ozet": " | ".join(parcalar)}
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def makro_rejim_skoru(usdtry_g=None, bist_g=None, brent_g=None,
+                      fed=None, tcmb=None) -> dict:
+    """Piyasa risk istahini 0-100 arasi tek skora indirger (100 = tam Risk-On).
+
+    50 notr taban; her makro bilesen katki ekler/cikarir. fed/tcmb =
+    fed_tcmb_analiz ciktisindaki banka dict'leri (sürpriz/karar yonu icin).
+    Skora gore rejim: >=60 Risk-On, <=40 Risk-Off, arasi Nötr.
+    Donus: {"skor": int, "rejim": str, "bilesenler": [(ad, katki)]}."""
+    skor = 50.0
+    bilesenler = []
+
+    def _ekle(ad, katki):
+        nonlocal skor
+        if katki:
+            skor += katki
+            bilesenler.append((ad, round(katki, 1)))
+
+    if bist_g is not None:
+        _ekle("BIST yönü", _clamp(bist_g * 5, -15, 15))
+    if usdtry_g is not None:
+        # TL değer kazanır (usdtry düşer) -> risk-on (+); değer kaybı -> risk-off (-)
+        _ekle("TL/dolar", _clamp(-usdtry_g * 4, -12, 12))
+    if brent_g is not None:
+        # petrol yükselişi ithalatçı TR için hafif risk-off
+        _ekle("petrol", _clamp(-brent_g * 1.5, -6, 6))
+    for banka, ad in ((fed, "Fed"), (tcmb, "TCMB")):
+        if not banka:
+            continue
+        s = banka.get("surpriz_bp")
+        if s is not None:
+            # güvercin sürpriz (negatif bp) risk-on (+); şahin (pozitif) risk-off (-)
+            _ekle(f"{ad} sürpriz", _clamp(-s / 5.0, -15, 15))
+        elif banka.get("degisim_bp") is not None:
+            _ekle(f"{ad} kararı", _clamp(-banka["degisim_bp"] / 10.0, -8, 8))
+
+    skor = int(round(_clamp(skor, 0, 100)))
+    rejim = "Risk-On" if skor >= 60 else "Risk-Off" if skor <= 40 else "Nötr"
+    return {"skor": skor, "rejim": rejim, "bilesenler": bilesenler}
+
+
 # --- Canli faktorler (surec ici onbellekli; ask_bot + commentary paylasir) ---
 _CACHE = {"ts": 0.0, "faktorler": None, "ham": None}
 _TTL = 300.0       # 5 dk (fiyat cache penceresiyle ayni)
@@ -156,10 +238,55 @@ def skor_for(ticker: str, faktorler: dict = None):
     return skor, aciklama, sektor
 
 
-def baglam_metni(ticker: str, faktorler: dict = None) -> str:
-    """AI baglamina eklenecek tek satir: 'Coklu faktor skoru: +2 (...)' veya ''."""
+# --- Canli makro rejim (market-wide; Fed/TCMB + gunluk degisim, 5 dk cache) ---
+_MAKRO_CACHE = {"ts": 0.0, "durum": None}
+
+
+def makro_durum(ttl: float = _TTL) -> dict:
+    """Canli makro rejim skoru + Fed/TCMB surpriz analizi (5 dk onbellekli).
+
+    Hisseden bagimsiz (market-wide). get_macro()'dan Fed/TCMB karar+beklenti,
+    yfinance'tan gunluk USD/BIST/Brent degisimini alir. Donus:
+    {"rejim": makro_rejim_skoru(...), "fed_tcmb": fed_tcmb_analiz(...)}."""
+    now = time.time()
+    if _MAKRO_CACHE["durum"] is not None and (now - _MAKRO_CACHE["ts"]) < ttl:
+        return _MAKRO_CACHE["durum"]
+    deg = _gunluk_degisimler()
+    try:
+        from src.news.macro import get_macro
+        m = get_macro() or {}
+    except Exception:
+        m = {}
+    analiz = fed_tcmb_analiz(
+        m.get("fed_degisim_bp"), m.get("fed_beklenti_bp"),
+        m.get("tcmb_degisim_bp"), m.get("tcmb_beklenti_bp"))
+    rejim = makro_rejim_skoru(
+        usdtry_g=deg.get("USDTRY=X"), bist_g=deg.get("XU100.IS"),
+        brent_g=deg.get("BZ=F"), fed=analiz.get("fed"), tcmb=analiz.get("tcmb"))
+    durum = {"rejim": rejim, "fed_tcmb": analiz}
+    _MAKRO_CACHE.update(ts=now, durum=durum)
+    return durum
+
+
+def baglam_metni(ticker: str, faktorler: dict = None, makro: dict = None) -> str:
+    """AI baglamina eklenecek satir(lar): sektor kombinasyon skoru + makro rejim
+    + Fed/TCMB sürpriz ozeti. Her parca veri varsa eklenir; hicbiri yoksa ''.
+
+    makro: onceden hesaplanmis makro_durum() ciktisi (tekrar cekmemek icin
+    gecirilebilir); None ise burada (cache'li) hesaplanir."""
+    satirlar = []
     skor, aciklama, sektor = skor_for(ticker, faktorler)
-    if not aciklama:
-        return ""
-    gerekceler = "; ".join(m for _, m in aciklama)
-    return f"Çoklu faktör skoru: {skor:+d} ({sektor}) — {gerekceler}"
+    if aciklama:
+        gerekceler = "; ".join(m for _, m in aciklama)
+        satirlar.append(f"Çoklu faktör skoru: {skor:+d} ({sektor}) — {gerekceler}")
+    try:
+        durum = makro if makro is not None else makro_durum()
+    except Exception:
+        durum = None
+    rej = (durum or {}).get("rejim") or {}
+    if rej.get("rejim"):
+        satirlar.append(f"Makro rejim: {rej['rejim']} ({rej['skor']}/100)")
+    ozet = ((durum or {}).get("fed_tcmb") or {}).get("ozet")
+    if ozet:
+        satirlar.append(f"Fed/TCMB faiz: {ozet}")
+    return "\n".join(satirlar)

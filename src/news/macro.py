@@ -337,6 +337,188 @@ def _investing_cpi_yoy(url=None):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Fed (ABD Merkez Bankasi) politika faizi - FRED API (ucretsiz)
+# https://fred.stlouisfed.org/docs/api/api_key.html adresinden ucretsiz anahtar.
+# FRED_API_KEY yoksa veya cekilemezse sabit _FED_FAIZ_FALLBACK kullanilir.
+# FEDFUNDS = efektif federal fon faizi (aylik); son 2 gozlemden degisim (bp) cikar.
+# ---------------------------------------------------------------------------
+_FRED_FEDFUNDS_URL = ("https://api.stlouisfed.org/fred/series/observations"
+                      "?series_id=FEDFUNDS&file_type=json&sort_order=desc&limit=2")
+_FED_FAIZ_FALLBACK = 5.25     # FRED erisilemezse son bilinen Fed faizi (%)
+
+
+def _fred_fed_funds():
+    """FRED FEDFUNDS son 2 gozlemden (faiz%, degisim_bp) dondurur.
+
+    FRED_API_KEY yoksa veya istek basarisizsa (None, None) -> get_macro sabit
+    fallback'a duser. degisim_bp = (son - onceki) * 100 (yoksa 0)."""
+    key = os.environ.get("FRED_API_KEY")
+    if not key:
+        return None, None
+    try:
+        import requests as rq
+        r = rq.get(_FRED_FEDFUNDS_URL + f"&api_key={key}",
+                   proxies=_proxies(), timeout=20)
+        if r.status_code != 200:
+            return None, None
+        obs = r.json().get("observations") or []
+    except Exception:
+        return None, None
+    vals = []
+    for o in obs:                              # sort_order=desc -> en yeni ilk
+        try:
+            vals.append(float(o.get("value")))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None, None
+    faiz = round(vals[0], 2)
+    degisim_bp = round((vals[0] - vals[1]) * 100) if len(vals) >= 2 else 0
+    return faiz, degisim_bp
+
+
+# ---------------------------------------------------------------------------
+# TCMB PPK kararlari - data/ppk_kararlari.json (gecmis kararlar + son degisim bp)
+# ---------------------------------------------------------------------------
+_PPK_KARARLARI = Path(__file__).resolve().parents[2] / "data" / "ppk_kararlari.json"
+
+
+def ppk_kararlari() -> list:
+    """data/ppk_kararlari.json'daki tum PPK kararlarini (tarihe gore eski->yeni
+    sirali) dondurur. Dosya yoksa/bozuksa []."""
+    try:
+        import json
+        data = json.loads(_PPK_KARARLARI.read_text(encoding="utf-8"))
+        kararlar = data.get("kararlar") if isinstance(data, dict) else data
+        if not isinstance(kararlar, list):
+            return []
+        return sorted(kararlar, key=lambda k: k.get("tarih", ""))
+    except Exception:
+        return []
+
+
+def son_ppk_karari() -> dict:
+    """En yeni PPK kararini ({tarih, karar_bp, faiz}) dondurur; yoksa {}."""
+    k = ppk_kararlari()
+    return k[-1] if k else {}
+
+
+# ---------------------------------------------------------------------------
+# Beklenti verisi (sonraki karara dair PIYASA beklentisi, bp cinsinden)
+# Fed:  Polymarket Gamma API (ucretsiz, anahtarsiz) - olasilik-agirlikli bp.
+#       CME FedWatch resmi API ucretli, web endpoint'i login-gate; kullanilmadi.
+# TCMB: EVDS "Piyasa Katilimcilari Anketi" (TP.BEK.S* serisi) ucretsiz; ancak tam
+#       seri kodu katalogdan teyit edilmeli -> TCMB_BEKLENTI_EVDS_KOD ile verilir.
+# Her ikisi de env override (FED_BEKLENTI_BP / TCMB_BEKLENTI_BP) ile elle girilebilir;
+# canli kaynak erisilemezse alan None kalir (analiz beklentisiz devam eder).
+# ---------------------------------------------------------------------------
+def _env_bp(ad):
+    """FED_BEKLENTI_BP / TCMB_BEKLENTI_BP env override'ini int bp olarak okur."""
+    raw = os.environ.get(ad)
+    if not raw:
+        return None
+    try:
+        return int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _bp_from_question(q: str):
+    """Polymarket outcome sorusundan isaretli bp cikarir.
+    'No change/hold' -> 0; '25 bps decrease' -> -25; '50+ bps hike' -> +50."""
+    ql = q.lower()
+    m = re.search(r"(\d+)\s*\+?\s*bps?", ql)
+    if not m:
+        if any(t in ql for t in ("no change", "unchanged", "no hike", "no cut", "hold")):
+            return 0
+        return None
+    bp = int(m.group(1))
+    if any(t in ql for t in ("decrease", "cut", "lower")):
+        return -bp
+    if any(t in ql for t in ("increase", "hike", "raise")):
+        return bp
+    return None
+
+
+def _polymarket_fed_beklenti_bp():
+    """Polymarket Gamma API ile Fed'in sonraki kararina dair olasilik-agirlikli
+    beklenti (bp). Aktif 'Fed/FOMC rate' etkinligini bulur, her binary market'in
+    YES olasiligini bp ile carpip toplar. Erisilemez/parse edilemezse None."""
+    try:
+        import requests as rq
+        r = rq.get("https://gamma-api.polymarket.com/events",
+                   params={"closed": "false", "limit": 200,
+                           "order": "volume", "ascending": "false"},
+                   proxies=_proxies(), timeout=20)
+        if r.status_code != 200:
+            return None
+        events = r.json()
+    except Exception:
+        return None
+    if not isinstance(events, list):
+        return None
+    ev = None
+    for e in events:
+        title = (e.get("title") or "").lower()
+        if "fed" in title and any(t in title for t in ("rate", "fomc", "interest", "bps")):
+            ev = e
+            break
+    if not ev:
+        return None
+    import json
+    toplam, agirlik = 0.0, 0.0
+    for mkt in ev.get("markets") or []:
+        bp = _bp_from_question(mkt.get("question") or mkt.get("groupItemTitle") or "")
+        if bp is None:
+            continue
+        fiyatlar = mkt.get("outcomePrices")
+        if isinstance(fiyatlar, str):
+            try:
+                fiyatlar = json.loads(fiyatlar)
+            except Exception:
+                continue
+        try:
+            yes = float(fiyatlar[0])            # binary market: ilk outcome = "Yes"
+        except (TypeError, ValueError, IndexError):
+            continue
+        toplam += yes * bp
+        agirlik += yes
+    if agirlik <= 0:
+        return None
+    return round(toplam / agirlik)               # olasilik-normalize beklenen bp
+
+
+def _evds_tcmb_beklenti_bp(mevcut_faiz):
+    """EVDS Piyasa Katilimcilari Anketi'nden beklenen politika faizini (TP.BEK.S*
+    serisi, env TCMB_BEKLENTI_EVDS_KOD) cekip mevcut faize gore bp farki dondurur.
+    Kod/anahtar yoksa veya cekilemezse None."""
+    kod = os.environ.get("TCMB_BEKLENTI_EVDS_KOD")
+    key = os.environ.get("EVDS_API_KEY")
+    if not kod or not key or mevcut_faiz is None:
+        return None
+    beklenen = _evds_series(kod, "avg", key)
+    if beklenen is None:
+        return None
+    return round((beklenen - mevcut_faiz) * 100)
+
+
+def fed_beklenti_bp():
+    """Fed sonraki karar beklentisi (bp): env override -> Polymarket -> None."""
+    ov = _env_bp("FED_BEKLENTI_BP")
+    if ov is not None:
+        return ov
+    return _polymarket_fed_beklenti_bp()
+
+
+def tcmb_beklenti_bp(mevcut_faiz=None):
+    """TCMB sonraki karar beklentisi (bp): env override -> EVDS anketi -> None."""
+    ov = _env_bp("TCMB_BEKLENTI_BP")
+    if ov is not None:
+        return ov
+    return _evds_tcmb_beklenti_bp(mevcut_faiz)
+
+
 def get_macro() -> dict:
     """Makro gostergeleri dondurur (iki kaynak birlesik).
 
@@ -477,6 +659,30 @@ def get_macro() -> dict:
         if tv is not None:
             out["tufe_yillik"] = tv
             out["kaynaklar"].append("investing.com(TUFE)")
+
+    # 4) Fed (ABD) politika faizi - FRED (ucretsiz). Anahtar yoksa sabit fallback.
+    fed_faiz, fed_degisim = _fred_fed_funds()
+    if fed_faiz is not None:
+        out["fed_faiz"] = fed_faiz
+        out["fed_degisim_bp"] = fed_degisim
+        taze["fed_faiz"] = fed_faiz
+        if "FRED" not in out["kaynaklar"]:
+            out["kaynaklar"].append("FRED")
+    else:
+        out["fed_faiz"] = son_bilinen.get("fed_faiz", _FED_FAIZ_FALLBACK)
+        out["fed_degisim_bp"] = 0            # FRED yok -> degisim bilinmiyor, sabit varsay
+
+    # 5) TCMB son PPK karar degisimi (data/ppk_kararlari.json)
+    spk = son_ppk_karari()
+    out["tcmb_degisim_bp"] = spk.get("karar_bp")
+    if spk:
+        out["son_ppk_tarihi"] = spk.get("tarih")
+        if "ppk_kararlari" not in out["kaynaklar"]:
+            out["kaynaklar"].append("ppk_kararlari")
+
+    # 6) Beklenti (sonraki karara dair piyasa beklentisi, bp) - best-effort, ucretsiz
+    out["fed_beklenti_bp"] = fed_beklenti_bp()
+    out["tcmb_beklenti_bp"] = tcmb_beklenti_bp(out.get("politika_faizi"))
 
     # taze cekilen degerleri kalici sakla (sonraki yedek icin)
     _kaydet_son_bilinen(taze)

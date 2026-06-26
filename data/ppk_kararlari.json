@@ -1,0 +1,17 @@
+{
+  "_aciklama": "TCMB Para Politikasi Kurulu (PPK) faiz kararlari (1 hafta repo = politika faizi). En yeni karar en ustte. karar_bp = bir onceki karara gore baz puan degisimi (+ artirim, - indirim, 0 sabit); faiz = karar sonrasi yeni politika faizi (%). 2026-06-11 anchor (faiz=37, degisim=0) dogrulanmis; 2025 patikasi en iyi bilinen/yaklasik degerlerdir, TCMB resmi duyurulariyla teyit edilmeli.",
+  "kararlar": [
+    {"tarih": "2026-06-11", "karar_bp": 0,    "faiz": 37.0},
+    {"tarih": "2026-04-17", "karar_bp": -50,  "faiz": 37.0},
+    {"tarih": "2026-03-06", "karar_bp": -50,  "faiz": 37.5},
+    {"tarih": "2026-01-23", "karar_bp": -100, "faiz": 38.0},
+    {"tarih": "2025-12-11", "karar_bp": -50,  "faiz": 39.0},
+    {"tarih": "2025-10-23", "karar_bp": -100, "faiz": 39.5},
+    {"tarih": "2025-09-11", "karar_bp": -250, "faiz": 40.5},
+    {"tarih": "2025-07-24", "karar_bp": -300, "faiz": 43.0},
+    {"tarih": "2025-06-19", "karar_bp": 0,    "faiz": 46.0},
+    {"tarih": "2025-04-17", "karar_bp": 350,  "faiz": 46.0},
+    {"tarih": "2025-03-06", "karar_bp": -250, "faiz": 42.5},
+    {"tarih": "2025-01-23", "karar_bp": -250, "faiz": 45.0}
+  ]
+}
