@@ -40,8 +40,19 @@ CREATE INDEX IF NOT EXISTS ix_uyari_ticker_tarih ON uyari_kayit(ticker, tarih);
 CREATE TABLE IF NOT EXISTS kullanici (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ad          TEXT NOT NULL UNIQUE,
-    telegram_id INTEGER
+    telegram_id INTEGER,
+    sifre_hash  TEXT                       -- bcrypt hash; NULL ise ilk giriste belirlenir
 );
+-- Cihaz hatirlatma: sifre dogrulaninca uretilen kalici token (UUID).
+-- localStorage'a yazilir; sonraki acilista token gecerliyse sifre sorulmaz.
+CREATE TABLE IF NOT EXISTS device_tokens (
+    token         TEXT PRIMARY KEY,
+    kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
+    cihaz         TEXT,
+    olusturma     TEXT NOT NULL,
+    son_kullanim  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_devtok_kullanici ON device_tokens(kullanici_id);
 CREATE TABLE IF NOT EXISTS portfoy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
@@ -250,6 +261,8 @@ def _migrate(c) -> None:
     cols = {r["name"] for r in c.execute("PRAGMA table_info(kullanici)")}
     if "telegram_id" not in cols:
         c.execute("ALTER TABLE kullanici ADD COLUMN telegram_id INTEGER")
+    if "sifre_hash" not in cols:            # sifre sistemi: NULL -> ilk giriste belirlenir
+        c.execute("ALTER TABLE kullanici ADD COLUMN sifre_hash TEXT")
     cols_p = {r["name"] for r in c.execute("PRAGMA table_info(portfoy)")}
     if "para_birimi" not in cols_p:
         c.execute("ALTER TABLE portfoy ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
@@ -358,8 +371,27 @@ def list_users() -> list[dict]:
 
 
 def seed_users():
-    for ad in ("serhat", "yigit", "ufuk"):
+    for ad in ("serhat", "yigit", "ufuk", "gokay"):
         add_user(ad)
+    seed_gokay_profile()
+
+
+def seed_gokay_profile():
+    """Gokay: BIST'te deneyimli (10 yil) yatirimci. Profilini 'tecrubeli' olarak
+    on-doldurur ki onboarding 'deneyimli yatirimci' akisini kullansin. Idempotent:
+    profil zaten varsa (kullanici elle doldurmussa) EZMEZ."""
+    uid = user_id_by_ad("gokay")
+    if uid is None:
+        return
+    if get_profile(uid):                    # zaten profil var -> dokunma
+        return
+    upsert_profile(
+        uid,
+        tecrube_seviyesi="tecrubeli",       # ~10 yil deneyim
+        ogrenme_seviyesi="ileri",
+        aciklama_ister=0,                   # detayli teknik anlatim ister, basitlestirme yok
+        risk_tercihi="dengeli",
+        notlar="BIST odakli, 10 yil deneyimli yatirimci (onboarding'de deneyimli akis).")
 
 
 def set_telegram_id(ad, telegram_id) -> None:
@@ -385,6 +417,61 @@ def get_user_by_telegram_id(telegram_id):
         r = c.execute("SELECT * FROM kullanici WHERE telegram_id=?",
                       (telegram_id,)).fetchone()
         return dict(r) if r else None
+
+
+# ---- sifre / cihaz token (giris sistemi) ----
+def get_user(ad) -> dict | None:
+    """Kullaniciyi ad'a gore (sifre_hash dahil tum alanlarla) dondurur; yoksa None."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM kullanici WHERE LOWER(ad)=LOWER(?)",
+                      (str(ad),)).fetchone()
+        return dict(r) if r else None
+
+
+def set_password_hash(ad, sifre_hash) -> bool:
+    """Kullanicinin bcrypt sifre hash'ini kaydeder. Guncellenen satir varsa True."""
+    init_db()
+    with get_conn() as c:
+        cur = c.execute("UPDATE kullanici SET sifre_hash=? WHERE LOWER(ad)=LOWER(?)",
+                        (sifre_hash, str(ad)))
+        return cur.rowcount > 0
+
+
+def add_device_token(kullanici_id, token, cihaz=None) -> None:
+    """Kalici cihaz token'i (UUID) kaydeder; 'beni hatirla' icin."""
+    init_db()
+    with get_conn() as c:
+        c.execute(
+            """INSERT OR REPLACE INTO device_tokens
+                 (token, kullanici_id, cihaz, olusturma, son_kullanim)
+               VALUES (?, ?, ?, ?, ?)""",
+            (token, kullanici_id, (cihaz or "")[:200], _now(), _now()))
+
+
+def user_by_device_token(token) -> dict | None:
+    """Gecerli cihaz token'ina karsilik gelen kullaniciyi (ad dahil) dondurur; yoksa
+    None. Bulununca son_kullanim damgasini tazeler."""
+    if not token:
+        return None
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            """SELECT k.* FROM device_tokens d JOIN kullanici k ON k.id = d.kullanici_id
+               WHERE d.token=?""", (str(token),)).fetchone()
+        if not r:
+            return None
+        c.execute("UPDATE device_tokens SET son_kullanim=? WHERE token=?",
+                  (_now(), str(token)))
+        return dict(r)
+
+
+def delete_device_token(token) -> bool:
+    """Tek bir cihaz token'ini siler (cikis/unutma). Silinen varsa True."""
+    init_db()
+    with get_conn() as c:
+        cur = c.execute("DELETE FROM device_tokens WHERE token=?", (str(token),))
+        return cur.rowcount > 0
 
 
 # ---- portfoy ----

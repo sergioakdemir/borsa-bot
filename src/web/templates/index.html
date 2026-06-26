@@ -473,7 +473,18 @@
   .up-av{width:36px;height:36px;border-radius:999px;background:var(--green2);color:#04150a;font-weight:700;
     font-size:16px;display:flex;align-items:center;justify-content:center}
   .up-av.y{background:var(--blue);color:#04101f}
+  .up-av.g{background:#a855f7;color:#1a0633}
+  .up-av.big{width:60px;height:60px;font-size:25px;margin:2px auto 14px}
   .up-close{width:100%;color:var(--muted);font-size:14px;padding:11px;margin-top:4px}
+  .auth-inp{width:100%;background:var(--card2);border:1px solid var(--border);border-radius:14px;
+    padding:14px 15px;font-size:16px;color:var(--text);margin-bottom:11px;min-height:52px}
+  .auth-inp:focus{outline:none;border-color:var(--green2)}
+  .auth-remember{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--muted);
+    margin:2px 2px 8px;cursor:pointer}
+  .auth-remember input{width:17px;height:17px;accent-color:var(--green2)}
+  .auth-err{color:#f87171;font-size:13px;text-align:center;min-height:18px;margin-bottom:6px}
+  .auth-go{justify-content:center;background:var(--green2);color:#04150a;border-color:transparent}
+  .auth-go:disabled{opacity:.55}
 
   /* ---- onboarding ---- */
   .onb{position:fixed;inset:0;z-index:75;background:var(--bg);display:none;flex-direction:column;
@@ -785,7 +796,22 @@
   <button class="up-btn" onclick="setUser('serhat')"><span class="up-av">S</span>Serhat</button>
   <button class="up-btn" onclick="setUser('yigit')"><span class="up-av y">Y</span>Yiğit</button>
   <button class="up-btn" onclick="setUser('ufuk')"><span class="up-av">U</span>Ufuk</button>
+  <button class="up-btn" onclick="setUser('gokay')"><span class="up-av g">G</span>Gökay</button>
   <button class="up-close" id="up-close" onclick="closeUserPick()" style="display:none">Vazgeç</button>
+</div></div>
+
+<div class="userpick" id="authpick"><div class="up-card">
+  <div class="up-av big" id="auth-av">S</div>
+  <div class="up-title" id="auth-title">Şifreni gir</div>
+  <div class="up-sub" id="auth-sub">Devam etmek için şifreni gir</div>
+  <input class="auth-inp" id="auth-pass" type="password" placeholder="Şifre" autocomplete="current-password"
+         enterkeyhint="go" onkeydown="if(event.key==='Enter')authSubmit()">
+  <input class="auth-inp" id="auth-pass2" type="password" placeholder="Şifreni tekrar gir" autocomplete="new-password"
+         enterkeyhint="go" style="display:none" onkeydown="if(event.key==='Enter')authSubmit()">
+  <label class="auth-remember"><input type="checkbox" id="auth-remember" checked> Beni hatırla (bu cihazda şifre sorma)</label>
+  <div class="auth-err" id="auth-err"></div>
+  <button class="up-btn auth-go" id="auth-go" onclick="authSubmit()">Giriş yap</button>
+  <button class="up-close" onclick="authBack()">← Kullanıcı değiştir</button>
 </div></div>
 
 <div class="onb" id="onb">
@@ -812,7 +838,8 @@
 <script>
 const loaded={};
 let CUR_USER=null,curTab="bugun";
-const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"}};
+const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"},gokay:{ad:"Gökay",av:"G"}};
+let PENDING_USER=null,AUTH_MODE="login";   // giris ekrani durumu (sifre belirle/gir)
 let STOCK_INDEX={},ALERT_INDEX=[],RADAR_FILTER="all",RADAR_DATA=null;
 let CHANGELOG_DATA=null;
 
@@ -874,11 +901,57 @@ function applyChip(){const u=USERS[CUR_USER];if(!u)return;document.getElementByI
   document.getElementById("uc-name").textContent=u.ad;document.getElementById("userchip").classList.toggle("u-yigit",CUR_USER==="yigit")}
 function openUserPick(){document.getElementById("up-close").style.display=CUR_USER?"block":"none";document.getElementById("userpick").classList.add("open")}
 function closeUserPick(){if(CUR_USER)document.getElementById("userpick").classList.remove("open")}
-function setUser(k){if(!USERS[k])return;CUR_USER=k;try{localStorage.setItem("bb_user",k)}catch(e){}
-  applyChip();document.getElementById("userpick").classList.remove("open");
+async function apost(url,body){try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});return await r.json()}catch(e){return{ok:false,hata:"Bağlantı hatası"}}}
+
+// Kullanici secilince sifre ekranina gec (CUR_USER henuz set EDILMEZ).
+async function setUser(k){if(!USERS[k])return;PENDING_USER=k;
+  document.getElementById("userpick").classList.remove("open");
+  const st=await apost("/api/auth/status",{kullanici:k});
+  openAuth(k,!!st.sifre_var)}
+
+function openAuth(k,sifreVar){AUTH_MODE=sifreVar?"login":"set";const u=USERS[k];
+  document.getElementById("auth-av").textContent=u?u.av:"?";
+  document.getElementById("auth-title").textContent=sifreVar?("Merhaba "+(u?u.ad:"")):("Şifre belirle"+(u?", "+u.ad:""));
+  document.getElementById("auth-sub").textContent=sifreVar?"Devam etmek için şifreni gir":"İlk giriş — bu hesaba bir şifre belirle";
+  const p1=document.getElementById("auth-pass");p1.value="";p1.placeholder=sifreVar?"Şifre":"Yeni şifre (en az 4 karakter)";
+  const p2=document.getElementById("auth-pass2");p2.value="";p2.style.display=sifreVar?"none":"block";
+  document.getElementById("auth-err").textContent="";
+  document.getElementById("auth-go").textContent=sifreVar?"Giriş yap":"Şifreyi kaydet ve gir";
+  document.getElementById("authpick").classList.add("open");
+  setTimeout(()=>p1.focus(),150)}
+
+function authBack(){document.getElementById("authpick").classList.remove("open");PENDING_USER=null;openUserPick()}
+
+async function authSubmit(){const k=PENDING_USER;if(!k)return;
+  const p=document.getElementById("auth-pass").value||"";const err=document.getElementById("auth-err");err.textContent="";
+  if(p.length<4){err.textContent="Şifre en az 4 karakter olmalı";return}
+  if(AUTH_MODE==="set"&&p!==(document.getElementById("auth-pass2").value||"")){err.textContent="Şifreler eşleşmiyor";return}
+  const remember=document.getElementById("auth-remember").checked;
+  const go=document.getElementById("auth-go");go.disabled=true;
+  const d=await apost(AUTH_MODE==="set"?"/api/auth/set-password":"/api/auth/login",{kullanici:k,sifre:p,remember});
+  go.disabled=false;
+  if(!d.ok){err.textContent=d.hata||"Giriş başarısız";return}
+  authSuccess(k,d.token,remember)}
+
+// Basarili giris: CUR_USER'i set et, (varsa) cihaz token'ini sakla, uygulamaya gec.
+function authSuccess(k,token,remember){CUR_USER=k;PENDING_USER=null;
+  try{localStorage.setItem("bb_user",k)}catch(e){}
+  if(token){try{localStorage.setItem("bb_devtok_"+k,token)}catch(e){}}
+  else{try{localStorage.removeItem("bb_devtok_"+k)}catch(e){}}
+  applyChip();document.getElementById("authpick").classList.remove("open");document.getElementById("userpick").classList.remove("open");
   Object.keys(loaded).forEach(t=>loaded[t]=false);load(curTab);checkOnboarding()}
-function initUser(){let u=null;try{u=localStorage.getItem("bb_user")}catch(e){}
-  if(u&&USERS[u]){CUR_USER=u;applyChip();checkOnboarding()}else openUserPick()}
+
+// Acilis: hatirlanan kullanicinin gecerli cihaz token'i varsa sifresiz direkt gir;
+// yoksa kullanici secimi ekranini goster.
+function initUser(){let u=null,tok=null;
+  try{u=localStorage.getItem("bb_user")}catch(e){}
+  try{tok=u?localStorage.getItem("bb_devtok_"+u):null}catch(e){}
+  if(u&&USERS[u]&&tok){
+    apost("/api/auth/token",{token:tok}).then(d=>{
+      if(d.ok&&d.kullanici&&USERS[d.kullanici]){CUR_USER=d.kullanici;applyChip();
+        Object.keys(loaded).forEach(t=>loaded[t]=false);load(curTab);checkOnboarding()}
+      else{try{localStorage.removeItem("bb_devtok_"+u)}catch(e){}openUserPick()}});
+  }else openUserPick()}
 
 /* ---- sekme ---- */
 function showTab(t){curTab=t;try{localStorage.setItem("bb_tab",t)}catch(e){}

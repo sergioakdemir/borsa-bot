@@ -25,6 +25,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -84,10 +85,12 @@ def _dbg(adim: str, *args) -> None:
 
 app = Flask(__name__)
 
-# DB semasini/migrasyonlari hazirla (para_birimi, telegram_id kolonlari vb.)
+# DB semasini/migrasyonlari hazirla (para_birimi, telegram_id, sifre_hash kolonlari vb.)
+# seed_users: serhat/yigit/ufuk/gokay'in (gokay = yeni 4. kullanici) var oldugunu garanti eder.
 try:
     from src.db import database as _db
     _db.init_db()
+    _db.seed_users()
 except Exception:  # pragma: no cover - import yolu sorunlarinda sessiz gec
     _db = None
 
@@ -4723,6 +4726,110 @@ def api_memory_clear():
 def api_onboarding():
     d = request.get_json(silent=True) or {}
     return jsonify(onboarding_step(d.get("kullanici"), d.get("messages") or []))
+
+
+# ---------------------------------------------------------------------------
+# Giris / sifre sistemi (bcrypt + kalici cihaz token)
+# Akis: kullanici secimi -> /api/auth/status (sifre var mi?) -> ilk giriste
+# set-password, sonra login. 'Beni hatirla' -> add_device_token; sonraki acilista
+# /api/auth/token ile sifre sorulmadan giris. NOT: API uclari (or. /api/portfolio)
+# bu gate'in arkasinda DEGIL; bu, uygulama-ici giris ekrani seviyesinde korumadir.
+# ---------------------------------------------------------------------------
+_SIFRE_MIN = 4                                   # minimum sifre uzunlugu
+
+
+def _hash_sifre(sifre: str) -> str:
+    import bcrypt
+    # bcrypt 72 bayt siniri: UTF-8'de kes (uzun sifrelerde hata vermesin)
+    return bcrypt.hashpw(sifre.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
+
+
+def _check_sifre(sifre: str, hash_: str) -> bool:
+    if not sifre or not hash_:
+        return False
+    import bcrypt
+    try:
+        return bcrypt.checkpw(sifre.encode("utf-8")[:72], hash_.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def _yeni_device_token(uid: int) -> str:
+    from src.db import database as db
+    tok = uuid.uuid4().hex
+    db.add_device_token(uid, tok, (request.headers.get("User-Agent") or "")[:200])
+    return tok
+
+
+@app.route("/api/auth/status", methods=["POST"])
+def api_auth_status():
+    """Kullanici icin sifre belirlenmis mi? Frontend 'belirle' vs 'gir' ekranina karar verir."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    u = db.get_user(d.get("kullanici"))
+    if not u:
+        return jsonify({"ok": False, "hata": "Kullanıcı bulunamadı"})
+    return jsonify({"ok": True, "sifre_var": bool(u.get("sifre_hash"))})
+
+
+@app.route("/api/auth/set-password", methods=["POST"])
+def api_auth_set_password():
+    """Ilk giris: sifre belirle. Zaten sifre varsa REDDEDER (login kullanilmali)."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    u = db.get_user(d.get("kullanici"))
+    if not u:
+        return jsonify({"ok": False, "hata": "Kullanıcı bulunamadı"})
+    if u.get("sifre_hash"):
+        return jsonify({"ok": False, "hata": "Şifre zaten belirlenmiş, giriş yapın"})
+    sifre = str(d.get("sifre") or "")
+    if len(sifre) < _SIFRE_MIN:
+        return jsonify({"ok": False, "hata": f"Şifre en az {_SIFRE_MIN} karakter olmalı"})
+    db.set_password_hash(u["ad"], _hash_sifre(sifre))
+    out = {"ok": True}
+    if d.get("remember"):
+        out["token"] = _yeni_device_token(u["id"])
+    return jsonify(out)
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """Sonraki girisler: sifre dogrula. remember=True ise kalici cihaz token uret."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    u = db.get_user(d.get("kullanici"))
+    if not u:
+        return jsonify({"ok": False, "hata": "Kullanıcı bulunamadı"})
+    if not u.get("sifre_hash"):
+        return jsonify({"ok": False, "sifre_var": False,
+                        "hata": "Önce şifre belirlemelisin"})
+    if not _check_sifre(str(d.get("sifre") or ""), u["sifre_hash"]):
+        return jsonify({"ok": False, "hata": "Şifre hatalı"})
+    out = {"ok": True}
+    if d.get("remember"):
+        out["token"] = _yeni_device_token(u["id"])
+    return jsonify(out)
+
+
+@app.route("/api/auth/token", methods=["POST"])
+def api_auth_token():
+    """Kalici cihaz token'i ile sifresiz giris. Gecerliyse kullaniciyi dondurur."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    u = db.user_by_device_token(d.get("token"))
+    if not u:
+        return jsonify({"ok": False})
+    return jsonify({"ok": True, "kullanici": u["ad"]})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    """Cihaz token'ini siler ('bu cihazı unut')."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    if d.get("token"):
+        db.delete_device_token(d.get("token"))
+    return jsonify({"ok": True})
 
 
 @app.route("/api/model-portfoy")
