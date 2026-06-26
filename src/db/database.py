@@ -474,6 +474,19 @@ def delete_device_token(token) -> bool:
         return cur.rowcount > 0
 
 
+def device_token_kullanici_id(token):
+    """Token gecerliyse sahibinin kullanici_id'sini dondurur; yoksa None.
+    SALT-OKUNUR: her API isteginde cagrildigi icin son_kullanim'i GUNCELLEMEZ
+    (yazma-yuku/lock olmasin). 'beni hatirla' tazeleme user_by_device_token'da."""
+    if not token:
+        return None
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT kullanici_id FROM device_tokens WHERE token=?",
+                      (str(token),)).fetchone()
+        return r["kullanici_id"] if r else None
+
+
 # ---- portfoy ----
 def add_position(kullanici_id, ticker, adet, alim_fiyati, alim_tarihi=None,
                  notlar="", para_birimi="TL"):

@@ -4786,10 +4786,10 @@ def api_auth_set_password():
     if len(sifre) < _SIFRE_MIN:
         return jsonify({"ok": False, "hata": f"Şifre en az {_SIFRE_MIN} karakter olmalı"})
     db.set_password_hash(u["ad"], _hash_sifre(sifre))
-    out = {"ok": True}
-    if d.get("remember"):
-        out["token"] = _yeni_device_token(u["id"])
-    return jsonify(out)
+    # Token HER ZAMAN uretilir (API istekleri token ile yetkilendirilir). 'remember'
+    # sadece istemci tarafinda saklama yerini belirler: localStorage (kalici) vs
+    # sessionStorage (oturumluk).
+    return jsonify({"ok": True, "token": _yeni_device_token(u["id"])})
 
 
 @app.route("/api/auth/login", methods=["POST"])
@@ -4805,10 +4805,8 @@ def api_auth_login():
                         "hata": "Önce şifre belirlemelisin"})
     if not _check_sifre(str(d.get("sifre") or ""), u["sifre_hash"]):
         return jsonify({"ok": False, "hata": "Şifre hatalı"})
-    out = {"ok": True}
-    if d.get("remember"):
-        out["token"] = _yeni_device_token(u["id"])
-    return jsonify(out)
+    # Token her zaman uretilir; 'remember' istemci saklama yerini belirler.
+    return jsonify({"ok": True, "token": _yeni_device_token(u["id"])})
 
 
 @app.route("/api/auth/token", methods=["POST"])
@@ -4830,6 +4828,58 @@ def api_auth_logout():
     if d.get("token"):
         db.delete_device_token(d.get("token"))
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API GUVENLIK: tum /api/* uclari icin cihaz-token zorunlulugu (before_request).
+# Muaf: /api/auth/* (giris akisinin kendisi) + /api/health, /api/status (sistem
+# kontrolu). Token header'da 'bb_devtok' (veya 'X-BB-Devtok') ya da query
+# '?bb_devtok=' ile gelir; gecersizse 401. Istemci tarafinda global fetch
+# sarmalayicisi token'i otomatik ekler.
+# ---------------------------------------------------------------------------
+_AUTH_MUAF_PREFIX = ("/api/auth/",)
+_AUTH_MUAF_TAM = {"/api/health", "/api/status"}
+
+
+def _gelen_token():
+    return (request.headers.get("bb_devtok") or request.headers.get("X-BB-Devtok")
+            or request.args.get("bb_devtok"))
+
+
+@app.before_request
+def _api_auth_guard():
+    path = request.path or ""
+    if not path.startswith("/api/"):
+        return None                                  # sayfa/statik istekler serbest
+    if path in _AUTH_MUAF_TAM or path.startswith(_AUTH_MUAF_PREFIX):
+        return None                                  # auth + saglik uclari muaf
+    tok = _gelen_token()
+    if tok and _db is not None:
+        try:
+            if _db.device_token_kullanici_id(tok) is not None:
+                return None                          # gecerli token -> devam
+        except Exception:
+            pass
+    return jsonify({"ok": False, "hata": "Yetkisiz: geçerli giriş (cihaz token) gerekli"}), 401
+
+
+@app.route("/api/health")
+def api_health():
+    """Auth gerektirmeyen basit saglik kontrolu (sistem izleme icin)."""
+    return jsonify({"ok": True, "status": "up"})
+
+
+@app.route("/api/status")
+def api_status():
+    """Auth gerektirmeyen hafif durum ucu (DB erisilebilir mi)."""
+    db_ok = False
+    try:
+        if _db is not None:
+            _db.list_users()
+            db_ok = True
+    except Exception:
+        db_ok = False
+    return jsonify({"ok": True, "db": db_ok})
 
 
 @app.route("/api/model-portfoy")
