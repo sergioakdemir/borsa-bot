@@ -236,6 +236,11 @@
   .pline{font-size:13px;color:var(--muted);margin-top:5px}
   .dots{color:var(--muted);font-size:22px;line-height:1;padding:0 6px;min-height:44px;min-width:36px;
     display:flex;align-items:center;justify-content:center}
+  .pos-acts{display:flex;align-items:center;gap:2px;margin-left:2px}
+  .pos-ic{color:var(--muted);background:none;border:none;padding:0;width:36px;height:38px;border-radius:10px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;transition:color .15s,background .15s}
+  .pos-ic:active{background:var(--border)}
+  .pos-ic.danger{color:#d9594f}
   .addbtn{background:var(--card);border:1px solid var(--border);color:var(--green);width:38px;height:38px;
     border-radius:999px;font-size:22px;font-weight:600;display:flex;align-items:center;justify-content:center}
 
@@ -594,6 +599,7 @@
     text-transform:uppercase;letter-spacing:.9px}
   #page-bugun .summary-card .t{font-size:16px;line-height:1.55;color:var(--text);
     margin-top:9px;font-weight:500;transition:opacity .3s ease}
+  .ov-more{color:var(--indigo,#8b9cff);font-weight:650;white-space:nowrap}
 
   /* hisse kartı: cam, minimal (max 3 satır), tıkla-aç accordion */
   #page-bugun .acc{background:var(--glass);
@@ -1043,8 +1049,10 @@ function takipCard(s){const k=reg(s);
 async function loadBugun(){const el=document.getElementById("page-bugun");
   el.innerHTML=`<div class="hello">…</div>${skel(3)}`;
   try{const d=await(await fetch("/api/today"+uq())).json();
+    const yk=d.portfoy_yorum||"",yt=d.portfoy_yorum_tam||yk;OV_TAM=yt;
+    const kesik=yt.length>yk.length||/…\s*$/.test(yk);
     let h=`<div class="hello">${esc(d.selamlama)}</div><div class="subdate">${esc(d.tarih||"")}</div>${sanalBorcHTML()}
-      <div class="summary-card"><div class="q">Bugün ne yapmalı?</div><div class="t" id="ov-text">${esc(d.portfoy_yorum)}</div>
+      <div class="summary-card"><div class="q">Bugün ne yapmalı?</div><div class="t" id="ov-text" ${kesik?`onclick="ovExpand()" style="cursor:pointer"`:""}>${esc(yk)}${kesik?`<span class="ov-more"> devamı ›</span>`:""}</div>
         <div class="summary-chips">${d.etiketler.map(t=>`<span class="chip ${t.renk}">${esc(t.metin)}</span>`).join("")}</div></div>`;
     h+=`<div class="sec-title">Hisselerimde durum</div>`;
     if(!d.hisseler.length)h+=empty("Portföyünde hisse yok");
@@ -1065,7 +1073,13 @@ async function loadBugun(){const el=document.getElementById("page-bugun");
     el.innerHTML=h;fillOverview();renderUpdateBanner();
   }catch(e){el.innerHTML=empty("Yüklenemedi")}}
 async function fillOverview(){if(!CUR_USER)return;try{const d=await(await fetch("/api/overview"+uq())).json();
-  if(d.yorum){const a=document.getElementById("ov-text"),b=document.getElementById("pf-yorum");if(a)a.textContent=d.yorum;if(b)b.textContent=d.yorum}}catch(e){}}
+  if(d.yorum){const a=document.getElementById("ov-text"),b=document.getElementById("pf-yorum");
+    if(a){const yt=d.yorum_tam||d.yorum;OV_TAM=yt;const kesik=yt.length>d.yorum.length||/…\s*$/.test(d.yorum);
+      a.innerHTML=esc(d.yorum)+(kesik?`<span class="ov-more"> devamı ›</span>`:"");
+      if(kesik){a.style.cursor="pointer";a.onclick=ovExpand}else{a.style.cursor="";a.onclick=null}}
+    if(b)b.textContent=d.yorum}}catch(e){}}
+let OV_TAM="";
+function ovExpand(){const el=document.getElementById("ov-text");if(!el)return;el.innerHTML=esc(OV_TAM||"");el.style.cursor="";el.onclick=null}
 
 /* ============ GÜNCELLEME BİLDİRİMİ (changelog) ============ */
 async function fetchChangelog(){if(CHANGELOG_DATA)return CHANGELOG_DATA;
@@ -1109,7 +1123,9 @@ function markChangelogSeen(){
 }
 
 /* ============ PORTFOYUM ============ */
-function posRow(p){const k=reg(p);
+const IC_EDIT=`<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const IC_TRASH=`<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>`;
+function posRow(p){const k=reg(p);const cur=p.para_birimi==='$'?'USD':'TL';
   return`<div class="crow pos-crow" onclick="openStock('${k}')">
     ${avatar(p,"c-logo")}
     <div class="c-main"><div class="c-name">${esc(p.isim||p.ticker)}</div>
@@ -1117,7 +1133,10 @@ function posRow(p){const k=reg(p);
     <div class="c-right">
       <div class="c-num"><div class="c-px">${p.guncel!=null?money(p.guncel,p.para_birimi):"—"}</div>
         ${p.kz_yuzde!=null?`<div class="c-chg ${signCls(p.kz)}">${pct(p.kz_yuzde)}</div>`:""}</div>
-      <button class="dots" onclick="event.stopPropagation();posMenu('${k}',${p.id},'${esc(p.ticker)}')">⋯</button>
+      <div class="pos-acts">
+        <button class="pos-ic" title="Düzenle" aria-label="Düzenle" onclick="event.stopPropagation();posEdit(${p.id},'${esc(p.ticker)}',${Number(p.adet)||0},${Number(p.alis)||0},'${cur}')">${IC_EDIT}</button>
+        <button class="pos-ic danger" title="Sil" aria-label="Sil" onclick="event.stopPropagation();pfRemove(${p.id},'${esc(p.ticker)}')">${IC_TRASH}</button>
+      </div>
     </div>
   </div>`}
 /* ---- Portföy getiri (Günlük/Haftalık/Aylık) ---- */
@@ -1882,8 +1901,19 @@ function closePf(){document.getElementById("pf-scrim").classList.remove("open");
 function pfCur(c){PF_CUR=c;document.getElementById("pf-tl").classList.toggle("active",c==="TL");document.getElementById("pf-usd").classList.toggle("active",c==="USD")}
 async function pfReload(){loaded.portfoy=false;loaded.bugun=false;if(curTab==="portfoy")await loadPortfoy();if(curTab==="bugun")await loadBugun()}
 async function pfRemove(id,t){if(!confirm(`${t} portföyden silinsin mi?`))return;
-  try{const r=await fetch("/api/portfolio/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+  try{const r=await fetch("/api/portfolio/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
     if((await r.json()).ok){toast(`${t} silindi`);pfReload()}else toast("Silinemedi")}catch(e){toast("Silinemedi")}}
+function posEdit(id,ticker,adet,alis,cur){const birim=cur==="USD"?"$":"₺";
+  ovShow(`<h2 style="font-size:20px;font-weight:700">${esc(ticker)} düzenle</h2>
+    <div class="tick" style="margin-bottom:14px">Adet ve maliyet fiyatını güncelle</div>
+    <div class="field"><label>Adet</label><input id="pe-adet" type="number" inputmode="decimal" value="${adet}"></div>
+    <div class="field" style="margin-top:10px"><label>Maliyet fiyatı (${birim})</label><input id="pe-fiyat" type="number" inputmode="decimal" value="${alis}"></div>
+    <button class="btn-primary" style="margin-top:16px" onclick="posEditSave(${id},'${esc(ticker)}')">Kaydet</button>`);
+  setTimeout(()=>{const a=document.getElementById("pe-adet");if(a)a.focus();},80);}
+async function posEditSave(id,ticker){const a=parseFloat(document.getElementById("pe-adet").value),f=parseFloat(document.getElementById("pe-fiyat").value);
+  if(isNaN(a)||isNaN(f)||a<=0||f<=0){toast("Geçerli adet ve fiyat gir");return}
+  try{const r=await fetch("/api/portfolio/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,adet:a,alim_fiyati:f})});
+    const d=await r.json();if(d.ok){closeStock();toast(`${ticker} güncellendi`);pfReload()}else toast(d.hata||"Güncellenemedi")}catch(e){toast("Güncellenemedi")}}
 const PFL_CHECK=`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path class="pfl-draw" d="M5 13l4 4L19 7"/></svg>`;
 const pflSleep=ms=>new Promise(r=>setTimeout(r,ms));
 function pflPhase(st,text){const row=document.createElement("div");row.className="pfl-row";row.innerHTML=`<span class="pfl-spin"></span><span class="pfl-lbl">${esc(text)}</span>`;st.appendChild(row);return row;}

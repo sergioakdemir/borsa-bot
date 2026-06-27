@@ -71,12 +71,14 @@ def _verdict(karar: str, degisim: float, piyasa_farki: float = None) -> bool:
 
 
 def _market_for(ticker: str):
-    """Ticker'in market nesnesini doner. decisions tablosunda para_birimi yok;
-    portfoy tablosundan bakilir: USD ise US() (yfinance'te .IS yok, orn. NVDA/SPCX/RXT),
-    degilse BIST() (.IS ekler). Boylece ABD hisseleri icin de veri gelir."""
+    """Ticker'in market nesnesini doner. decisions tablosunda para_birimi yok; sirayla:
+    1) portfoy tablosu USD ise US() (yfinance'te .IS yok, orn. QQQ/VOO),
+    2) watchlist.json kisisel_diger'de market 'abd'/'us' ise US() (orn. NVDA/RXT),
+    aksi halde BIST() (.IS ekler). Boylece ABD hisseleri icin de veri gelir."""
     from src.markets.bist import BIST
     from src.markets.us import US
     norm = (ticker or "").upper().replace(".IS", "").strip()
+    # 1) Portfoyde USD pozisyon olarak tutuluyorsa ABD
     try:
         from src.db import database as db
         with db.get_conn() as c:
@@ -86,6 +88,13 @@ def _market_for(ticker: str):
                 "ORDER BY (UPPER(para_birimi) = 'USD') DESC LIMIT 1",
                 (norm,)).fetchone()
         if row and (row[0] or "").upper() == "USD":
+            return US()
+    except Exception:
+        pass
+    # 2) Izleme listesinde ABD piyasasi olarak tanimliysa (portfoyde olmasa da)
+    try:
+        from src.watchlist import is_us_ticker
+        if is_us_ticker(norm):
             return US()
     except Exception:
         pass
@@ -123,7 +132,9 @@ def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
         return None
     if df is None or df.empty:
         return None
-    df = df[df["Volume"] > 0]
+    # Hacimsiz VE kapanisi NaN olan barlari ele (yfinance bazen guncel/yarim bari
+    # Volume>0 ama Close=NaN dondurur -> aksi halde sonuc 'nan%' cikar)
+    df = df[(df["Volume"] > 0) & df["Close"].notna()]
     if df.empty:
         return None
 

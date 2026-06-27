@@ -41,6 +41,27 @@ def load_watchlist() -> list[str]:
     return out or _DEFAULT
 
 
+_US_MARKET_KODLARI = {"abd", "us", "usd", "amerika", "nasdaq", "nyse", "amex"}
+
+
+def load_markets() -> dict:
+    """kisisel_diger'deki ticker -> market kodu ('abd'/'us'/...) haritasi.
+    yfinance yonlendirmesinde kullanilir (US tickerlar '.IS' EKLENMEDEN aranir)."""
+    out = {}
+    for e in (_data().get("kisisel_diger") or []):
+        t = str(e.get("ticker") or "").upper().replace(".IS", "").strip()
+        m = str(e.get("market") or "").lower().strip()
+        if t and m:
+            out[t] = m
+    return out
+
+
+def is_us_ticker(ticker: str) -> bool:
+    """Ticker watchlist'te ABD piyasasi olarak mi tanimli? (RXT/NVDA gibi)."""
+    norm = str(ticker or "").upper().replace(".IS", "").strip()
+    return load_markets().get(norm, "") in _US_MARKET_KODLARI
+
+
 def load_mover_threshold(default: float = 3.0) -> float:
     """Brifingde -hareketli- sayilmak icin gereken |gunluk degisim| esigi (%)."""
     try:

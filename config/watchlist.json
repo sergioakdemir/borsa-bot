@@ -113,6 +113,13 @@
       "isim": "Micron",
       "cg_id": "",
       "kullanici": "ufuk"
+    },
+    {
+      "ticker": "RXT",
+      "market": "us",
+      "isim": "Rackspace Technology",
+      "cg_id": "",
+      "kullanici": "ufuk"
     }
   ]
 }

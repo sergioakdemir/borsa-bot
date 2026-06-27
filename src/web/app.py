@@ -1259,6 +1259,48 @@ def portfolio_remove(d: dict) -> dict:
     return {"ok": cur.rowcount > 0, "silinen": cur.rowcount}
 
 
+def portfolio_update(d: dict) -> dict:
+    """Bir portfoy pozisyonunun adet ve/veya maliyet (alim_fiyati) degerini gunceller."""
+    pid = d.get("id")
+    if pid is None:
+        return {"ok": False, "hata": "Pozisyon id gerekli."}
+    adet = _num(d.get("adet"))
+    fiyat = _num(d.get("alim_fiyati") if d.get("alim_fiyati") is not None
+                 else d.get("fiyat"))
+    if adet is None and fiyat is None:
+        return {"ok": False, "hata": "Adet veya fiyat gerekli."}
+    if adet is not None and adet <= 0:
+        return {"ok": False, "hata": "Adet 0'dan büyük olmalı."}
+    if fiyat is not None and fiyat <= 0:
+        return {"ok": False, "hata": "Fiyat 0'dan büyük olmalı."}
+    sets, vals = [], []
+    if adet is not None:
+        sets.append("adet=?"); vals.append(adet)
+    if fiyat is not None:
+        sets.append("alim_fiyati=?"); vals.append(fiyat)
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            row = c.execute("SELECT kullanici_id, ticker FROM portfoy WHERE id=?",
+                            (int(pid),)).fetchone()
+            if row is None:
+                return {"ok": False, "hata": "Pozisyon bulunamadı."}
+            cur = c.execute(f"UPDATE portfoy SET {', '.join(sets)} WHERE id=?",
+                            (*vals, int(pid)))
+            c.commit()
+    except (sqlite3.Error, ValueError, TypeError) as e:
+        return {"ok": False, "hata": f"Güncellenemedi: {type(e).__name__}"}
+    if cur.rowcount > 0 and _db is not None:
+        try:
+            _db.add_memory(row["kullanici_id"], "eylem",
+                           {"ozet": f"Portföy güncellendi: {row['ticker']}",
+                            "eylem": "portfoy_guncelle", "adet": adet, "fiyat": fiyat},
+                           ticker=row["ticker"])
+        except Exception:
+            pass
+    return {"ok": cur.rowcount > 0, "id": int(pid), "adet": adet, "fiyat": fiyat}
+
+
 _AY_TR = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz",
           "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"]
 
@@ -2119,6 +2161,7 @@ def get_today(kullanici=None) -> dict:
         "selamlama": f"{selam}{(' ' + ad) if ad else ''}",
         "tarih": tarih_str,
         "portfoy_yorum": _cap(yorum, 280),
+        "portfoy_yorum_tam": " ".join((yorum or "").split()).strip(),
         "etiketler": etiketler,
         "hisseler": hisseler,
         "takip_listesi": takip_listesi,
@@ -4935,9 +4978,16 @@ def api_portfolio_add():
 
 
 @app.route("/api/portfolio/remove", methods=["POST"])
+@app.route("/api/portfolio/delete", methods=["POST"])
 def api_portfolio_remove():
     d = request.get_json(silent=True) or {}
     return jsonify(portfolio_remove(d))
+
+
+@app.route("/api/portfolio/update", methods=["POST"])
+def api_portfolio_update():
+    d = request.get_json(silent=True) or {}
+    return jsonify(portfolio_update(d))
 
 
 @app.route("/api/today")
@@ -4951,7 +5001,8 @@ def api_overview():
     comm = _commentary_by_ticker()
     recs = [comm[t] for t in _owned_by_user(kullanici)
             if t in comm and not comm[t].get("skipped")]
-    return jsonify({"yorum": _cap(_portfolio_overview(kullanici, recs), 280)})
+    tam = " ".join((_portfolio_overview(kullanici, recs) or "").split()).strip()
+    return jsonify({"yorum": _cap(tam, 280), "yorum_tam": tam})
 
 
 @app.route("/api/radar")
@@ -5065,6 +5116,7 @@ def api_portfolio_analysis():
 def api_today_summary():
     t = get_today(request.args.get("kullanici"))
     return jsonify({"selamlama": t["selamlama"], "portfoy_yorum": t["portfoy_yorum"],
+                    "portfoy_yorum_tam": t.get("portfoy_yorum_tam"),
                     "etiketler": t["etiketler"]})
 
 
