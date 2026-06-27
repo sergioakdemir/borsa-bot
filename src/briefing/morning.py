@@ -498,10 +498,25 @@ def _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio):
                 lines.append(f"• {_esc(baslik)}{ek}")
 
 
+def _kripto_render(lines, kripto_gundem):
+    """KRİPTO GÜNDEMİ bolumunu 'lines'a ekler (yerinde). CoinDesk/CoinTelegraph/
+    Decrypt/The Block son 24 saat. Bos ise hicbir sey eklemez."""
+    if not kripto_gundem:
+        return
+    lines.append("")
+    lines.append("<b>BUGÜN TAKİP · KRİPTO GÜNDEMİ</b>")
+    for h in kripto_gundem[:5]:
+        baslik = (h.get("baslik") if isinstance(h, dict) else str(h)) or ""
+        kaynak = h.get("kaynak") if isinstance(h, dict) else ""
+        if baslik:
+            ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
+            lines.append(f"• {_esc(baslik)}{ek}")
+
+
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
                   portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
-                  akademik_ozet=None, sektor_uyarilari=None):
+                  akademik_ozet=None, sektor_uyarilari=None, kripto_gundem=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -533,6 +548,7 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                     lines.append(f"• {_esc(b)}" + (f" <i>[{_esc(k)}]</i>" if k else ""))
         if is_us:
             _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
+            _kripto_render(lines, kripto_gundem)
         return "\n".join(lines)
 
     # Genel piyasa durumu (1-2 cümle)
@@ -604,6 +620,7 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     # AKADEMİK & KURUM (yalniz ABD): Turkce ozet + izlenen ABD hisse baglantisi
     if is_us:
         _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
+        _kripto_render(lines, kripto_gundem)
 
     if profil_uyari:
         lines.append("")
@@ -677,6 +694,7 @@ def main(market="bist"):
     #      + akademik/kurum gundemi (MIT/Stanford/arXiv/NASA/DARPA/FED...)
     us_gundem = []
     akademik_gundem = []
+    kripto_gundem = []
     if is_us:
         try:
             from src.news.us_news import market_news
@@ -692,6 +710,13 @@ def main(market="bist"):
         except Exception as e:
             print(f"  akademik gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
             akademik_gundem = []
+        try:
+            from src.news.us_news import crypto_news
+            kripto_gundem = crypto_news(within_hours=24, limit=6)
+            print(f"  kripto gundemi: {len(kripto_gundem)} haber (24s)")
+        except Exception as e:
+            print(f"  kripto gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
+            kripto_gundem = []
 
     # 2.6) AKADEMIK OZET: akademik/kurum haberlerini Haiku ile Turkceye cevir + izlenen
     #      ABD hisseleriyle (watchlist + ABD portfoy) iliskilendir. Bir kez hesaplanir.
@@ -727,6 +752,11 @@ def main(market="bist"):
             extra_context["akademik_gundemi"] = [
                 {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")}
                 for h in akademik_gundem]
+    if is_us and kripto_gundem:
+        extra_context = extra_context or {}
+        extra_context["kripto_gundemi"] = [
+            {"baslik": h.get("baslik"), "kaynak": h.get("kaynak")}
+            for h in kripto_gundem]
     results = evaluate_all(sel["targets"], overview=overview, learning=learning,
                            extra_context=extra_context)
 
@@ -828,7 +858,8 @@ def main(market="bist"):
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
                             us_gundem=us_gundem, akademik_gundem=akademik_gundem,
-                            akademik_ozet=akademik_ozet, sektor_uyarilari=sektor_uy)
+                            akademik_ozet=akademik_ozet, sektor_uyarilari=sektor_uy,
+                            kripto_gundem=kripto_gundem)
         # GECE GELEN HABERLER: kullanicinin izledigi hisseleri etkileyenler (varsa)
         try:
             from src.watchlist import load_index, load_personal
@@ -849,7 +880,8 @@ def main(market="bist"):
     genel = build_message(results, sel, now, overview=overview,
                           senaryolar=senaryolar, us_gundem=us_gundem,
                           akademik_gundem=akademik_gundem,
-                          akademik_ozet=akademik_ozet)   # portfolio=tum birlesik
+                          akademik_ozet=akademik_ozet,
+                          kripto_gundem=kripto_gundem)   # portfolio=tum birlesik
     gece_blok_genel = _gece_haber_blok()                    # filtresiz (tum hisseler)
     if gece_blok_genel:
         genel = genel + "\n\n" + gece_blok_genel

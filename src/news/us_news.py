@@ -37,6 +37,20 @@ _GENERAL_FEEDS = [
     {"ad": "Benzinga", "url": "https://www.benzinga.com/feed"},
 ]
 
+# Kripto/blockchain RSS kaynaklari ('kripto' kategorisi). HEM crypto_news (genel
+# kripto gundemi, ABD brifinginde gosterilir) HEM ticker_news (kripto-ilgili
+# hisselerde adi gecen haberler) icin kullanilir. Erisilemeyen feed sessizce atlanir.
+_CRYPTO_FEEDS = [
+    {"ad": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+    {"ad": "CoinTelegraph", "url": "https://cointelegraph.com/rss"},
+    {"ad": "Decrypt", "url": "https://decrypt.co/feed"},
+    {"ad": "The Block", "url": "https://www.theblock.co/rss.xml"},
+]
+
+# Kripto/blockchain ile ilgili izlenen ABD hisseleri: ticker_news bunlar icin
+# _CRYPTO_FEEDS'i de tarar (sirket/proje adi gecen kripto haberleri).
+_CRYPTO_TICKERS = {"CNCK", "IONQ"}
+
 # Hisse-bazli ek (sembol disinda) arama icin kisa sirket adlari.
 _US_KEYWORDS = {
     "NVDA": ["NVDA", "Nvidia"],
@@ -187,6 +201,21 @@ def ticker_news(ticker: str, within_days: int = 7, limit: int = 12) -> list[dict
             seen.add(key)
             out.append(_rec(e, feed["ad"]))
 
+    # 3) Kripto/blockchain-ilgili hisseler (CNCK, IONQ): kripto akislarinda adi
+    #    gecen haberleri de tara
+    if ticker in _CRYPTO_TICKERS:
+        for feed in _CRYPTO_FEEDS:
+            for e in _entries(feed["url"], timeout=feed.get("timeout", 10)):
+                if e["tarih"] < cutoff:
+                    continue
+                if not _mentions(f"{e['baslik']} {e['ozet']}", ticker):
+                    continue
+                key = e["baslik"].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(_rec(e, feed["ad"]))
+
     return out[:limit]
 
 
@@ -219,6 +248,31 @@ def market_news(within_hours: int = 24, limit: int = 8) -> list[dict]:
                         "tarih": e["tarih"].strftime("%Y-%m-%d %H:%M"),
                         "url": e.get("link")})
     # En yeni once
+    out.sort(key=lambda r: r["tarih"], reverse=True)
+    return out[:limit]
+
+
+def crypto_news(within_hours: int = 24, limit: int = 8) -> list[dict]:
+    """Genel kripto/blockchain gundemi (son `within_hours` saat) - CoinDesk,
+    CoinTelegraph, Decrypt, The Block. Dondurur:
+    [{baslik, kaynak, kategori='kripto', tarih, ozet, url}]. En yeni once.
+    Erisilemeyen feed sessizce atlanir."""
+    cutoff = datetime.now(_TZ) - timedelta(hours=within_hours)
+    seen, out = set(), []
+    for feed in _CRYPTO_FEEDS:
+        for e in _entries(feed["url"], timeout=feed.get("timeout", 10)):
+            if e["tarih"] < cutoff:
+                continue
+            key = e["baslik"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "baslik": e["baslik"], "kaynak": feed["ad"],
+                "kategori": "kripto",
+                "tarih": e["tarih"].strftime("%Y-%m-%d %H:%M"),
+                "ozet": e.get("ozet") or None, "url": e.get("link"),
+            })
     out.sort(key=lambda r: r["tarih"], reverse=True)
     return out[:limit]
 
@@ -291,6 +345,8 @@ if __name__ == "__main__":
         print(json.dumps(market_news(), ensure_ascii=False, indent=2))
     elif sys.argv[1:] and sys.argv[1] in ("academic", "akademik"):
         print(json.dumps(academic_news(), ensure_ascii=False, indent=2))
+    elif sys.argv[1:] and sys.argv[1] in ("crypto", "kripto"):
+        print(json.dumps(crypto_news(), ensure_ascii=False, indent=2))
     else:
         tk = sys.argv[1] if sys.argv[1:] else "NVDA"
         print(json.dumps(ticker_news(tk), ensure_ascii=False, indent=2))
