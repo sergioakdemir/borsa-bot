@@ -54,7 +54,22 @@ def get_performance_metrics(kullanici_id=None) -> dict:
 
     hit_rate = round(len(kazananlar) / len(pnls), 4)
     expectancy = round(hit_rate * kazanan_ort - (1 - hit_rate) * abs(kaybeden_ort), 2)
-    max_drawdown = round(min(pnls), 2)      # en büyük tekil düşüş (en kötü işlem)
+
+    # max_drawdown: kümülatif getiri eğrisindeki en büyük tepe-dip farkı (gerçek
+    # drawdown). İşlemleri kapanış sırasına diz, kümülatif PnL hesapla, zirveden en
+    # derin geri çekilmeyi bul. (Eski hatalı hesap min(pnls) yalnız tek en kötü
+    # işlemi gösteriyordu; ardışık zararların birikimini kaçırıyordu.)
+    sirali = sorted(
+        (t for t in trades if t.get("pnl_yuzde") is not None),
+        key=lambda t: (str(t.get("kapanis_tarihi") or ""), t.get("id") or 0),
+    )
+    kumulatif = zirve = 0.0
+    max_dd = 0.0
+    for t in sirali:
+        kumulatif += t["pnl_yuzde"]
+        zirve = max(zirve, kumulatif)
+        max_dd = min(max_dd, kumulatif - zirve)   # zirveden düşüş (<= 0)
+    max_drawdown = round(max_dd, 2)         # kümülatif tepe-dip (yüzde puan)
 
     return {
         "islem_sayisi": len(trades),

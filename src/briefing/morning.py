@@ -542,6 +542,32 @@ def _bilanco_render(lines):
         lines.append(f"• {_esc(tkr)} ({_esc(ne_zaman)}{tahmini})")
 
 
+def _bilanco_render_us(lines):
+    """ABD brifingine 'Bu hafta earnings' satirini ekler (onumuzdeki 7 gun,
+    yfinance earnings tarihleri). Veri yoksa hicbir sey eklemez."""
+    try:
+        from src.news import bilanco_takvimi
+        hafta = bilanco_takvimi.bu_hafta_abd()
+    except Exception:
+        hafta = []
+    if not hafta:
+        return
+    from datetime import datetime as _dt
+    parcalar = []
+    for r in hafta[:6]:
+        try:
+            d = _dt.fromisoformat(r["tarih"]).date()
+            gun = _GUN_TR[d.weekday()]
+        except Exception:
+            gun = r.get("tarih", "")
+        gk = r.get("gun_kala")
+        ne_zaman = "bugün" if gk == 0 else ("yarın" if gk == 1 else gun)
+        tahmini = " ~" if r.get("tahmini") else ""
+        parcalar.append(f"{_esc(r.get('ticker', ''))} ({_esc(ne_zaman)}{tahmini})")
+    lines.append("")
+    lines.append("📅 Bu hafta earnings: " + ", ".join(parcalar))
+
+
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
                   portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
@@ -577,6 +603,7 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                 if b:
                     lines.append(f"• {_esc(b)}" + (f" <i>[{_esc(k)}]</i>" if k else ""))
         if is_us:
+            _bilanco_render_us(lines)
             _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
             _kripto_render(lines, kripto_gundem)
         return "\n".join(lines)
@@ -650,6 +677,10 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             if baslik:
                 ek = f" <i>[{_esc(kaynak)}]</i>" if kaynak else ""
                 lines.append(f"• {_esc(baslik)}{ek}")
+
+    # BU HAFTA EARNINGS (yalniz ABD): takip edilen ABD hisselerinin earnings tarihleri
+    if is_us:
+        _bilanco_render_us(lines)
 
     # AKADEMİK & KURUM (yalniz ABD): Turkce ozet + izlenen ABD hisse baglantisi
     if is_us:

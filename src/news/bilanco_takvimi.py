@@ -23,9 +23,12 @@ _TZ = ZoneInfo("Europe/Istanbul")
 DATA = ROOT / "data"
 TAKVIM_PATH = DATA / "bilanco_takvimi.json"
 
-# Bilanco tarihi takip edilen buyuk hisseler.
+# Bilanco tarihi takip edilen buyuk hisseler (BIST).
 HISSELER = ["THYAO", "GARAN", "ASELS", "TUPRS", "AKBNK",
             "EREGL", "BIMAS", "SISE", "KRDMD", "TCELL"]
+
+# ABD hisseleri (earnings tarihleri yfinance .calendar ile cekilir; .IS eklenmez).
+ABD_HISSELERI = ["NVDA", "SPCX", "IONQ", "AMD", "TSM", "ASML"]
 
 
 def _load_dotenv():
@@ -110,11 +113,13 @@ def _borsapy_tarih(ticker: str):
     return None
 
 
-def _yfinance_tarih(ticker: str):
-    """yfinance .calendar['Earnings Date'] -> sonraki bilanco tarihi (date)."""
+def _yfinance_tarih(ticker: str, abd: bool = False):
+    """yfinance .calendar['Earnings Date'] -> sonraki bilanco tarihi (date).
+    abd=True ise sembole '.IS' eklenmez (ABD hisseleri)."""
     try:
         import yfinance as yf
-        cal = yf.Ticker(f"{ticker}.IS").calendar
+        sembol = ticker if abd else f"{ticker}.IS"
+        cal = yf.Ticker(sembol).calendar
     except Exception:
         return None
     if isinstance(cal, dict):
@@ -184,6 +189,28 @@ def guncelle(verbose: bool = True) -> list:
             print(f"  {tk}: {d.isoformat()} ({_donem(d)})"
                   f"{' [tahmini]' if tahmini else ''}")
 
+    # ABD hisseleri: yalniz yfinance .calendar (KAP/borsapy BIST'e ozgu).
+    for tk in ABD_HISSELERI:
+        try:
+            d = _yfinance_tarih(tk, abd=True)
+        except Exception:
+            d = None
+        if not d:
+            if verbose:
+                print(f"  {tk} (ABD): earnings tarihi alinamadi")
+            continue
+        tahmini = False
+        if d < bugun:
+            while d < bugun:
+                d = d + timedelta(days=91)
+            tahmini = True
+        rec = {"ticker": tk, "tarih": d.isoformat(), "donem": _donem(d), "abd": True}
+        if tahmini:
+            rec["tahmini"] = True
+        sonuc.append(rec)
+        if verbose:
+            print(f"  {tk} (ABD): {d.isoformat()}{' [tahmini]' if tahmini else ''}")
+
     sonuc.sort(key=lambda r: r["tarih"])
     try:
         DATA.mkdir(exist_ok=True)
@@ -201,7 +228,8 @@ def guncelle(verbose: bool = True) -> list:
             pass
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] bilanço takvimi: "
-              f"{len(sonuc)}/{len(HISSELER)} hisse -> {TAKVIM_PATH}")
+              f"{len(sonuc)}/{len(HISSELER) + len(ABD_HISSELERI)} hisse "
+              f"(BIST+ABD) -> {TAKVIM_PATH}")
     return sonuc
 
 
@@ -230,11 +258,14 @@ def gun_farki(ticker: str, bugun: date = None):
     return None
 
 
-def bu_hafta(bugun: date = None) -> list:
-    """Onumuzdeki 7 gun icinde bilanco aciklayacak hisseler (tarih sirali)."""
+def _bu_hafta(bugun, abd: bool) -> list:
+    """Onumuzdeki 7 gun icinde bilanco/earnings aciklayacak hisseler (tarih sirali).
+    abd=False -> yalniz BIST kayitlari; abd=True -> yalniz ABD kayitlari."""
     bugun = bugun or datetime.now(_TZ).date()
     out = []
     for r in yukle():
+        if bool(r.get("abd")) != abd:
+            continue
         try:
             d = datetime.fromisoformat(r["tarih"]).date()
         except Exception:
@@ -245,6 +276,16 @@ def bu_hafta(bugun: date = None) -> list:
     for r in out:
         r.pop("_d", None)
     return out
+
+
+def bu_hafta(bugun: date = None) -> list:
+    """Onumuzdeki 7 gun icinde bilanco aciklayacak BIST hisseleri (tarih sirali)."""
+    return _bu_hafta(bugun, abd=False)
+
+
+def bu_hafta_abd(bugun: date = None) -> list:
+    """Onumuzdeki 7 gun icinde earnings aciklayacak ABD hisseleri (tarih sirali)."""
+    return _bu_hafta(bugun, abd=True)
 
 
 if __name__ == "__main__":

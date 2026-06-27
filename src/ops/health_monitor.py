@@ -1,16 +1,22 @@
-"""Sistem saglik monitoru (cron: */30 9-19 * * 1-5).
+"""Sistem saglik monitoru.
 
-Kontroller:
-  1. Fiyat cache tazeligi: data/fiyat_cache.json BORSA ACIKKEN 20 dk'dan eski ise uyar.
-  2. ABD hisseleri: NVDA/SPCX/RXT/CNCK cache'te fiyatli mi?
-  3. Web servisi: http://127.0.0.1:8080/api/health yanit veriyor mu?
-  4. DB: data/borsa.db erisilebilir mi?
+Kontroller iki gruba ayrilir:
+  CORE (7/24, her zaman) -- altyapi her an ayakta olmali:
+    3. Web servisi: http://127.0.0.1:8080/api/health yanit veriyor mu?
+    4. DB: data/borsa.db erisilebilir mi?
+  MARKET (yalniz borsa saatleri, hafta ici 9-19) -- fiyat akisi:
+    1. Fiyat cache tazeligi: data/fiyat_cache.json BORSA ACIKKEN 20 dk'dan eski ise uyar.
+    2. ABD hisseleri: NVDA/SPCX/RXT/CNCK cache'te fiyatli mi?
 
-Sorun bulunursa Serhat'a (Telegram chat_id=1192292093) "⚠️ SİSTEM UYARISI: ..."
-gonderir. SPAM ONLEME: ayni sorun gunde EN FAZLA 1 kez bildirilir
+Cron iki ayri satirla calisir:
+  */30 * * * *           -> mod 'core'   (servis + DB; 7/24)
+  */30 9-19 * * 1-5      -> mod 'market' (fiyat cache + ABD; borsa saatleri)
+
+Sorun bulunursa Serhat + Yigit'e "⚠️ SİSTEM UYARISI: ..." gonderir.
+SPAM ONLEME: ayni sorun gunde EN FAZLA 1 kez bildirilir
 (data/health_state.json'da {sorun_anahtari: 'YYYY-MM-DD'} tutulur).
 
-Calistirma: python -m src.ops.health_monitor
+Calistirma: python -m src.ops.health_monitor [core|market|all]  (varsayilan: all)
 """
 import json
 import os
@@ -161,12 +167,21 @@ def _bildir(mesaj: str) -> bool:
     return basari > 0
 
 
-def run(verbose: bool = True) -> dict:
+def run(verbose: bool = True, mode: str = "all") -> dict:
+    """mode='core' -> servis + DB (7/24); 'market' -> fiyat cache + ABD
+    (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
+    core = (_kontrol_servis, _kontrol_db)
+    market = (lambda: _kontrol_cache_tazelik(now), _kontrol_abd)
+    if mode == "core":
+        kontroller = core
+    elif mode == "market":
+        kontroller = market
+    else:
+        kontroller = core + market
     sorunlar = []
-    for kontrol in (_kontrol_servis, _kontrol_db,
-                    lambda: _kontrol_cache_tazelik(now), _kontrol_abd):
+    for kontrol in kontroller:
         try:
             r = kontrol()
         except Exception as e:                # bir kontrol patlasa digerleri devam etsin
@@ -204,4 +219,8 @@ def run(verbose: bool = True) -> dict:
 
 
 if __name__ == "__main__":
-    run()
+    mod = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if mod not in ("core", "market", "all"):
+        print(f"Gecersiz mod: {mod} (core|market|all olmali)")
+        sys.exit(2)
+    run(mode=mod)

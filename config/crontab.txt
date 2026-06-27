@@ -44,7 +44,9 @@ CRON_TZ=Europe/Istanbul
 30 9 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.foreign_investor >> /root/borsa-bot/logs/yabanci_pay.log 2>&1
 # Proaktif sektor haber taramasi (gece/hafta sonu dahil): her 30 dk
 */30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts sektor >> /root/borsa-bot/logs/alerts.log 2>&1
-# Sistem saglik monitoru (cache tazeligi + ABD fiyatlari + servis + DB): hafta ici 9-19 her 30 dk
-*/30 9-19 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor >> /root/borsa-bot/logs/health_monitor.log 2>&1
+# Sistem saglik monitoru CORE (servis + DB): 7/24 her 30 dk
+*/30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor core >> /root/borsa-bot/logs/health_monitor.log 2>&1
+# Sistem saglik monitoru MARKET (fiyat cache + ABD fiyatlari): hafta ici 9-19 her 30 dk
+*/30 9-19 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor market >> /root/borsa-bot/logs/health_monitor.log 2>&1
 # Bilanco aciklama takvimi guncelle (THYAO/GARAN/... buyuk hisseler): her Pazartesi 08:00
 0 8 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.bilanco_takvimi >> /root/borsa-bot/logs/bilanco_takvimi.log 2>&1

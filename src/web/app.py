@@ -4559,6 +4559,7 @@ def get_profile_view(kullanici) -> dict:
         "guncelleme": p.get("guncelleme_tarihi"),
         "telegram_id": tg,
         "telegram_bagli": bool(tg),
+        "yatirim_vadesi": p.get("yatirim_vadesi"),
     }
 
 
@@ -4827,6 +4828,26 @@ def api_profile_update_telegram():
         return jsonify({"ok": False, "hata": "Geçersiz Telegram ID (7-15 hane olmalı)"})
     db.update_telegram_id(uid, int(digits))
     return jsonify({"ok": True, "telegram_id": int(digits)})
+
+
+# Ayarlar -> Profilim vade tercihi dropdown'i. Deger kullanici_profil.yatirim_vadesi'ne
+# yazilir (sabah brifingi + karar motorunun vade_kategori'si bu alani okur). Dropdown
+# 1ay/3ay/uzun -> vade_kategori kisa/orta/uzun olarak otomatik eslenir.
+_VADE_GECERLI = {"1ay", "3ay", "uzun"}
+
+
+@app.route("/api/settings/vade", methods=["POST"])
+def api_settings_vade():
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    uid = _uid(d.get("kullanici"))
+    if uid is None:
+        return jsonify({"ok": False, "hata": "kullanici yok"})
+    vade = str(d.get("vade") or "").strip().lower()
+    if vade not in _VADE_GECERLI:
+        return jsonify({"ok": False, "hata": "Geçersiz vade (1ay/3ay/uzun olmalı)"})
+    db.upsert_profile(uid, yatirim_vadesi=vade)
+    return jsonify({"ok": True, "yatirim_vadesi": vade})
 
 
 @app.route("/api/memory")

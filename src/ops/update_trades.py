@@ -49,6 +49,53 @@ def _gun_farki(baslangic, bitis) -> int | None:
         return None
 
 
+def _fiyat_str(fiyat: float) -> str:
+    """Fiyati gereksiz ondalik olmadan yazar: 295.0 -> '295', 295.5 -> '295.5'."""
+    return f"{fiyat:g}"
+
+
+def _kapanis_bildir(t: dict, sebep: str, native: float, pnl_y: float) -> None:
+    """Stop/hedef tetigiyle kapanan trade icin ilgili kullaniciya Telegram bildirimi
+    gonderir. Kullanicinin telegram_id'si yoksa (veya kullanici_id=0 sistem geneli)
+    yoneticilere dusulur ki bildirim kaybolmasin. Hata olursa cron'u dusurmez."""
+    try:
+        from src.db import database as db
+        from src.notify import telegram
+    except Exception:
+        return
+
+    birim = "$" if (t.get("para_birimi") or "TL").upper() == "USD" else "TL"
+    fiyat = _fiyat_str(native)
+    kz = "Kâr" if pnl_y >= 0 else "Zarar"
+    isaret = "+" if pnl_y >= 0 else "-"
+    yuzde = f"{isaret}%{abs(pnl_y):.1f}"
+    if sebep == "stop":
+        mesaj = (f"🔴 STOP-LOSS: {t['ticker']} {fiyat} {birim}'ye düştü. "
+                 f"Pozisyon kapatıldı. {kz}: {yuzde}")
+    else:
+        mesaj = (f"🎯 HEDEF: {t['ticker']} {fiyat} {birim}'ye ulaştı. "
+                 f"Pozisyon kapatıldı. {kz}: {yuzde}")
+
+    chat_id = None
+    uid = t.get("kullanici_id") or 0
+    if uid:
+        try:
+            u = db.get_user_by_id(uid)
+            if u and u.get("telegram_id"):
+                chat_id = u["telegram_id"]
+        except Exception:
+            chat_id = None
+
+    try:
+        if chat_id:
+            telegram.send_message(mesaj, chat_id=chat_id)
+        else:                                  # sahibi/telegram_id yok -> kaybolmasin
+            telegram.notify_admins(mesaj, prefix="")
+    except Exception as e:
+        print(f"    [bildirim] {t['ticker']} kapanis bildirimi gonderilemedi: "
+              f"{type(e).__name__}")
+
+
 def run(verbose: bool = True) -> dict:
     from src.db import database as db
     db.init_db()
@@ -90,6 +137,7 @@ def run(verbose: bool = True) -> dict:
             hold = _gun_farki(t.get("acilis_tarihi"), bugun)
             db.close_trade(t["id"], native, kapanis_sebep=sebep, pnl_yuzde=pnl_y,
                            holding_days=hold, tarih=bugun)
+            _kapanis_bildir(t, sebep, native, pnl_y)
             kapanan += 1
             if verbose:
                 print(f"  {t['ticker']:7} {sebep.upper()} @ {native:.2f} -> %{pnl_y} "

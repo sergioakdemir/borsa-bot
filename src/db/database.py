@@ -429,6 +429,15 @@ def get_user_by_telegram_id(telegram_id):
         return dict(r) if r else None
 
 
+def get_user_by_id(kullanici_id):
+    """Kullaniciyi id'ye gore dondurur (tum alanlarla); yoksa None."""
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM kullanici WHERE id=?",
+                      (kullanici_id,)).fetchone()
+        return dict(r) if r else None
+
+
 # ---- sifre / cihaz token (giris sistemi) ----
 def get_user(ad) -> dict | None:
     """Kullaniciyi ad'a gore (sifre_hash dahil tum alanlarla) dondurur; yoksa None."""
