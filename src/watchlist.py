@@ -56,10 +56,15 @@ def load_markets() -> dict:
     return out
 
 
+def is_us_market(code: str) -> bool:
+    """Verilen market kodu ABD piyasasini mi gosteriyor ('abd'/'us'/'nasdaq'...)?"""
+    return str(code or "").lower().strip() in _US_MARKET_KODLARI
+
+
 def is_us_ticker(ticker: str) -> bool:
     """Ticker watchlist'te ABD piyasasi olarak mi tanimli? (RXT/NVDA gibi)."""
     norm = str(ticker or "").upper().replace(".IS", "").strip()
-    return load_markets().get(norm, "") in _US_MARKET_KODLARI
+    return is_us_market(load_markets().get(norm, ""))
 
 
 def load_mover_threshold(default: float = 3.0) -> float:

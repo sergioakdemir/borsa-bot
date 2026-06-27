@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from src.watchlist import is_us_market
+
 
 def _load_dotenv():
     """KAP_PROXY_URL (bigpara icin) gibi degiskenleri .env'den ortama yukler."""
@@ -110,7 +112,8 @@ def _semboller() -> dict:
         for d in wl.get("kisisel_diger", []):
             base = (d.get("ticker") or "").upper().split(".")[0]
             if base:
-                out.setdefault(base, "abd" if d.get("market") == "abd" else "bist")
+                # market alani 'abd'/'us'/'nasdaq'... -> ABD (yfinance'te '.IS' ekleme)
+                out.setdefault(base, "abd" if is_us_market(d.get("market")) else "bist")
     except Exception as e:
         print(f"[uyari] watchlist.json okunamadi: {type(e).__name__}: {e}")
 
@@ -123,7 +126,7 @@ def _semboller() -> dict:
 
 def _yf_sembol(ticker: str, market: str) -> str:
     """Ticker -> yfinance sembolu. BIST '.IS' ekler, ABD oldugu gibi."""
-    return ticker if market == "abd" else f"{ticker}.IS"
+    return ticker if (market == "abd" or is_us_market(market)) else f"{ticker}.IS"
 
 
 def _batch_cek(yf_syms: list[str]) -> dict:
