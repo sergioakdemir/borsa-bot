@@ -461,6 +461,9 @@
   .pf-prev{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:6px 14px;margin:12px 0}
   .pr-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13.5px}
   .pr-row:last-child{border-bottom:none}
+  .pr-warn{color:#d9822b;font-size:12.5px;line-height:1.4;padding:6px 0 2px}
+  .pr-row.pr-unknown{color:#d9822b}
+  .pr-tag{font-size:10.5px;background:var(--amber-bg,#3a2a14);color:#d9822b;border-radius:6px;padding:1px 6px;margin-left:4px;font-weight:600}
   .btn-primary{width:100%;background:var(--green2);color:#04150a;border-radius:14px;padding:15px;
     font-size:15px;font-weight:700;margin-top:4px;min-height:50px}
   .pf-or{text-align:center;color:var(--muted2);font-size:12px;margin:14px 0}
@@ -1946,11 +1949,12 @@ function pfHandleFile(e){const files=Array.from(e.target.files||[]);e.target.val
     const hold=(d.holdings||[]).filter(h=>h.ticker&&h.adet!=null&&h.fiyat!=null);
     if(!hold.length){const er=document.createElement("div");er.className="pfl-row err";er.innerHTML=`<span class="pfl-lbl">Fotoğrafta hisse okunamadı</span>`;st.appendChild(er);return;}
     await pflReveal(st,hold);
-    pfPrev(hold);
+    pfPrev(hold,d.uyari);
   });}
-function pfPrev(hold){const box=document.getElementById("pf-preview");PF_HOLD=hold.filter(h=>h.ticker&&h.adet!=null&&h.fiyat!=null);
+function pfPrev(hold,uyari){const box=document.getElementById("pf-preview");PF_HOLD=hold.filter(h=>h.ticker&&h.adet!=null&&h.fiyat!=null);
   if(!PF_HOLD.length){box.innerHTML=`<div class="pf-prev">Fotoğrafta hisse okunamadı</div>`;return}
-  box.innerHTML=`<div class="pf-prev"><div style="color:#ccc;font-size:13px;font-weight:650;padding:8px 0">Okunan bilgiler</div>${PF_HOLD.map(h=>`<div class="pr-row"><span><b>${esc(h.ticker)}</b> · ${fmtQty(h.adet)} adet</span><span class="muted">${money(h.fiyat,h.para_birimi==="USD"?"$":"₺")}</span></div>`).join("")}</div><button class="btn-primary" onclick="pfConfirm()">Onayla ve Ekle (${PF_HOLD.length})</button>`}
+  const uyariHTML=uyari?`<div class="pr-warn">⚠️ ${esc(uyari)}</div>`:"";
+  box.innerHTML=`<div class="pf-prev"><div style="color:#ccc;font-size:13px;font-weight:650;padding:8px 0">Okunan bilgiler</div>${uyariHTML}${PF_HOLD.map(h=>`<div class="pr-row${h.taninmadi?' pr-unknown':''}"><span><b>${esc(h.ticker)}</b>${h.taninmadi?' <span class="pr-tag">tanınmadı</span>':''} · ${fmtQty(h.adet)} adet</span><span class="muted">${money(h.fiyat,h.para_birimi==="USD"?"$":"₺")}</span></div>`).join("")}</div><button class="btn-primary" onclick="pfConfirm()">Onayla ve Ekle (${PF_HOLD.length})</button>`}
 async function pfConfirm(){let ok=0;for(const h of PF_HOLD){try{const r=await fetch("/api/portfolio/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,ticker:h.ticker,adet:h.adet,alim_fiyati:h.fiyat,para_birimi:h.para_birimi||"TL"})});if((await r.json()).ok)ok++}catch(e){}}toast(ok+" hisse eklendi");closePf();pfReload()}
 async function pfManualAdd(){const t=document.getElementById("pf-ticker").value.trim().toUpperCase();const a=parseFloat(document.getElementById("pf-adet").value),f=parseFloat(document.getElementById("pf-fiyat").value);
   if(!t||isNaN(a)||isNaN(f)){toast("Kod, adet ve fiyat gerekli");return}

@@ -1058,6 +1058,8 @@ _VISION_PROMPT = (
     "'1.234,56' = bin iki yüz otuz dört tam elli altı.\n"
     "Görseldeki HER hisse satırı için şunları çıkar:\n"
     "- ticker: hisse kodu (BÜYÜK harf, örn. THYAO, AAPL). Yoksa şirket adından makul kod üret.\n"
+    "- isim: şirketin görseldeki tam/uzun adı (örn. \"Apple Inc\", \"Türk Hava Yolları\", "
+    "\"NVIDIA\"). Yalnız kod görünüyorsa null.\n"
     "- adet: sahip olunan lot/adet. METİN (string) olarak yaz.\n"
     "- fiyat: ortalama alış/maliyet fiyatı. METİN (string) olarak yaz.\n"
     "- para_birimi: 'TL' veya 'USD' (₺ -> TL, $ -> USD; belirsizse TL).\n"
@@ -1065,7 +1067,8 @@ _VISION_PROMPT = (
     "BİNLİK ayracı (nokta) KALDIR. Sayıyı dönüştürme/yuvarlama. Örnekler: ekranda "
     "'1.234,56' -> \"1234,56\";  '0,1' -> \"0,1\";  '73,20' -> \"73,20\";  '100' -> \"100\".\n"
     "YALNIZCA şu JSON ile yanıt ver, başka hiçbir metin yazma:\n"
-    '{"holdings":[{"ticker":"THYAO","adet":"0,1","fiyat":"73,20","para_birimi":"USD"}]}\n'
+    '{"holdings":[{"ticker":"THYAO","isim":"Türk Hava Yolları","adet":"0,1",'
+    '"fiyat":"73,20","para_birimi":"USD"}]}\n'
     "Okuyamadığın alan için null koy. Hiç hisse yoksa {\"holdings\":[]} dön."
 )
 
@@ -1144,6 +1147,74 @@ def _read_one_image(client, image_block) -> list:
     return rows if isinstance(rows, list) else []
 
 
+# Sirket adi / yaygin yanlis-okuma -> dogru ticker. Vision fotograftan bazen kod
+# yerine sirket adini okur (orn. 'SPACEX', 'NVIDIA'); bunlari dogru sembole cevirir.
+# Anahtarlar _norm() ile (TR duyarsiz, kucuk harf) eslestirilir; COMPANY_NAMES'teki
+# tum BIST adlari da otomatik tersine cevrilip bu tabloya eklenir.
+_ISIM_TICKER_HAM = {
+    # ABD
+    "spacex": "SPCX", "space exploration": "SPCX",
+    "space exploration technologies": "SPCX",
+    "nvidia": "NVDA", "nvidia corporation": "NVDA",
+    "apple": "AAPL", "apple inc": "AAPL",
+    "microsoft": "MSFT", "microsoft corporation": "MSFT",
+    "google": "GOOGL", "alphabet": "GOOGL", "alphabet inc": "GOOGL",
+    "amazon": "AMZN", "amazon.com": "AMZN",
+    "tesla": "TSLA", "tesla inc": "TSLA",
+    "meta": "META", "meta platforms": "META", "facebook": "META",
+    "rackspace": "RXT", "coincheck": "CNCK",
+    # BIST (COMPANY_NAMES disindaki yaygin takma adlar)
+    "turk hava yollari": "THYAO", "thy": "THYAO", "turkish airlines": "THYAO",
+    "aselsan": "ASELS", "tupras": "TUPRS", "garanti": "GARAN",
+    "garanti bankasi": "GARAN",
+}
+
+
+def _isim_ticker_tablosu() -> dict:
+    """Normalize edilmis {sirket_adi -> ticker} tablosu (HAM tablo + COMPANY_NAMES
+    tersine cevrilmis hali). Boylece tum BIST sirket adlari otomatik kapsanir."""
+    tbl = {_norm(t): t for t in COMPANY_NAMES}            # ticker'in kendisi de gecerli
+    for tkr, isim in COMPANY_NAMES.items():               # 'Aselsan' -> ASELS ...
+        tbl[_norm(isim)] = tkr
+    for ad, tkr in _ISIM_TICKER_HAM.items():              # elle tanimli takma adlar
+        tbl[_norm(ad)] = tkr
+    return tbl
+
+
+def _gecerli_tickerlar() -> set:
+    """Gecerli sayilan ticker kumesi: COMPANY_NAMES + isim tablosu hedefleri +
+    watchlist (BIST + ABD). Vision ham ticker'i bunlardan biriyse oldugu gibi kalir."""
+    s = set(COMPANY_NAMES.keys()) | set(_ISIM_TICKER_HAM.values())
+    try:
+        from src.watchlist import load_index, load_personal, load_markets
+        s |= set(load_index()) | set(load_personal()) | set(load_markets().keys())
+    except Exception:
+        pass
+    return {t.upper() for t in s}
+
+
+def _cozumle_ticker(ticker, isim=None):
+    """Vision'dan gelen ticker/isim'i dogru sembole cevirir.
+
+    Sira: (1) ticker/isim GECERLI bir ticker'a tam eslesiyorsa onu kullan,
+    (2) sirket adi -> ticker tablosuna bak, (3) ikisi de yoksa ham ticker'i
+    dondur + taninmadi=True (kullaniciya 'manuel girer misin' denir).
+    Doner: (ticker_str, taninmadi_bool)."""
+    gecerli = _gecerli_tickerlar()
+    tablo = _isim_ticker_tablosu()
+    adaylar = [str(c).strip() for c in (ticker, isim) if c and str(c).strip()]
+    for c in adaylar:                                     # 1) gecerli ticker tam eslesme
+        cu = c.upper().replace(".IS", "").strip()
+        if cu in gecerli:
+            return cu, False
+    for c in adaylar:                                     # 2) sirket adi -> ticker
+        m = tablo.get(_norm(c))
+        if m:
+            return m, False
+    ham = (str(ticker or isim or "").upper().replace(".IS", "").strip())
+    return ham, True                                     # 3) cozumlenemedi
+
+
 def parse_portfolio_image(images) -> dict:
     """Bir veya birden cok base64 portfoy fotografini Claude vision ile okur.
 
@@ -1178,23 +1249,33 @@ def parse_portfolio_image(images) -> dict:
     if okunan == 0:
         return {"ok": False, "hata": f"AI okuma hatası: {hata or 'görsel okunamadı'}"}
 
-    holdings, seen = [], set()
+    holdings, seen, taninmayan = [], set(), []
     for h in raw:
         if not isinstance(h, dict):
             continue
-        tkr = (str(h.get("ticker") or "").upper().replace(".IS", "").strip())
+        # Vision'dan gelen ticker/isim'i dogru sembole cevir (sirket adi -> ticker)
+        tkr, taninmadi = _cozumle_ticker(h.get("ticker"), h.get("isim"))
         if not tkr or tkr in seen:
             continue
         seen.add(tkr)
         pb = (str(h.get("para_birimi") or "TL").upper())
         pb = "USD" if pb in ("USD", "$", "DOLAR") else "TL"
-        holdings.append({
+        rec = {
             "ticker": tkr,
             "adet": _num(h.get("adet")),
             "fiyat": _num(h.get("fiyat")),
             "para_birimi": pb,
-        })
-    return {"ok": True, "holdings": holdings, "foto_sayisi": okunan}
+        }
+        if taninmadi:                          # cozumlenemedi -> kullaniciya manuel sor
+            rec["taninmadi"] = True
+            taninmayan.append(tkr)
+        holdings.append(rec)
+    res = {"ok": True, "holdings": holdings, "foto_sayisi": okunan}
+    if taninmayan:
+        res["taninmayan"] = taninmayan
+        res["uyari"] = ("Şu sembol(ler)i tanıyamadım: " + ", ".join(taninmayan)
+                        + ". Doğru kodu manuel girer misin?")
+    return res
 
 
 def portfolio_add(d: dict) -> dict:
