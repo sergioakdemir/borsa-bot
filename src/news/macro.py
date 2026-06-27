@@ -46,7 +46,8 @@ _POLITIKA_FAIZI_FALLBACK = 37.0
 
 # TCMB PPK (Para Politikasi Kurulu) toplanti tarihleri (ay, gun) - HER YIL MANUEL GUNCELLE
 _PPK_TARIHLERI = {
-    2026: ((1, 23), (3, 6), (4, 17), (6, 11), (7, 24), (9, 18), (10, 23), (12, 19)),
+    # 2026 TAM (resmi). Ikinci yari guncellendi: 23 Tem, 10 Eyl, 22 Eki, 10 Ara.
+    2026: ((1, 23), (3, 6), (4, 17), (6, 11), (7, 23), (9, 10), (10, 22), (12, 10)),
     # 2027: TCMB yalniz yilin ILK YARISINI resmen acikladi (21 Oca, 18 Mar, 22 Nis,
     # 10 Haz). Ikinci yari (Tem-Ara) HENUZ ACIKLANMADI; asagidaki 4 tarih 2026
     # temposuna gore TAHMINIDIR — TCMB takvimi yayinlayinca guncellenmeli.
