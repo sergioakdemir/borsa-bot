@@ -20,9 +20,19 @@ _TZ = ZoneInfo("Europe/Istanbul")
 
 
 def _son_fiyat(ticker: str, para_birimi: str = "TL"):
-    """Güncel kapanış (yerel para). ABD'de '.IS' eklenmez."""
+    """Güncel kapanış (yerel para). ABD'de '.IS' eklenmez.
+
+    ABD tespiti hem para_birimi=USD'ye hem de watchlist'teki ticker bazlı pazar
+    işaretine bakar; böylece USD işaretlenmemiş ABD hisseleri (örn. NVDA) de '.IS'
+    eki almadan doğru sembolle fiyatlanır."""
     from src.data.factory import get_data_source
     is_us = (para_birimi or "TL").upper() == "USD"
+    if not is_us:
+        try:
+            from src.watchlist import is_us_ticker
+            is_us = is_us_ticker(ticker)
+        except Exception:
+            pass
     symbol = ticker.upper().replace(".IS", "") if is_us else f"{ticker.upper().replace('.IS','')}.IS"
     start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
     try:

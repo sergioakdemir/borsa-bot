@@ -125,8 +125,9 @@ _STOP_MAP = None
 def _stop_loss_map():
     """ai_commentary.json'dan {TICKER: stop_seviyesi(float)} (bir kez yükle).
 
-    Once AI'nin 'stop_loss' metnindeki sayiyi parse eder ('Y TL altina duserse cik');
-    metin yoksa deterministik 'stop_loss_seviyesi' (TUT'ta dolan sayi) yedek alinir."""
+    Once deterministik sayisal 'stop_loss_seviyesi' alanini kullanir (varsa, en
+    guvenilir); yoksa AI'nin serbest metin 'stop_loss' alanindan regex ile sayi
+    cikarir ('Y TL altina duserse cik')."""
     global _STOP_MAP
     if _STOP_MAP is None:
         _STOP_MAP = {}
@@ -137,10 +138,7 @@ def _stop_loss_map():
                 t = (rec.get("ticker") or "").upper()
                 if not t:
                     continue
-                seviye = _parse_stop_level(rec.get("stop_loss"))
-                if seviye is None:
-                    sv = rec.get("stop_loss_seviyesi")
-                    seviye = float(sv) if isinstance(sv, (int, float)) and sv else None
+                seviye = _stop_seviye(rec)
                 if seviye is not None:
                     _STOP_MAP.setdefault(t, seviye)
         except Exception:
@@ -148,25 +146,55 @@ def _stop_loss_map():
     return _STOP_MAP
 
 
-def _parse_stop_level(metin):
-    """'88 TL altina duserse cik' / '270,5 TL' / '$88 altina' -> 88.0 (float) | None.
-    Metindeki ILK sayiyi (binlik nokta + ondalik virgul destekli) ceker."""
-    import re
-    if not metin:
-        return None
-    m = re.search(r"\d[\d.,]*", str(metin))
-    if not m:
-        return None
-    s = m.group(0).rstrip(".,")
-    if "," in s and "." in s:           # 1.234,56 -> 1234.56
+def _stop_seviye(rec):
+    """Bir ai_commentary kaydindan stop seviyesini cozer: ONCE sayisal
+    'stop_loss_seviyesi' alani, YOKSA 'stop_loss' metninden parse. None olabilir."""
+    sv = rec.get("stop_loss_seviyesi")
+    if isinstance(sv, (int, float)) and sv > 0:
+        return float(sv)
+    return _parse_stop_level(rec.get("stop_loss"))
+
+
+def _sayi_to_float(s):
+    """'1.234,56'/'270,5'/'270' gibi Turkce/ABD bicimli sayi metnini float'a cevirir."""
+    s = str(s).strip().rstrip(".,")
+    if "," in s and "." in s:            # 1.234,56 -> 1234.56 (nokta binlik)
         s = s.replace(".", "").replace(",", ".")
-    elif "," in s:                       # 270,5 -> 270.5
+    elif "," in s:                        # 270,5 -> 270.5 (virgul ondalik)
         s = s.replace(",", ".")
     try:
         v = float(s)
         return v if v > 0 else None
     except ValueError:
         return None
+
+
+def _parse_stop_level(metin):
+    """Serbest metinden stop seviyesini (float) cikarir; bulunamazsa None.
+
+    Yil/yuzde gibi alakasiz sayilara takilmamak icin ONCE para birimi ('TL','$',
+    '₺') veya 'alt(ı/ına)'/'below'/'under' anahtarina KOMSU sayiyi tercih eder;
+    bulamazsa metindeki ilk sayiya duser.
+    Ornek: '270 TL altina duserse cik' -> 270.0, "295'in alti" -> 295.0,
+           '$270 below' -> 270.0, '270,5 TL' -> 270.5."""
+    import re
+    if not metin:
+        return None
+    s = str(metin)
+    desenler = (
+        r"\$\s*([\d.,]+)",                                   # $270
+        r"([\d.,]+)\s*(?:TL|₺|\$|usd|dolar|tl)\b",           # 270 TL / 270₺
+        r"([\d.,]+)\s*(?:'\w+)?\s*alt",                      # 295'in alti / 270 altina
+        r"(?:below|under)\s*\$?\s*([\d.,]+)",                # below 270
+    )
+    for d in desenler:
+        m = re.search(d, s, re.IGNORECASE)
+        if m:
+            v = _sayi_to_float(m.group(1))
+            if v is not None:
+                return v
+    m = re.search(r"\d[\d.,]*", s)                            # yedek: ilk sayi
+    return _sayi_to_float(m.group(0)) if m else None
 
 
 def check_stop_loss(now=None):
@@ -217,6 +245,107 @@ def check_stop_loss(now=None):
                 tetik += 1
                 print(f"[{now:%Y-%m-%d %H:%M}] [stop-loss] {tkr} {fiyat} < "
                       f"{seviye} -> kullanici {uid} bildirildi.")
+    return tetik
+
+
+_HEDEF_MAP = None
+
+
+def _hedef_seviye(rec):
+    """Bir ai_commentary kaydindan hedef fiyat seviyesini cozer: ONCE sayisal
+    'hedef_fiyat_seviyesi', YOKSA serbest metin 'hedef_fiyat'tan ilk fiyat. None olabilir."""
+    hv = rec.get("hedef_fiyat_seviyesi")
+    if isinstance(hv, (int, float)) and hv > 0:
+        return float(hv)
+    metin = rec.get("hedef_fiyat")
+    if not metin:
+        return None
+    try:
+        from src.ai.commentary import parse_first_price
+        v = parse_first_price(metin)
+        return v if isinstance(v, (int, float)) and v > 0 else None
+    except Exception:
+        return None
+
+
+def _hedef_fiyat_map():
+    """ai_commentary.json'dan {TICKER: hedef_seviye(float)} (bir kez yükle).
+    Yalniz hedef fiyati TANIMLI (genelde AL) hisseler haritaya girer."""
+    global _HEDEF_MAP
+    if _HEDEF_MAP is None:
+        _HEDEF_MAP = {}
+        try:
+            import json
+            data = json.loads(_COMMENTARY_PATH.read_text(encoding="utf-8"))
+            for rec in (data if isinstance(data, list) else []):
+                t = (rec.get("ticker") or "").upper()
+                if not t:
+                    continue
+                seviye = _hedef_seviye(rec)
+                if seviye is not None:
+                    _HEDEF_MAP.setdefault(t, seviye)
+        except Exception:
+            pass
+    return _HEDEF_MAP
+
+
+def _pozisyon_us(p, tkr):
+    """Pozisyon ABD hissesi mi? para_birimi=USD ya da watchlist ticker isareti."""
+    if (p.get("para_birimi") or "TL").upper() == "USD":
+        return True
+    try:
+        from src.watchlist import is_us_ticker
+        return is_us_ticker(tkr)
+    except Exception:
+        return False
+
+
+def check_hedef_fiyat(now=None):
+    """PORTFOY HEDEF-FIYAT kontrolu (30 dk'lik taramada calisir).
+
+    Her kullanicinin portfoyundeki hisseler icin ai_commentary.json'daki hedef
+    fiyat seviyesini okur; guncel fiyat bu seviyeye ULASTI/GECTIYSE o KULLANICIYA
+    ozel Telegram bildirimi gonderir. Ayni hisse-kullanici icin gunde bir kez (spam onleme).
+    """
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    hmap = _hedef_fiyat_map()
+    if not hmap:
+        return 0
+    today = now.date().isoformat()
+    tetik = 0
+    try:
+        users = db.list_users()
+    except Exception:
+        return 0
+    for u in users:
+        uid = u.get("id")
+        try:
+            pozisyonlar = db.list_portfolio(uid)
+        except Exception:
+            continue
+        for p in pozisyonlar:
+            tkr = (p.get("ticker") or "").upper().replace(".IS", "")
+            hedef = hmap.get(tkr)
+            if hedef is None:
+                continue
+            usd = _pozisyon_us(p, tkr)
+            sym = tkr if usd else f"{tkr}.IS"
+            fiyat = _alarm_price(sym)
+            if fiyat is None or fiyat < hedef:      # henuz hedefe ulasmadi
+                continue
+            anahtar = f"HEDEF:{uid}"
+            if anahtar in db.alert_levels_today(tkr, today):
+                continue
+            db.record_alert(tkr, today, anahtar, fiyat)
+            birim = "$" if usd else "TL"
+            msg = (f"🎯 <b>HEDEF ULAŞILDI: {tkr}</b> {hedef:g} {birim} hedefine ulaştı! "
+                   "Kâr realize etmeyi değerlendirin.")
+            if _notify_alarm(uid, msg):
+                tetik += 1
+                print(f"[{now:%Y-%m-%d %H:%M}] [hedef-fiyat] {tkr} {fiyat} >= "
+                      f"{hedef} -> kullanici {uid} bildirildi.")
     return tetik
 
 
@@ -945,6 +1074,12 @@ def main():
         check_stop_loss(now)
     except Exception as e:
         print(f"[stop-loss] kontrol hatasi: {type(e).__name__}")
+
+    # Portföy hedef-fiyat kontrolü (kullanıcıya özel, günde bir kez)
+    try:
+        check_hedef_fiyat(now)
+    except Exception as e:
+        print(f"[hedef-fiyat] kontrol hatasi: {type(e).__name__}")
 
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")

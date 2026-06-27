@@ -1689,6 +1689,43 @@ def get_performance(kullanici: str | None = None) -> dict:
         return {"yeterli_veri": False, "islem_sayisi": 0}
 
 
+def get_karne_haftalik(kullanici: str | None = None) -> dict:
+    """Karne özet kartı: BU HAFTA (Pazartesi→bugün) trades tablosundan kapanan
+    işlemlerin toplam getirisi = 'bot', BIST-100 haftalık % ve fark. Yeterli kapalı
+    işlem yoksa yeterli_veri=False (kart 'veriler birikmekte' gösterir).
+    """
+    from src.db import database as db
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    if kullanici is None:
+        kullanici = request.args.get("kullanici")
+    try:
+        tz = ZoneInfo("Europe/Istanbul")
+        bugun = datetime.now(tz).date()
+        basla = bugun - timedelta(days=bugun.weekday())     # bu haftanın Pazartesi'si
+        uid = db.user_id_by_ad(kullanici) if kullanici else None
+        trades = db.list_trades(durum="kapali", kullanici_id=uid)
+    except Exception:
+        return {"yeterli_veri": False, "kapanan": 0}
+    pnls = [t["pnl_yuzde"] for t in trades
+            if isinstance(t.get("pnl_yuzde"), (int, float))
+            and t.get("kapanis_tarihi")
+            and basla.isoformat() <= str(t["kapanis_tarihi"])[:10] <= bugun.isoformat()]
+    bist = None
+    try:
+        from src.news.market_overview import get_market_overview
+        bist = get_market_overview().get("bist100_haftalik_%")
+    except Exception:
+        bist = None
+    if not pnls:
+        return {"yeterli_veri": False, "kapanan": 0}
+    bot = round(sum(pnls), 1)
+    bist_v = round(bist, 1) if isinstance(bist, (int, float)) else None
+    fark = round(bot - bist_v, 1) if bist_v is not None else None
+    return {"yeterli_veri": True, "bot_getiri": bot, "bist100": bist_v,
+            "fark": fark, "kapanan": len(pnls)}
+
+
 def _karar_label(karar: str) -> str:
     return {"AL": "AL", "AL_TEMKINLI": "AL (temkinli)", "TUT": "TUT",
             "SAT": "SAT", "GUCLU_SAT": "Güçlü SAT", "VETO": "VETO",
@@ -4701,6 +4738,11 @@ def api_karne():
 @app.route("/api/performance")
 def api_performance():
     return jsonify(get_performance())
+
+
+@app.route("/api/karne-haftalik")
+def api_karne_haftalik():
+    return jsonify(get_karne_haftalik())
 
 
 @app.route("/api/paper-trading")

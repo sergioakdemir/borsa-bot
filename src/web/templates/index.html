@@ -1292,15 +1292,17 @@ function modelPortfoyHTML(mp){
   }
   return h}
 async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
-  try{const [k,btr,pr,her,agr,perf]=await Promise.all([
+  try{const [k,btr,pr,her,agr,perf,hafta]=await Promise.all([
         fetch("/api/karne"+uq()).then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest").then(r=>r.json()).catch(()=>({var:false})),
         fetch("/api/paper-trading").then(r=>r.json()).catch(()=>({})),
         fetch("/api/haber-etki").then(r=>r.json()).catch(()=>({})),
         fetch("/api/backtest-aggressive").then(r=>r.json()).catch(()=>({var:false})),
-        fetch("/api/performance"+uq()).then(r=>r.json()).catch(()=>({}))]);
+        fetch("/api/performance"+uq()).then(r=>r.json()).catch(()=>({})),
+        fetch("/api/karne-haftalik"+uq()).then(r=>r.json()).catch(()=>({yeterli_veri:false}))]);
     let h=`<h2 style="font-size:21px;font-weight:700">📊 Karne</h2>
       <div class="tick" style="margin-bottom:6px">Botun gerçek kararları ve isabet performansı</div>`;
+    h+=karneHaftaHTML(hafta);
     h+=karneGenelHTML(k);
     h+=performansHTML(perf);
     h+=karneSonKararlarHTML(k);
@@ -1312,6 +1314,20 @@ async function openKarne(){ovShow(`<div class="spin">Yükleniyor…</div>`);
     document.getElementById("ov-body").innerHTML=h;
   }catch(e){document.getElementById("ov-body").innerHTML=empty("Yüklenemedi")}}
 
+function karneHaftaHTML(h){
+  if(!h)return"";
+  if(!h.yeterli_veri){
+    return`<div class="card" style="background:var(--blue-bg);margin-bottom:12px">
+      <div class="ksub" style="margin-bottom:4px">📅 Bu hafta nasıl gitti?</div>
+      <div class="tick" style="line-height:1.5">Veriler birikmekte — ilk sonuçlar Pazartesi.</div></div>`}
+  const bot=h.bot_getiri,bist=h.bist100,fark=h.fark;
+  return`<div class="card" style="background:var(--blue-bg);margin-bottom:12px">
+    <div class="ksub" style="margin-bottom:10px">📅 Bu hafta nasıl gitti?</div>
+    <div class="krow">
+      <div class="kbox"><div class="kbig ${signCls(bot)}">${pct(bot)}</div><div class="ksub">Bot</div></div>
+      <div class="kbox"><div class="kbig muted">${bist==null?"—":pct(bist)}</div><div class="ksub">BIST-100</div></div>
+      <div class="kbox"><div class="kbig ${signCls(fark)}">${fark==null?"—":pct(fark)}</div><div class="ksub">Fark</div></div>
+    </div></div>`}
 function karneOranRenk(o){return o==null?"gray":(o>=60?"green":(o>=40?"amber":"red"))}
 function karneGenelHTML(k){
   if(!k||!k.genel)return"";
