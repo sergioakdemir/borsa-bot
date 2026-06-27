@@ -120,6 +120,20 @@
       "isim": "Rackspace Technology",
       "cg_id": "",
       "kullanici": "ufuk"
+    },
+    {
+      "ticker": "SPCX",
+      "market": "us",
+      "isim": "Space Exploration Technologies",
+      "cg_id": "",
+      "kullanici": "ufuk"
+    },
+    {
+      "ticker": "CNCK",
+      "market": "us",
+      "isim": "Coincheck Group N.V.",
+      "cg_id": "",
+      "kullanici": "ufuk"
     }
   ]
 }

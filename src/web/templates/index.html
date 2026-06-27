@@ -1319,7 +1319,7 @@ function karneGenelHTML(k){
     return`<span class="chip ${karneOranRenk(v.oran)}">${b}: ${v.oran==null?"—":"%"+v.oran}${v.toplam?` <span style="opacity:.7">(${v.toplam})</span>`:""}</span>`}).join(" ");
   const tut=k.tut_basari||{},tc=karneOranRenk(tut.oran);
   const ig=(k.ilk_gun&&k.ilk_gun.AL)||{};
-  const az=k.yeterli_veri===false?`<div class="card" style="border:1px solid var(--amber-bg);background:var(--amber-bg)"><div class="tick" style="line-height:1.5;color:var(--amber)">Bot 22 Haziran'dan itibaren gerçek kararlar veriyor. Veriler birikmekte…</div></div>`:"";
+  const az=k.yeterli_veri===false?`<div class="card" style="border:1px solid var(--amber-bg);background:var(--amber-bg)"><div class="tick" style="line-height:1.5;color:var(--amber)">Bot 22 Haziran'dan itibaren gerçek kararlar veriyor. Şu ana kadar ${g.degerlendirilmis||0} karar değerlendirildi; ilk AL değerlendirmeleri 29 Haziran'da başlıyor.</div></div>`:"";
   // BIST-100 kiyaslamasi (belirgin)
   const pkBlok=pk?`<div class="card" style="background:var(--blue-bg)">
       <div class="ksub" style="margin-bottom:6px">Bot kararlarını takip etseydin</div>

@@ -294,6 +294,16 @@ def _migrate(c) -> None:
             cs = {r["name"] for r in c.execute(f"PRAGMA table_info({tbl})")}
             if "para_birimi" not in cs:
                 c.execute(f"ALTER TABLE {tbl} ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    # decisions: her (ticker, tarih) icin TEK kayit. Index yoksa once mukerrerleri
+    # temizle (en yuksek id = en son karar kalir), sonra UNIQUE index'i kur. Index
+    # varken bu blok atlanir; record_decision INSERT OR REPLACE ile tekrar olusturmaz.
+    idx = {r["name"] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    if "idx_decisions_ticker_tarih" not in idx:
+        c.execute("DELETE FROM decisions WHERE id NOT IN "
+                  "(SELECT MAX(id) FROM decisions GROUP BY ticker, tarih)")
+        c.execute("CREATE UNIQUE INDEX idx_decisions_ticker_tarih "
+                  "ON decisions(ticker, tarih)")
 
 
 def init_db() -> None:
@@ -628,7 +638,11 @@ def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
-            """INSERT INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
+            # OR REPLACE: ayni (ticker, tarih) zaten varsa eski kaydi silip yenisini
+            # yazar (UNIQUE idx_decisions_ticker_tarih) -> gun ici tekrar uretimde
+            # mukerrer olusmaz. NOT: sonuc/ilk_gun_degisim gibi alanlar yeniden
+            # NULL'lanir; karar gunu (sonuc dolmadan once) yeniden uretildigi icin sorun degil.
+            """INSERT OR REPLACE INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
                                       tarih, sonuc, tahmini_sure, kullanici_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
