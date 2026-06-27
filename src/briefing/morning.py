@@ -513,10 +513,40 @@ def _kripto_render(lines, kripto_gundem):
             lines.append(f"• {_esc(baslik)}{ek}")
 
 
+_GUN_TR = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+
+
+def _bilanco_render(lines):
+    """'Bu hafta bilanço açıklamaları' bolumunu 'lines'a ekler (onumuzdeki 7 gun).
+    data/bilanco_takvimi.json bos/yoksa hicbir sey eklemez."""
+    try:
+        from src.news import bilanco_takvimi
+        hafta = bilanco_takvimi.bu_hafta()
+    except Exception:
+        hafta = []
+    if not hafta:
+        return
+    lines.append("")
+    lines.append("<b>📅 Bu hafta bilanço açıklamaları</b>")
+    from datetime import datetime as _dt
+    for r in hafta[:8]:
+        try:
+            d = _dt.fromisoformat(r["tarih"]).date()
+            gun = _GUN_TR[d.weekday()]
+        except Exception:
+            gun = r.get("tarih", "")
+        tkr = r.get("ticker", "")
+        gk = r.get("gun_kala")
+        ne_zaman = "bugün" if gk == 0 else ("yarın" if gk == 1 else gun)
+        tahmini = " ~" if r.get("tahmini") else ""
+        lines.append(f"• {_esc(tkr)} ({_esc(ne_zaman)}{tahmini})")
+
+
 def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad=None,
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
                   portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
-                  akademik_ozet=None, sektor_uyarilari=None, kripto_gundem=None):
+                  akademik_ozet=None, sektor_uyarilari=None, kripto_gundem=None,
+                  vade_notu=None):
     """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
@@ -606,6 +636,10 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             if metin:
                 lines.append(f"• {_esc(metin)}")
 
+    # BU HAFTA BİLANÇO — onumuzdeki 7 gun (yalniz BIST brifingi; takip edilen buyukler)
+    if not is_us:
+        _bilanco_render(lines)
+
     # ABD GÜNDEMİ — son 24 saatteki ABD piyasa haberleri (yalnız ABD brifingi)
     if is_us and us_gundem:
         lines.append("")
@@ -622,6 +656,9 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
         _akademik_render(lines, akademik_ozet, akademik_gundem, portfolio)
         _kripto_render(lines, kripto_gundem)
 
+    if vade_notu:
+        lines.append("")
+        lines.append(_esc(vade_notu))
     if profil_uyari:
         lines.append("")
         lines.append(profil_uyari)
@@ -853,7 +890,23 @@ def main(market="bist"):
             sektor_uy = list(user_weak_sector_warnings(u["id"]).values())
         except Exception:
             sektor_uy = []
+        # KISISEL VADE NOTU: onboarding yatirim_vadesi'ne gore karar yorumlama notu
+        vade_notu = None
+        try:
+            from src.ai.commentary import vade_kategori
+            vk = vade_kategori((db.get_profile(u["id"]) or {}).get("yatirim_vadesi"))
+            vade_notu = {
+                "kisa": "⏱️ Kısa vadeli (1-4 hafta) yatırımcısın: AL'da daha seçici ol, "
+                        "stop'u dar tut, hedefi yakın koy.",
+                "orta": "⏱️ Orta vadeli (1-3 ay) yatırımcısın: dengeli AL/SAT yaklaşımı "
+                        "senin için uygun.",
+                "uzun": "⏱️ Uzun vadeli (3+ ay) yatırımcısın: kısa vadeli dalgalanmayı "
+                        "önemseme, stop'u geniş tut, hedefi uzak koy.",
+            }.get(vk)
+        except Exception:
+            vade_notu = None
         msg = build_message(results, sel, now, overview=overview,
+                            vade_notu=vade_notu,
                             portfolio=pf, kullanici_ad=u.get("ad"),
                             profil_uyari=profil_uyari, zarar_uyarilari=zarar_uy,
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,

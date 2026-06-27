@@ -47,7 +47,7 @@ STATE_PATH = DATA / "health_state.json"
 
 HEALTH_URL = "http://127.0.0.1:8080/api/health"
 # Uyari alicilari (Telegram chat_id)
-BILDIRIM_ALICILARI = [
+BILDIRIM_LISTESI = [
     1192292093,   # Serhat
     1347729005,   # Yigit
 ]
@@ -151,7 +151,7 @@ def _bildir(mesaj: str) -> bool:
         return False
     metin = f"⚠️ SİSTEM UYARISI: {mesaj}"
     basari = 0
-    for cid in BILDIRIM_ALICILARI:
+    for cid in BILDIRIM_LISTESI:
         try:
             telegram.send_message(metin, chat_id=cid)
             basari += 1

@@ -152,6 +152,34 @@ def _log_macro_hata(url, neden):
         pass
 
 
+_ALERT_STATE = Path(__file__).resolve().parents[2] / "data" / "macro_alert_state.json"
+
+
+def _uyar_admin_gunluk(anahtar: str, mesaj: str) -> None:
+    """Yoneticilere (Serhat+Yigit) Telegram uyarisi gonderir; ayni anahtar icin
+    gunde EN FAZLA 1 kez (spam onleme, data/macro_alert_state.json)."""
+    import json
+    bugun = datetime.now(_TZ).date().isoformat()
+    try:
+        state = json.loads(_ALERT_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    if state.get(anahtar) == bugun:
+        return
+    try:
+        from src.notify import telegram
+        telegram.notify_admins(mesaj)
+    except Exception:
+        return
+    state[anahtar] = bugun
+    state = {k: v for k, v in state.items() if v == bugun}
+    try:
+        _ALERT_STATE.parent.mkdir(exist_ok=True)
+        _ALERT_STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _investing_last(url):
     """investing.com enstruman sayfasindan 'son fiyat'i parse eder.
 
@@ -489,6 +517,77 @@ def _polymarket_fed_beklenti_bp():
     return round(toplam / agirlik)               # olasilik-normalize beklenen bp
 
 
+_FED_AYLAR = ("january", "february", "march", "april", "may", "june", "july",
+              "august", "september", "october", "november", "december")
+
+
+def _polymarket_fed_event(events):
+    """events listesinden SONRAKI Fed toplanti karari etkinligini sec. Once
+    'fed decision in <ay>' kalibi (sonraki toplanti); yoksa rate/fomc iceren ilk
+    Fed etkinligi (yil-toplami 'cuts in'/'rate be at' haric)."""
+    for e in events:
+        t = (e.get("title") or "").lower() if isinstance(e, dict) else ""
+        if "fed" in t and "decision" in t and any(ay in t for ay in _FED_AYLAR):
+            return e
+    for e in events:
+        t = (e.get("title") or "").lower() if isinstance(e, dict) else ""
+        if ("fed" in t and any(x in t for x in ("rate", "fomc", "interest", "bps"))
+                and "cuts in" not in t and "rate be at" not in t):
+            return e
+    return None
+
+
+def _polymarket_fed_olasiliklar():
+    """Polymarket Gamma API ile SONRAKI Fed toplantisi icin indirim/artis/sabit
+    olasiliklari (%). Her market'in groupItemTitle'i ('No change'/'25 bps decrease'
+    ...) yonu, outcomePrices[0] (YES) olasiligi verir. Doner:
+    {'indirme': int, 'artis': int, 'sabit': int, 'baslik': str} ya da None."""
+    import json
+    try:
+        import requests as rq
+        r = rq.get("https://gamma-api.polymarket.com/events",
+                   params={"closed": "false", "limit": 200,
+                           "order": "volume", "ascending": "false"},
+                   proxies=_proxies(), timeout=20)
+        if r.status_code != 200:
+            return None
+        events = r.json()
+    except Exception:
+        return None
+    if not isinstance(events, list):
+        return None
+    ev = _polymarket_fed_event(events)
+    if not ev:
+        return None
+    indirme = artis = sabit = 0.0
+    sayac = 0
+    for mkt in ev.get("markets") or []:
+        bp = _bp_from_question(mkt.get("groupItemTitle") or mkt.get("question") or "")
+        if bp is None:
+            continue
+        fiyatlar = mkt.get("outcomePrices")
+        if isinstance(fiyatlar, str):
+            try:
+                fiyatlar = json.loads(fiyatlar)
+            except Exception:
+                continue
+        try:
+            yes = float(fiyatlar[0])              # binary market: ilk outcome = "Yes"
+        except (TypeError, ValueError, IndexError):
+            continue
+        if bp < 0:
+            indirme += yes
+        elif bp > 0:
+            artis += yes
+        else:
+            sabit += yes
+        sayac += 1
+    if sayac == 0:
+        return None
+    return {"indirme": round(indirme * 100), "artis": round(artis * 100),
+            "sabit": round(sabit * 100), "baslik": ev.get("title")}
+
+
 def _evds_tcmb_beklenti_bp(mevcut_faiz):
     """EVDS Piyasa Katilimcilari Anketi'nden beklenen politika faizini (TP.BEK.S*
     serisi, env TCMB_BEKLENTI_EVDS_KOD) cekip mevcut faize gore bp farki dondurur.
@@ -503,6 +602,137 @@ def _evds_tcmb_beklenti_bp(mevcut_faiz):
     return round((beklenen - mevcut_faiz) * 100)
 
 
+def _fetch_html(url: str, timeout: int = 15):
+    """Bir sayfanin/feed'in metnini dondurur (curl_cffi chrome taklidi, yoksa
+    requests). Basarisizsa None."""
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, impersonate="chrome", proxies=_proxies(),
+                     timeout=timeout, max_redirects=5)
+        if r.status_code == 200 and r.text:
+            return r.text
+    except Exception:
+        pass
+    try:
+        import requests as rq
+        r = rq.get(url, headers={"User-Agent": "Mozilla/5.0"},
+                   proxies=_proxies(), timeout=timeout)
+        if r.status_code == 200 and r.text:
+            return r.text
+    except Exception:
+        pass
+    return None
+
+
+def _bp_from_tr_text(t: str):
+    """Turkce haber metninden TCMB beklenen faiz degisimini (bp) cikarir.
+    'sabit/pas gec/degismedi' -> 0; 'XXX baz puan indirim' -> -XXX; 'artirim' -> +XXX.
+    Yon belli ama miktar yoksa tipik adim varsayilir (indirim -250, artis +250)."""
+    tl = _norm_tr(t or "")
+    hold = any(k in tl for k in (
+        "sabit tut", "sabit birak", "faizi sabit", "degisiklik yok", "degistirmedi",
+        "degismedi", "beklenti sabit", "pas ge", "ara ver", "indirime ara",
+        "bekleme", "beklemede"))
+    m = re.search(r"(\d{2,4})\s*baz\s*puan", tl)
+    indir = any(k in tl for k in ("indir", "dusur", "azalt", "gevseme"))
+    artir = any(k in tl for k in ("artir", "arttir", "yukselt", "sikilas"))
+    if m:
+        bp = int(m.group(1))
+        if indir:
+            return -bp
+        if artir:
+            return bp
+    if hold:
+        return 0
+    if indir:                                    # yon var, miktar yok -> tipik adim
+        return -250
+    if artir:
+        return 250
+    return None
+
+
+def _norm_tr(s: str) -> str:
+    """TR duyarsiz kucuk harf (ç/ğ/ı/ö/ş/ü -> ascii) - haber metni eslestirme."""
+    s = (s or "")
+    for a, b in (("İ", "i"), ("I", "i"), ("Ş", "s"), ("Ğ", "g"),
+                 ("Ü", "u"), ("Ö", "o"), ("Ç", "c")):
+        s = s.replace(a, b)
+    s = s.lower()
+    for a, b in (("ı", "i"), ("ş", "s"), ("ğ", "g"), ("ü", "u"),
+                 ("ö", "o"), ("ç", "c"), ("â", "a")):
+        s = s.replace(a, b)
+    return s
+
+
+def _borsapy_tcmb_beklenti_bp(mevcut_faiz):
+    """borsapy EVDS ile TCMB Piyasa Katilimcilari Anketi'nden beklenen politika
+    faizini (cari/gelecek ay) cekip mevcut faize gore bp farki dondurur.
+    EVDS_API_KEY yoksa veya seri bulunamazsa None."""
+    key = os.environ.get("EVDS_API_KEY")
+    if not key or mevcut_faiz is None:
+        return None
+    try:
+        import borsapy as bp
+        bp.set_evds_key(key)
+    except Exception:
+        return None
+    # Piyasa Katilimcilari Anketi - beklenen politika faizi (aday seri kodlari)
+    for kod in ("TP.BEK.S081.A", "TP.BEK.S082.A", "TP.BEK.S01.A", "TP.BEK.S02.A"):
+        try:
+            seri = bp.evds_series(kod)["Value"].dropna()
+        except Exception:
+            continue
+        if seri.empty:
+            continue
+        beklenen = round(float(seri.iloc[-1]), 2)
+        if 20 <= beklenen <= 80:                 # makul politika faizi bandi
+            return round((beklenen - mevcut_faiz) * 100)
+    return None
+
+
+def _reuters_tcmb_beklenti_bp(mevcut_faiz=None):
+    """Reuters TCMB faiz anketi sayfasindan beklenen politika faizini scrape eder.
+    Sayfa metninde 'to XX%'/'%XX' kalibi aranir. Erisilemez/parse edilemezse None."""
+    url = ("https://www.reuters.com/markets/rates-bonds/"
+           "turkey-central-bank-rate-decision-poll/")
+    html = _fetch_html(url)
+    if not html:
+        return None
+    import re as _re
+    metin = _re.sub(r"<[^>]+>", " ", html)
+    # 'keep/cut/hold ... to 37%' veya 'policy rate at 37%'
+    m = _re.search(r"(?:to|at|of)\s*(\d{2}(?:\.\d+)?)\s*%", metin)
+    if not m:
+        return None
+    beklenen = float(m.group(1))
+    if not (20 <= beklenen <= 80):
+        return None
+    if mevcut_faiz is None:
+        return 0
+    return round((beklenen - mevcut_faiz) * 100)
+
+
+def _gnews_tcmb_beklenti_bp():
+    """Google News RSS 'TCMB faiz beklenti anketi' -> son haberlerden beklenen
+    degisim (bp). Basliklarda 'sabit' / 'XXX baz puan indirim/artirim' arar."""
+    url = ("https://news.google.com/rss/search?q="
+           "TCMB+faiz+beklenti+anketi&hl=tr&gl=TR&ceid=TR:tr")
+    text = _fetch_html(url)
+    if not text:
+        return None
+    try:
+        import feedparser
+        feed = feedparser.parse(text)
+    except Exception:
+        return None
+    for e in feed.entries[:8]:
+        ozet = re.sub(r"<[^>]+>", "", e.get("summary") or "")
+        bp = _bp_from_tr_text(f"{e.get('title') or ''} {ozet}")
+        if bp is not None:
+            return bp
+    return None
+
+
 def fed_beklenti_bp():
     """Fed sonraki karar beklentisi (bp): env override -> Polymarket -> None."""
     ov = _env_bp("FED_BEKLENTI_BP")
@@ -512,11 +742,22 @@ def fed_beklenti_bp():
 
 
 def tcmb_beklenti_bp(mevcut_faiz=None):
-    """TCMB sonraki karar beklentisi (bp): env override -> EVDS anketi -> None."""
+    """TCMB sonraki karar beklentisi (bp). Sira: env override -> borsapy EVDS anketi
+    -> EVDS3 /fe anketi -> Reuters anket sayfasi -> Google News. Hicbiri yoksa None."""
     ov = _env_bp("TCMB_BEKLENTI_BP")
     if ov is not None:
         return ov
-    return _evds_tcmb_beklenti_bp(mevcut_faiz)
+    for fn in (lambda: _borsapy_tcmb_beklenti_bp(mevcut_faiz),
+               lambda: _evds_tcmb_beklenti_bp(mevcut_faiz),
+               lambda: _reuters_tcmb_beklenti_bp(mevcut_faiz),
+               _gnews_tcmb_beklenti_bp):
+        try:
+            v = fn()
+        except Exception:
+            v = None
+        if v is not None:
+            return v
+    return None
 
 
 def get_macro() -> dict:
@@ -683,6 +924,29 @@ def get_macro() -> dict:
     # 6) Beklenti (sonraki karara dair piyasa beklentisi, bp) - best-effort, ucretsiz
     out["fed_beklenti_bp"] = fed_beklenti_bp()
     out["tcmb_beklenti_bp"] = tcmb_beklenti_bp(out.get("politika_faizi"))
+
+    # 6b) Fed sonraki toplanti OLASILIKLARI (Polymarket): indirim/artis/sabit (%)
+    fed_ol = _polymarket_fed_olasiliklar()
+    if fed_ol:
+        out["fed_beklenti_indirme"] = fed_ol["indirme"]
+        out["fed_beklenti_artis"] = fed_ol["artis"]
+        out["fed_beklenti_sabit"] = fed_ol["sabit"]
+        if "Polymarket" not in out["kaynaklar"]:
+            out["kaynaklar"].append("Polymarket")
+    else:
+        out["fed_beklenti_indirme"] = None
+        out["fed_beklenti_artis"] = None
+        out["fed_beklenti_sabit"] = None
+        _log_macro_hata("polymarket", "FED_BEKLENTI_ALINAMADI (olasiliklar bos)")
+        _uyar_admin_gunluk("fed_beklenti",
+                           "Polymarket Fed beklenti olasılıkları alınamadı (macro.py).")
+
+    # 6c) TCMB beklenti alinamadiysa logla + bir kez uyar
+    if out["tcmb_beklenti_bp"] is None:
+        _log_macro_hata("tcmb_beklenti",
+                        "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos)")
+        _uyar_admin_gunluk("tcmb_beklenti",
+                           "TCMB faiz beklenti verisi alınamadı (macro.py).")
 
     # taze cekilen degerleri kalici sakla (sonraki yedek icin)
     _kaydet_son_bilinen(taze)

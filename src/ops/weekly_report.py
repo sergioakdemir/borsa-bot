@@ -125,6 +125,32 @@ def _model_portfoy_hafta(basla, bit):
             "acik": len(acik), "acik_ort_%": acik_ort}
 
 
+def _trades_hafta(basla, bit):
+    """trades tablosundan BU HAFTA KAPANAN islemlerin getirisi = 'bot kararlarini
+    takip etseydin'. Acik pozisyon sayisini da doner. Veri yoksa None."""
+    try:
+        with db.get_conn() as c:
+            kapali = [dict(r) for r in c.execute(
+                "SELECT * FROM trades WHERE durum='kapali' AND kapanis_tarihi IS NOT NULL "
+                "AND substr(kapanis_tarihi,1,10) >= ? AND substr(kapanis_tarihi,1,10) <= ?",
+                (basla, bit))]
+            acik = c.execute("SELECT COUNT(*) FROM trades WHERE durum='acik'").fetchone()[0]
+    except Exception:
+        return None
+    kz = [r["pnl_yuzde"] for r in kapali
+          if isinstance(r.get("pnl_yuzde"), (int, float))]
+    if not kapali and not acik:
+        return None
+    kazanan = sum(1 for x in kz if x > 0)
+    return {
+        "kapanan": len(kapali),
+        "ort_getiri": round(sum(kz) / len(kz), 1) if kz else None,
+        "toplam_getiri": round(sum(kz), 1) if kz else None,
+        "kazanan": kazanan, "kaybeden": len(kz) - kazanan,
+        "acik": acik,
+    }
+
+
 def _kullanici_portfoy():
     """Her kullanici icin toplam portfoy kar/zarar yuzdesi (get_portfolio.ozet)."""
     out = []
@@ -194,6 +220,7 @@ def build_message(now, basla, bit):
     kp = _kullanici_portfoy()
     bist = _bist100_hafta()
     og = _ogrenme_ozet(basla, bit)
+    tr = _trades_hafta(basla, bit)
 
     L = [f"<b>📅 Haftalık Performans Raporu</b> — {basla} → {bit}",
          "<i>Karar isabeti · portföy · öğrenme</i>", ""]
@@ -247,6 +274,22 @@ def build_message(now, basla, bit):
             f"{p['ad'].capitalize()} %{p['kz_yuzde']:+g}" for p in kp))
     if bist is not None:
         L.append(f"📈 <b>BIST-100 (hafta):</b> %{bist:+g}")
+
+    # BOT'U TAKİP ETSEYDİN (trades tablosu) + BIST-100 kıyaslaması
+    if tr and tr["kapanan"] and tr["toplam_getiri"] is not None:
+        L.append("")
+        g = tr["toplam_getiri"]
+        L.append(f"🤖 <b>Bot'u takip etseydin:</b> {tr['kapanan']} işlem kapandı, "
+                 f"toplam %{g:+g} (ort %{tr['ort_getiri']:+g} · "
+                 f"{tr['kazanan']}K/{tr['kaybeden']}Z)")
+        if bist is not None:
+            fark = round(g - bist, 1)
+            yon = "üstünde" if fark > 0 else ("altında" if fark < 0 else "başabaş")
+            L.append(f"   <i>BIST-100 %{bist:+g} → bot {abs(fark):g} puan {yon}</i>")
+    elif tr and tr["acik"]:
+        L.append("")
+        L.append(f"🤖 <b>Bot işlemleri:</b> {tr['acik']} açık pozisyon, "
+                 "bu hafta kapanan işlem yok.")
 
     msg = "\n".join(L)
     if len(msg) > 1500:

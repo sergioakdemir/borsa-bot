@@ -241,6 +241,12 @@ SYSTEM = (
     "NSF, DARPA, FED, ECB gibi akademik/kurum kaynaklari) bu gelismelerin uzun vadeli "
     "tezi destekleyip desteklemedigini karara dahil et. Kisa vadeli dalgalanmayi yine "
     "belirt, ama uzun vadeli teknoloji tezini sade dille gerekceye yansit.\n\n"
+    "VADE PROFILI: Veride 'vade_profili' alani varsa kullanicinin yatirim vadesini "
+    "gosterir; KARARI ve seviyeleri buna gore ayarla. 'kisa' (1-4 hafta): AL icin "
+    "daha SECICI ol (AL esigini yukselt, ~8+ puan), stop-loss DAR, hedef_fiyat YAKIN, "
+    "tahmini_sure kisa (5-10 gun). 'uzun' (3+ ay): AL esigi daha DUSUK (~6+), stop-loss "
+    "GENIS, hedef_fiyat UZAK, tahmini_sure uzun (20-30 gun); kisa vadeli gurultuyu "
+    "onemseme. 'orta' (1-3 ay): mevcut dengeli yaklasim (degisiklik yok).\n\n"
     "KARAR MOTORU — her karar icin su alanlari doldur (bos birakma):\n"
     "- giris_seviyesi: AL kararinda, su anki fiyatin %2-3 alti makul giris noktasi "
     "(orn. 'Portfoyde yoksa 95 TL altinda al'). Diger kararlarda bos.\n"
@@ -266,6 +272,17 @@ SYSTEM = (
 # sonraki cagrilarda %90 ucuz okunur (cache hit). Batch icinde de gecerlidir.
 _SYSTEM_CACHED = [{"type": "text", "text": SYSTEM,
                    "cache_control": {"type": "ephemeral"}}]
+
+
+# Onboarding yatirim_vadesi -> karar motoru vade kategorisi (kisa/orta/uzun).
+_VADE_HARITA = {"1ay": "kisa", "3ay": "orta", "6ay": "orta",
+                "1yil": "uzun", "3yil": "uzun", "uzun": "uzun"}
+
+
+def vade_kategori(yatirim_vadesi: str) -> str:
+    """Onboarding 'yatirim_vadesi' (1ay/3ay/.../uzun) -> 'kisa'/'orta'/'uzun'.
+    Bilinmiyorsa 'orta' (dengeli varsayilan)."""
+    return _VADE_HARITA.get((yatirim_vadesi or "").lower().strip(), "orta")
 
 # --- Sektor bazli statik notlar (hangi faktorler kritik) ---
 SEKTOR_NOTLARI = {
@@ -925,6 +942,19 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
     # gundem. ABD tech tickerlarinda payload'a profili ekle (SYSTEM bunu kullanir).
     if ticker in UFUK_TEKNOLOJI_TICKERS:
         payload["ufuk_teknoloji_profili"] = UFUK_TEKNOLOJI_PROFILI
+    # Bilanco (finansal sonuc) aciklamasi yakinsa karar baglamina ekle: sonuc oncesi
+    # volatilite/surpriz riski. (data/bilanco_takvimi.json - haftalik cron gunceller.)
+    try:
+        from src.news import bilanco_takvimi
+        _bil_gun = bilanco_takvimi.gun_farki(ticker)
+        if _bil_gun is not None and _bil_gun <= 21:
+            payload["bilanco_aciklama"] = {
+                "gun_kala": _bil_gun,
+                "not": (f"Bilanço {_bil_gun} gün sonra açıklanacak — sonuç öncesi "
+                        "pozisyon riski/volatilite yüksek, sürprize açık."),
+            }
+    except Exception:
+        pass
     # Sektor notu (statik): hangi faktorler kritik - yalniz BIST
     if not is_us:
         sektor_notu = SEKTOR_NOTLARI.get(ticker)

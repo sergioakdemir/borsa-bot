@@ -95,6 +95,23 @@ def broadcast(text: str, parse_mode: str = "HTML") -> dict:
     return sonuc
 
 
+# Sistem/operasyon uyarilari icin sabit yonetici alicilari (Serhat + Yigit).
+ADMIN_CHAT_IDS = [1192292093, 1347729005]
+
+
+def notify_admins(mesaj: str, prefix: str = "⚠️") -> dict:
+    """Operasyonel uyariyi yoneticilere (Serhat + Yigit) gonderir. Telegram ayarli
+    degilse/erisilmezse sessizce atlar. {chat_id: 'ok'|'hata:...'} dondurur."""
+    sonuc = {}
+    for cid in ADMIN_CHAT_IDS:
+        try:
+            send_message(f"{prefix} {mesaj}" if prefix else mesaj, chat_id=cid)
+            sonuc[cid] = "ok"
+        except Exception as e:
+            sonuc[cid] = f"hata:{type(e).__name__}"
+    return sonuc
+
+
 def get_updates(offset=None, timeout: int = 0) -> list:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
