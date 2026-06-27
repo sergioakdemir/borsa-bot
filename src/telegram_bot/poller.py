@@ -106,11 +106,8 @@ def poll_once():
     updates = telegram.get_updates(offset=(stored + 1) if stored else None, timeout=0)
     if not updates:
         return 0
-    offset = stored
     handled = 0
     for u in updates:
-        uid = u.get("update_id", 0)
-        offset = max(offset, uid)
         msg = u.get("message") or u.get("edited_message") or {}
         chat = (msg.get("chat") or {}).get("id")
         text = msg.get("text", "")
@@ -123,7 +120,12 @@ def poll_once():
         if reply and chat:
             telegram.send_message(reply, chat_id=chat)
             handled += 1
-    db.set_setting("telegram_offset", offset)
+    # Offset = BU BATCH'in en yuksek update_id'si (max(stored, ...) DEGIL). Bot token
+    # degisince yeni botun update_id'leri DUSUK baslar; max(stored,...) eski botun
+    # yuksek offset'inde takilir ve ayni mesajlari sonsuz tekrar isler (Telegram bogus
+    # offset'i yok sayip ayni update'leri dondurur). Batch-max ile offset dususe de takilir.
+    yeni_offset = max(u.get("update_id", 0) for u in updates)
+    db.set_setting("telegram_offset", yeni_offset)
     return handled
 
 
