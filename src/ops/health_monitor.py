@@ -46,7 +46,11 @@ DB_PATH = DATA / "borsa.db"
 STATE_PATH = DATA / "health_state.json"
 
 HEALTH_URL = "http://127.0.0.1:8080/api/health"
-SERHAT_CHAT_ID = 1192292093          # Serhat'in Telegram chat_id'si
+# Uyari alicilari (Telegram chat_id)
+BILDIRIM_ALICILARI = [
+    1192292093,   # Serhat
+    1347729005,   # Yigit
+]
 ABD_HISSELERI = ["NVDA", "SPCX", "RXT", "CNCK"]
 CACHE_BAYAT_DK = 20                   # cache bu kadar dakikadan eskiyse (borsa acikken) uyar
 
@@ -138,14 +142,23 @@ def _state_kaydet(state: dict) -> None:
 
 
 def _bildir(mesaj: str) -> bool:
-    """Serhat'a Telegram uyarisi gonderir. Basari/durum doner."""
+    """Tum alicilara (Serhat + Yigit) Telegram uyarisi gonderir.
+    En az biri basariliysa True (spam-state yazilsin diye)."""
     try:
         from src.notify import telegram
-        telegram.send_message(f"⚠️ SİSTEM UYARISI: {mesaj}", chat_id=SERHAT_CHAT_ID)
-        return True
     except Exception as e:
-        print(f"[uyari] Telegram gonderilemedi: {type(e).__name__}: {str(e)[:80]}")
+        print(f"[uyari] telegram modulu yuklenemedi: {type(e).__name__}")
         return False
+    metin = f"⚠️ SİSTEM UYARISI: {mesaj}"
+    basari = 0
+    for cid in BILDIRIM_ALICILARI:
+        try:
+            telegram.send_message(metin, chat_id=cid)
+            basari += 1
+        except Exception as e:
+            print(f"[uyari] Telegram gonderilemedi (chat={cid}): "
+                  f"{type(e).__name__}: {str(e)[:80]}")
+    return basari > 0
 
 
 def run(verbose: bool = True) -> dict:
