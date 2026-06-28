@@ -450,12 +450,15 @@ def son_ppk_karari() -> dict:
 
 # ---------------------------------------------------------------------------
 # Beklenti verisi (sonraki karara dair PIYASA beklentisi, bp cinsinden)
-# Fed:  Polymarket Gamma API (ucretsiz, anahtarsiz) - olasilik-agirlikli bp.
-#       CME FedWatch resmi API ucretli, web endpoint'i login-gate; kullanilmadi.
-# TCMB: EVDS "Piyasa Katilimcilari Anketi" (TP.BEK.S* serisi) ucretsiz; ancak tam
-#       seri kodu katalogdan teyit edilmeli -> TCMB_BEKLENTI_EVDS_KOD ile verilir.
-# Her ikisi de env override (FED_BEKLENTI_BP / TCMB_BEKLENTI_BP) ile elle girilebilir;
-# canli kaynak erisilemezse alan None kalir (analiz beklentisiz devam eder).
+# Fed:  Polymarket Gamma API (ucretsiz, anahtarsiz) - public-search ile SONRAKI FOMC
+#       ('Fed Decision in <ay>?') etkinligi bulunur, No change/cut/hike olasiliklari
+#       cekilir. CME FedWatch resmi API ucretli, web endpoint'i login-gate; kullanilmadi.
+# TCMB: KAYNAK 1 = EVDS Piyasa Katilimcilari Anketi (borsapy, politika faizi beklentisi);
+#       KAYNAK 2 = borsagundem.com ekonomist anketi (scraping). Her ikisi de bos donerse
+#       tcmb_beklenti_bp=0 (notr) varsayilir.
+# Her ikisi de env override (FED_BEKLENTI_BP / TCMB_BEKLENTI_BP) ile elle girilebilir.
+# Canli kaynaklar erisilemezse: Fed alanlari None kalir + gunde 1 uyari; TCMB 0 olur
+# + gunde 1 uyari (sonraki basarisizliklar sadece loglanir, health_state.json).
 # ---------------------------------------------------------------------------
 def _env_bp(ad):
     """FED_BEKLENTI_BP / TCMB_BEKLENTI_BP env override'ini int bp olarak okur."""
@@ -485,76 +488,44 @@ def _bp_from_question(q: str):
     return None
 
 
-# Polymarket aktif etkinlik kaynagi: birincil Gamma /events; calismazsa alternatif
-# pagination endpoint'i ve proxyli/proxysiz cikis sirayla denenir.
+# Polymarket Gamma API. SONRAKI FOMC kararini bulmak icin public-search
+# ('Fed Decision in <ay>?' etkinlikleri) kullanilir; /events taramasi fallback'tir.
+_POLYMARKET_SEARCH = "https://gamma-api.polymarket.com/public-search"
 _POLYMARKET_ENDPOINTS = (
     "https://gamma-api.polymarket.com/events",
     "https://gamma-api.polymarket.com/events/pagination",
 )
+_FED_AYLAR = ("january", "february", "march", "april", "may", "june", "july",
+              "august", "september", "october", "november", "december")
+
+
+def _http_json(url, params):
+    """GET -> JSON; once proxyli sonra proxysiz cikis dener. 200 disi/hata -> None."""
+    import requests as rq
+    for proxies in (_proxies(), None):
+        try:
+            r = rq.get(url, params=params, proxies=proxies, timeout=20)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            continue
+    return None
 
 
 def _polymarket_events():
     """Polymarket aktif etkinliklerini (volume azalan) dondurur. Birincil Gamma
     endpoint'i calismazsa alternatif endpoint'i ve proxysiz cikisi dener; hicbiri
-    veri vermezse None. (Tek bir endpoint'e bagimliligi kaldirir.)"""
-    import requests as rq
+    veri vermezse None. (public-search calismazsa fallback olarak kullanilir.)"""
     params = {"closed": "false", "limit": 200, "order": "volume", "ascending": "false"}
     for url in _POLYMARKET_ENDPOINTS:
-        for proxies in (_proxies(), None):
-            try:
-                r = rq.get(url, params=params, proxies=proxies, timeout=20)
-                if r.status_code != 200:
-                    continue
-                data = r.json()
-            except Exception:
-                continue
-            # /events -> list; /events/pagination -> {"data": [...]}
-            events = data.get("data") if isinstance(data, dict) else data
-            if isinstance(events, list) and events:
-                return events
+        data = _http_json(url, params)
+        if data is None:
+            continue
+        # /events -> list; /events/pagination -> {"data": [...]}
+        events = data.get("data") if isinstance(data, dict) else data
+        if isinstance(events, list) and events:
+            return events
     return None
-
-
-def _polymarket_fed_beklenti_bp():
-    """Polymarket Gamma API ile Fed'in sonraki kararina dair olasilik-agirlikli
-    beklenti (bp). Aktif 'Fed/FOMC rate' etkinligini bulur, her binary market'in
-    YES olasiligini bp ile carpip toplar. Erisilemez/parse edilemezse None."""
-    events = _polymarket_events()
-    if not isinstance(events, list):
-        return None
-    ev = None
-    for e in events:
-        title = (e.get("title") or "").lower()
-        if "fed" in title and any(t in title for t in ("rate", "fomc", "interest", "bps")):
-            ev = e
-            break
-    if not ev:
-        return None
-    import json
-    toplam, agirlik = 0.0, 0.0
-    for mkt in ev.get("markets") or []:
-        bp = _bp_from_question(mkt.get("question") or mkt.get("groupItemTitle") or "")
-        if bp is None:
-            continue
-        fiyatlar = mkt.get("outcomePrices")
-        if isinstance(fiyatlar, str):
-            try:
-                fiyatlar = json.loads(fiyatlar)
-            except Exception:
-                continue
-        try:
-            yes = float(fiyatlar[0])            # binary market: ilk outcome = "Yes"
-        except (TypeError, ValueError, IndexError):
-            continue
-        toplam += yes * bp
-        agirlik += yes
-    if agirlik <= 0:
-        return None
-    return round(toplam / agirlik)               # olasilik-normalize beklenen bp
-
-
-_FED_AYLAR = ("january", "february", "march", "april", "may", "june", "july",
-              "august", "september", "october", "november", "december")
 
 
 def _polymarket_fed_event(events):
@@ -573,33 +544,83 @@ def _polymarket_fed_event(events):
     return None
 
 
-def _polymarket_fed_olasiliklar():
-    """Polymarket Gamma API ile SONRAKI Fed toplantisi icin indirim/artis/sabit
-    olasiliklari (%). Her market'in groupItemTitle'i ('No change'/'25 bps decrease'
-    ...) yonu, outcomePrices[0] (YES) olasiligi verir. Doner:
-    {'indirme': int, 'artis': int, 'sabit': int, 'baslik': str} ya da None."""
-    import json
+def _polymarket_fed_decision_event():
+    """SONRAKI FOMC kararini ('Fed Decision in <ay>?', su an Temmuz 2026) Polymarket
+    Gamma'dan bulur ve market listesiyle birlikte dondurur.
+
+    1) public-search (q='Fed decision') -> basligi 'fed decision in' ile baslayan,
+       ACIK (closed=False) ve bitisi bugun/sonrasi olan etkinlikler arasindan EN
+       YAKIN bitisli olani (= sonraki toplanti) secilir.
+    2) public-search bos donerse /events taramasi (_polymarket_fed_event) fallback.
+    Hicbiri vermezse None."""
+    bugun = datetime.now(_TZ).date().isoformat()
+    data = _http_json(_POLYMARKET_SEARCH, {"q": "Fed decision", "limit_per_type": 20})
+    evs = data.get("events") if isinstance(data, dict) else None
+    adaylar = []
+    for e in evs or []:
+        if not isinstance(e, dict):
+            continue
+        t = (e.get("title") or "").lower()
+        end = (e.get("endDate") or "")[:10]      # ISO 'YYYY-MM-DD...' -> tarih kismi
+        if t.startswith("fed decision in") and not e.get("closed") and end >= bugun:
+            adaylar.append((end, e))
+    if adaylar:
+        adaylar.sort(key=lambda x: x[0])         # en yakin bitis = sonraki toplanti
+        return adaylar[0][1]
+    # Fallback: eski /events taramasi
     events = _polymarket_events()
-    if not isinstance(events, list):
+    return _polymarket_fed_event(events) if isinstance(events, list) else None
+
+
+def _polymarket_yes(mkt):
+    """Bir market'in YES (ilk outcome) olasiligini float olarak dondurur; yoksa None."""
+    import json
+    fiyatlar = mkt.get("outcomePrices")
+    if isinstance(fiyatlar, str):
+        try:
+            fiyatlar = json.loads(fiyatlar)
+        except Exception:
+            return None
+    try:
+        return float(fiyatlar[0])                # binary market: ilk outcome = "Yes"
+    except (TypeError, ValueError, IndexError):
         return None
-    ev = _polymarket_fed_event(events)
+
+
+def _polymarket_fed_beklenti_bp():
+    """Polymarket'tan SONRAKI FOMC kararina dair olasilik-agirlikli beklenti (bp).
+    Erisilemez/parse edilemezse None."""
+    ev = _polymarket_fed_decision_event()
+    if not ev:
+        return None
+    toplam, agirlik = 0.0, 0.0
+    for mkt in ev.get("markets") or []:
+        bp = _bp_from_question(mkt.get("groupItemTitle") or mkt.get("question") or "")
+        yes = _polymarket_yes(mkt)
+        if bp is None or yes is None:
+            continue
+        toplam += yes * bp
+        agirlik += yes
+    if agirlik <= 0:
+        return None
+    return round(toplam / agirlik)               # olasilik-normalize beklenen bp
+
+
+def _polymarket_fed_olasiliklar():
+    """Polymarket'tan SONRAKI FOMC ('Fed Decision in <ay>?', su an Temmuz 2026) icin
+    indirim/artis/sabit olasiliklari (%). Her market groupItemTitle ('No change' /
+    'XX bps decrease' / 'XX bps increase') yonu, outcomePrices[0] (YES) olasiligi
+    verir. Doner: {'indirme': int, 'artis': int, 'sabit': int, 'baslik': str} ya da
+    None."""
+    ev = _polymarket_fed_decision_event()
     if not ev:
         return None
     indirme = artis = sabit = 0.0
     sayac = 0
     for mkt in ev.get("markets") or []:
         bp = _bp_from_question(mkt.get("groupItemTitle") or mkt.get("question") or "")
-        if bp is None:
-            continue
-        fiyatlar = mkt.get("outcomePrices")
-        if isinstance(fiyatlar, str):
-            try:
-                fiyatlar = json.loads(fiyatlar)
-            except Exception:
-                continue
-        try:
-            yes = float(fiyatlar[0])              # binary market: ilk outcome = "Yes"
-        except (TypeError, ValueError, IndexError):
+        yes = _polymarket_yes(mkt)
+        if bp is None or yes is None:
             continue
         if bp < 0:
             indirme += yes
@@ -702,8 +723,10 @@ def _borsapy_tcmb_beklenti_bp(mevcut_faiz):
         bp.set_evds_key(key)
     except Exception:
         return None
-    # Piyasa Katilimcilari Anketi - beklenen politika faizi (aday seri kodlari)
-    for kod in ("TP.BEK.S081.A", "TP.BEK.S082.A", "TP.BEK.S01.A", "TP.BEK.S02.A"):
+    # Piyasa Katilimcilari Anketi - beklenen politika faizi (aday seri kodlari).
+    # Once acik istenenler (TP.PKA.POLFA / TP.BEKLENTI.POLFA), sonra eski adaylar.
+    for kod in ("TP.PKA.POLFA", "TP.BEKLENTI.POLFA",
+                "TP.BEK.S081.A", "TP.BEK.S082.A", "TP.BEK.S01.A", "TP.BEK.S02.A"):
         try:
             seri = bp.evds_series(kod)["Value"].dropna()
         except Exception:
@@ -732,6 +755,54 @@ def _reuters_tcmb_beklenti_bp(mevcut_faiz=None):
         return None
     beklenen = float(m.group(1))
     if not (20 <= beklenen <= 80):
+        return None
+    if mevcut_faiz is None:
+        return 0
+    return round((beklenen - mevcut_faiz) * 100)
+
+
+_BORSAGUNDEM_TCMB_URL = ("https://www.borsagundem.com.tr/"
+                         "ekonomistlerin-tcmb-faiz-ve-enflasyon-beklentilerinde-son-rakamlar")
+
+
+def _borsagundem_fetch():
+    """borsagundem (TR sitesi) sayfasini getirir. TR cikis gerektiginden ONCE
+    proxysiz (dogrudan), sonra proxyli dener. curl_cffi yoksa requests'e duser."""
+    for proxies in (None, _proxies()):           # TR site -> once dogrudan
+        try:
+            from curl_cffi import requests as creq
+            r = creq.get(_BORSAGUNDEM_TCMB_URL, impersonate="chrome",
+                         proxies=proxies, timeout=20)
+            if r.status_code == 200 and r.text:
+                return r.text
+        except Exception:
+            pass
+        try:
+            import requests as rq
+            r = rq.get(_BORSAGUNDEM_TCMB_URL, headers={"User-Agent": "Mozilla/5.0"},
+                       proxies=proxies, timeout=20)
+            if r.status_code == 200 and r.text:
+                return r.text
+        except Exception:
+            pass
+    return None
+
+
+def _borsagundem_tcmb_beklenti_bp(mevcut_faiz=None):
+    """borsagundem.com ekonomist anketi sayfasindan beklenen politika faizini
+    scrape eder. 'politika faiz(i) ... %XX,XX' (medyan/ortalama tahmin) kalibini
+    yakalar, mevcut faize gore bp farkini dondurur. Erisilemez/parse edilemezse None."""
+    html = _borsagundem_fetch()
+    if not html:
+        return None
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    # 'politika faizi medyan tahmini %37,00' / 'politika faiz orani beklentisi %XX'
+    m = re.search(r"politika faiz[^%]{0,60}%\s*([0-9]{1,2}(?:[.,][0-9]{1,2})?)",
+                  t, re.IGNORECASE)
+    if not m:
+        return None
+    beklenen = _num(m.group(1))
+    if beklenen is None or not (20 <= beklenen <= 80):   # makul politika faizi bandi
         return None
     if mevcut_faiz is None:
         return 0
@@ -768,13 +839,17 @@ def fed_beklenti_bp():
 
 
 def _tcmb_beklenti_bp_raw(mevcut_faiz=None):
-    """TCMB sonraki karar beklentisi (bp) - HAM. Sira: env override -> borsapy EVDS
-    anketi -> EVDS3 /fe anketi -> Reuters anket sayfasi -> Google News. Hicbir kaynak
-    veri vermezse None (cagiran varsayilan deger uygular)."""
+    """TCMB sonraki karar beklentisi (bp) - HAM. Sira:
+    env override ->
+    KAYNAK 1: borsapy EVDS Piyasa Katilimcilari Anketi (politika faizi beklentisi) ->
+    KAYNAK 2: borsagundem.com ekonomist anketi (scraping) ->
+    (ek fallback) EVDS3 /fe -> Reuters -> Google News.
+    Hicbir kaynak veri vermezse None (cagiran varsayilan deger uygular)."""
     ov = _env_bp("TCMB_BEKLENTI_BP")
     if ov is not None:
         return ov
-    for fn in (lambda: _borsapy_tcmb_beklenti_bp(mevcut_faiz),
+    for fn in (lambda: _borsapy_tcmb_beklenti_bp(mevcut_faiz),       # KAYNAK 1 (EVDS)
+               lambda: _borsagundem_tcmb_beklenti_bp(mevcut_faiz),   # KAYNAK 2 (scraping)
                lambda: _evds_tcmb_beklenti_bp(mevcut_faiz),
                lambda: _reuters_tcmb_beklenti_bp(mevcut_faiz),
                _gnews_tcmb_beklenti_bp):
