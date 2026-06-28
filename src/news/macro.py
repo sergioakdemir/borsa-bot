@@ -153,32 +153,47 @@ def _log_macro_hata(url, neden):
         pass
 
 
-_ALERT_STATE = Path(__file__).resolve().parents[2] / "data" / "macro_alert_state.json"
+# Spam onleme durumu health_monitor ile AYNI dosyada tutulur (data/health_state.json):
+# {sorun_anahtari: 'YYYY-MM-DD'}. Ayni hata icin gunde EN FAZLA 1 Telegram uyarisi;
+# sonraki cagrilarda sadece loglanir. (Onceki macro_alert_state.json mekanizmasi spam
+# onleyemiyordu -> health_state.json'a tasindi.)
+_HEALTH_STATE = Path(__file__).resolve().parents[2] / "data" / "health_state.json"
+
+
+def _health_state_yukle() -> dict:
+    import json
+    try:
+        return json.loads(_HEALTH_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _health_state_kaydet(state: dict) -> None:
+    import json
+    try:
+        _HEALTH_STATE.parent.mkdir(exist_ok=True)
+        _HEALTH_STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1),
+                                 encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _uyar_admin_gunluk(anahtar: str, mesaj: str) -> None:
-    """Yoneticilere (Serhat+Yigit) Telegram uyarisi gonderir; ayni anahtar icin
-    gunde EN FAZLA 1 kez (spam onleme, data/macro_alert_state.json)."""
-    import json
+    """Ayni `anahtar` icin gunde EN FAZLA 1 kez yoneticilere (Serhat+Yigit) Telegram
+    uyarisi gonderir; bugun zaten bildirildiyse SADECE return (cagiran zaten loglar).
+    Durum data/health_state.json'da {anahtar: 'YYYY-MM-DD'} olarak tutulur. Telegram
+    gonderilemezse state'e yazilmaz -> ertesi denemede tekrar denenir (spam degil)."""
     bugun = datetime.now(_TZ).date().isoformat()
-    try:
-        state = json.loads(_ALERT_STATE.read_text(encoding="utf-8"))
-    except Exception:
-        state = {}
-    if state.get(anahtar) == bugun:
+    state = _health_state_yukle()
+    if state.get(anahtar) == bugun:          # bugun zaten bildirildi -> sadece logla
         return
     try:
         from src.notify import telegram
         telegram.notify_admins(mesaj)
     except Exception:
-        return
+        return                               # gonderilemedi -> state'e yazma, tekrar dene
     state[anahtar] = bugun
-    state = {k: v for k, v in state.items() if v == bugun}
-    try:
-        _ALERT_STATE.parent.mkdir(exist_ok=True)
-        _ALERT_STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    _health_state_kaydet(state)
 
 
 def _investing_last(url):
@@ -470,21 +485,41 @@ def _bp_from_question(q: str):
     return None
 
 
+# Polymarket aktif etkinlik kaynagi: birincil Gamma /events; calismazsa alternatif
+# pagination endpoint'i ve proxyli/proxysiz cikis sirayla denenir.
+_POLYMARKET_ENDPOINTS = (
+    "https://gamma-api.polymarket.com/events",
+    "https://gamma-api.polymarket.com/events/pagination",
+)
+
+
+def _polymarket_events():
+    """Polymarket aktif etkinliklerini (volume azalan) dondurur. Birincil Gamma
+    endpoint'i calismazsa alternatif endpoint'i ve proxysiz cikisi dener; hicbiri
+    veri vermezse None. (Tek bir endpoint'e bagimliligi kaldirir.)"""
+    import requests as rq
+    params = {"closed": "false", "limit": 200, "order": "volume", "ascending": "false"}
+    for url in _POLYMARKET_ENDPOINTS:
+        for proxies in (_proxies(), None):
+            try:
+                r = rq.get(url, params=params, proxies=proxies, timeout=20)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+            except Exception:
+                continue
+            # /events -> list; /events/pagination -> {"data": [...]}
+            events = data.get("data") if isinstance(data, dict) else data
+            if isinstance(events, list) and events:
+                return events
+    return None
+
+
 def _polymarket_fed_beklenti_bp():
     """Polymarket Gamma API ile Fed'in sonraki kararina dair olasilik-agirlikli
     beklenti (bp). Aktif 'Fed/FOMC rate' etkinligini bulur, her binary market'in
     YES olasiligini bp ile carpip toplar. Erisilemez/parse edilemezse None."""
-    try:
-        import requests as rq
-        r = rq.get("https://gamma-api.polymarket.com/events",
-                   params={"closed": "false", "limit": 200,
-                           "order": "volume", "ascending": "false"},
-                   proxies=_proxies(), timeout=20)
-        if r.status_code != 200:
-            return None
-        events = r.json()
-    except Exception:
-        return None
+    events = _polymarket_events()
     if not isinstance(events, list):
         return None
     ev = None
@@ -544,17 +579,7 @@ def _polymarket_fed_olasiliklar():
     ...) yonu, outcomePrices[0] (YES) olasiligi verir. Doner:
     {'indirme': int, 'artis': int, 'sabit': int, 'baslik': str} ya da None."""
     import json
-    try:
-        import requests as rq
-        r = rq.get("https://gamma-api.polymarket.com/events",
-                   params={"closed": "false", "limit": 200,
-                           "order": "volume", "ascending": "false"},
-                   proxies=_proxies(), timeout=20)
-        if r.status_code != 200:
-            return None
-        events = r.json()
-    except Exception:
-        return None
+    events = _polymarket_events()
     if not isinstance(events, list):
         return None
     ev = _polymarket_fed_event(events)
@@ -742,9 +767,10 @@ def fed_beklenti_bp():
     return _polymarket_fed_beklenti_bp()
 
 
-def tcmb_beklenti_bp(mevcut_faiz=None):
-    """TCMB sonraki karar beklentisi (bp). Sira: env override -> borsapy EVDS anketi
-    -> EVDS3 /fe anketi -> Reuters anket sayfasi -> Google News. Hicbiri yoksa None."""
+def _tcmb_beklenti_bp_raw(mevcut_faiz=None):
+    """TCMB sonraki karar beklentisi (bp) - HAM. Sira: env override -> borsapy EVDS
+    anketi -> EVDS3 /fe anketi -> Reuters anket sayfasi -> Google News. Hicbir kaynak
+    veri vermezse None (cagiran varsayilan deger uygular)."""
     ov = _env_bp("TCMB_BEKLENTI_BP")
     if ov is not None:
         return ov
@@ -759,6 +785,19 @@ def tcmb_beklenti_bp(mevcut_faiz=None):
         if v is not None:
             return v
     return None
+
+
+def tcmb_beklenti_bp(mevcut_faiz=None):
+    """TCMB sonraki karar beklentisi (bp). Kaynaklar (bkz. _tcmb_beklenti_bp_raw)
+    calismazsa HATA ATMAZ; varsayilan 0 (beklenti sabit/notr) dondurur ve durumu
+    logs/macro_hata.log'a yazar. (Veri yoklugu analiz akisini kesmesin diye.)"""
+    v = _tcmb_beklenti_bp_raw(mevcut_faiz)
+    if v is not None:
+        return v
+    _log_macro_hata("tcmb_beklenti",
+                    "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos) "
+                    "-> varsayilan tcmb_beklenti_bp=0")
+    return 0
 
 
 def get_macro() -> dict:
@@ -924,7 +963,9 @@ def get_macro() -> dict:
 
     # 6) Beklenti (sonraki karara dair piyasa beklentisi, bp) - best-effort, ucretsiz
     out["fed_beklenti_bp"] = fed_beklenti_bp()
-    out["tcmb_beklenti_bp"] = tcmb_beklenti_bp(out.get("politika_faizi"))
+    # TCMB beklenti: ham deger None ise varsayilan 0 (analiz akisi kesilmesin).
+    tcmb_ham = _tcmb_beklenti_bp_raw(out.get("politika_faizi"))
+    out["tcmb_beklenti_bp"] = tcmb_ham if tcmb_ham is not None else 0
 
     # 6b) Fed sonraki toplanti OLASILIKLARI (Polymarket): indirim/artis/sabit (%)
     fed_ol = _polymarket_fed_olasiliklar()
@@ -935,19 +976,24 @@ def get_macro() -> dict:
         if "Polymarket" not in out["kaynaklar"]:
             out["kaynaklar"].append("Polymarket")
     else:
+        # Polymarket (alt endpoint dahil) veri vermedi -> her zaman logla; Telegram
+        # uyarisi gunde EN FAZLA 1 kez (spam onleme, health_state.json "polymarket_hata").
         out["fed_beklenti_indirme"] = None
         out["fed_beklenti_artis"] = None
         out["fed_beklenti_sabit"] = None
-        _log_macro_hata("polymarket", "FED_BEKLENTI_ALINAMADI (olasiliklar bos)")
-        _uyar_admin_gunluk("fed_beklenti",
+        _log_macro_hata("polymarket", "FED_BEKLENTI_ALINAMADI (olasiliklar bos, alt endpoint dahil)")
+        _uyar_admin_gunluk("polymarket_hata",
                            "Polymarket Fed beklenti olasılıkları alınamadı (macro.py).")
 
-    # 6c) TCMB beklenti alinamadiysa logla + bir kez uyar
-    if out["tcmb_beklenti_bp"] is None:
+    # 6c) TCMB beklenti ham veri yoksa: varsayilan 0 kullanildi -> her zaman logla;
+    # Telegram uyarisi gunde EN FAZLA 1 kez (health_state.json "tcmb_beklenti_hata").
+    if tcmb_ham is None:
         _log_macro_hata("tcmb_beklenti",
-                        "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos)")
-        _uyar_admin_gunluk("tcmb_beklenti",
-                           "TCMB faiz beklenti verisi alınamadı (macro.py).")
+                        "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos) "
+                        "-> varsayilan tcmb_beklenti_bp=0")
+        _uyar_admin_gunluk("tcmb_beklenti_hata",
+                           "TCMB faiz beklenti verisi alınamadı (macro.py) "
+                           "-> varsayılan 0 kullanıldı.")
 
     # taze cekilen degerleri kalici sakla (sonraki yedek icin)
     _kaydet_son_bilinen(taze)
