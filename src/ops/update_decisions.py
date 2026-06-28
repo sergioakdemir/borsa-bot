@@ -47,15 +47,37 @@ def _kapanis_gun(karar: str, tahmini_sure=None) -> int:
     return KAPANIS_GUN_VARSAYILAN
 
 
-# AL kararinin piyasaya gore tolere edilen geri kalmasi (yuzde puan).
+# AL kararinin piyasaya gore tolere edilen geri kalmasi (yuzde puan) - VARSAYILAN.
+# BIST hareketi bilinmiyorsa kullanilir; biliniyorsa _tolerans() ile dinamiklesir.
 # Hisse yukselse bile BIST-100'den bu kadar fazla geride kaldiysa AL basarisiz sayilir.
 PIYASA_GERI_KALMA = 2.0
 
 
-def _verdict(karar: str, degisim: float, piyasa_farki: float = None) -> bool:
+def _tolerans(bist_degisim) -> float:
+    """BIST hareketinin BUYUKLUGUNE gore AL'in tolere edilen piyasa geri kalmasi (puan).
+
+    Piyasa cok hareketliyse tek bir hissenin endeksten sapmasi normaldir; bu yuzden
+    tolerans hareketle birlikte buyur:
+      |BIST| < %1  -> %2  (sakin gun, kati kiyas)
+      |BIST| %1-3  -> %3
+      |BIST| > %3  -> %4.5 (oynak gun, gevsek kiyas)
+    bist_degisim None ise sabit varsayilan (PIYASA_GERI_KALMA)."""
+    if bist_degisim is None:
+        return PIYASA_GERI_KALMA
+    h = abs(bist_degisim)
+    if h < 1:
+        return 2.0
+    if h <= 3:
+        return 3.0
+    return 4.5
+
+
+def _verdict(karar: str, degisim: float, piyasa_farki: float = None,
+             bist_degisim: float = None) -> bool:
     """Karar dogru mu? AL'da piyasa kiyasi devreye girer: fiyat yukselmis OLSA bile
-    BIST-100'den PIYASA_GERI_KALMA'dan (%2) fazla geride kaldiysa AL basarisiz sayilir
-    ('hisse +%3 ama BIST +%5' -> aslinda kotu karar)."""
+    BIST-100'den tolerans'tan fazla geride kaldiysa AL basarisiz sayilir
+    ('hisse +%3 ama BIST +%5' -> aslinda kotu karar). Tolerans BIST gunluk hareketinin
+    buyuklugune gore dinamiktir (bkz. _tolerans); bist_degisim None ise %2 sabit."""
     k = (karar or "").upper()
     if "VETO" in k or "UZAK" in k:   # VETO / UZAK_DUR: girilmedi -> yukselmediyse dogru
         return degisim <= 0
@@ -64,7 +86,8 @@ def _verdict(karar: str, degisim: float, piyasa_farki: float = None) -> bool:
     if "AL" in k:           # AL, AL_TEMKINLI: yukseldi VE piyasadan cok geri kalmadi
         if degisim <= 0:
             return False
-        if piyasa_farki is not None and piyasa_farki < -PIYASA_GERI_KALMA:
+        tol = _tolerans(bist_degisim)
+        if piyasa_farki is not None and piyasa_farki < -tol:
             return False
         return True
     return abs(degisim) <= TUT_BANT   # TUT
@@ -72,13 +95,21 @@ def _verdict(karar: str, degisim: float, piyasa_farki: float = None) -> bool:
 
 def _market_for(ticker: str):
     """Ticker'in market nesnesini doner. decisions tablosunda para_birimi yok; sirayla:
-    1) portfoy tablosu USD ise US() (yfinance'te .IS yok, orn. QQQ/VOO),
-    2) watchlist.json kisisel_diger'de market 'abd'/'us' ise US() (orn. NVDA/RXT),
+    1) enstruman ana tablosu (instruments) ABD diyorsa US() (orn. NVDA/QQQ/VOO),
+    2) portfoy tablosu USD ise US(),
+    3) izleme listesi ABD isaretliyse US(),
     aksi halde BIST() (.IS ekler). Boylece ABD hisseleri icin de veri gelir."""
     from src.markets.bist import BIST
     from src.markets.us import US
     norm = (ticker or "").upper().replace(".IS", "").strip()
-    # 1) Portfoyde USD pozisyon olarak tutuluyorsa ABD
+    # 1) Enstruman ana tablosu (kaynak-i hakikat)
+    try:
+        from src.db import database as db
+        if db.get_instrument(norm) is not None:
+            return US() if db.is_us_instrument(norm) else BIST()
+    except Exception:
+        pass
+    # 2) Portfoyde USD pozisyon olarak tutuluyorsa ABD
     try:
         from src.db import database as db
         with db.get_conn() as c:
@@ -91,7 +122,7 @@ def _market_for(ticker: str):
             return US()
     except Exception:
         pass
-    # 2) Izleme listesinde ABD piyasasi olarak tanimliysa (portfoyde olmasa da)
+    # 3) Izleme listesinde ABD piyasasi olarak tanimliysa (portfoyde olmasa da)
     try:
         from src.watchlist import is_us_ticker
         if is_us_ticker(norm):
@@ -167,6 +198,31 @@ def _index_change(karar_tarihi: str, kapanis_gun: int):
     return _symbol_change("XU100.IS", karar_tarihi, kapanis_gun)
 
 
+def _bist_gunluk_degisim():
+    """BIST-100'un (XU100.IS) en son islem gunundeki gunluk yuzde degisimi
+    (son kapanis vs onceki kapanis). Dinamik AL toleransini belirlemek icin
+    kullanilir (bkz. _tolerans). Veri yoksa None."""
+    from src.data.factory import get_data_source
+    start = (datetime.now(_TZ).date() - timedelta(days=12)).isoformat()
+    try:
+        df = get_data_source().get_history("XU100.IS", start=start)
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+    if "Volume" in df.columns:
+        df = df[(df["Volume"] > 0) & df["Close"].notna()]
+    else:
+        df = df[df["Close"].notna()]
+    if len(df) < 2:
+        return None
+    son = float(df["Close"].iloc[-1])
+    onceki = float(df["Close"].iloc[-2])
+    if not onceki:
+        return None
+    return round((son - onceki) / onceki * 100, 2)
+
+
 # --- L2: 'Neden yanlis cikti?' kisa Haiku analizi ---
 _YANLIS_SCHEMA = {
     "type": "object",
@@ -225,8 +281,13 @@ def run(verbose: bool = True) -> int:
             "SELECT * FROM decisions WHERE (sonuc IS NULL OR sonuc='') "
             "AND tarih < ? ORDER BY id", (cutoff,))]
 
+    # BIST gunluk hareketine gore dinamik AL toleransi (sakin gun kati, oynak gun gevsek)
+    bist_gunluk = _bist_gunluk_degisim()
     if verbose:
-        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)}")
+        tol = _tolerans(bist_gunluk)
+        bg = f"%{bist_gunluk:+.2f}" if bist_gunluk is not None else "bilinmiyor"
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)} "
+              f"| BIST gunluk: {bg} -> AL toleransi %{tol:g}")
     guncellenen = 0
     for r in rows:
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))   # TUT'ta AI tahmini sure
@@ -242,7 +303,8 @@ def run(verbose: bool = True) -> int:
             bist_deg = _index_change(r["tarih"], kg)
             if bist_deg is not None:
                 piyasa_farki = round(deg - bist_deg, 2)
-        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
+        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki,
+                         bist_degisim=bist_gunluk)
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
         if piyasa_farki is not None:
             sonuc += f" · piyasa {piyasa_farki:+.1f}p"

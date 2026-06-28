@@ -19,21 +19,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 _TZ = ZoneInfo("Europe/Istanbul")
 
 
-def _son_fiyat(ticker: str, para_birimi: str = "TL"):
-    """Güncel kapanış (yerel para). ABD'de '.IS' eklenmez.
+def _yf_sembol(ticker: str, para_birimi: str = "TL") -> str:
+    """Ticker'in yfinance sembolu (enstruman ana tablosundan). ABD'de '.IS' eklenmez.
 
-    ABD tespiti hem para_birimi=USD'ye hem de watchlist'teki ticker bazlı pazar
-    işaretine bakar; böylece USD işaretlenmemiş ABD hisseleri (örn. NVDA) de '.IS'
-    eki almadan doğru sembolle fiyatlanır."""
+    ABD tespiti ve sembol enstruman ana tablosundan (instruments) okunur; böylece
+    USD işaretlenmemiş ABD hisseleri (örn. NVDA) de '.IS' eki almadan doğru
+    sembolle fiyatlanır. Tabloda olmayan ticker BIST varsayılır."""
+    from src.db import database as db
+    inst = db.get_instrument(ticker)
+    if inst is not None:
+        return db.instrument_symbol(ticker)
+    is_us = (para_birimi or "TL").upper() == "USD" or db.is_us_instrument(ticker)
+    base = ticker.upper().replace(".IS", "")
+    return base if is_us else f"{base}.IS"
+
+
+def _son_bar(ticker: str, para_birimi: str = "TL"):
+    """Son işlem gününün (close, high, low) üçlüsü (yerel para). Yoksa None.
+
+    Gün içi yüksek/düşük günlük OHLC verisinden alınır; kapanış fiyatına ek olarak
+    intraday_high_pct/intraday_low_pct güncellemesinde kullanılır."""
     from src.data.factory import get_data_source
-    is_us = (para_birimi or "TL").upper() == "USD"
-    if not is_us:
-        try:
-            from src.watchlist import is_us_ticker
-            is_us = is_us_ticker(ticker)
-        except Exception:
-            pass
-    symbol = ticker.upper().replace(".IS", "") if is_us else f"{ticker.upper().replace('.IS','')}.IS"
+    symbol = _yf_sembol(ticker, para_birimi)
     start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
@@ -47,7 +54,16 @@ def _son_fiyat(ticker: str, para_birimi: str = "TL"):
             df = f
     if df.empty:
         return None
-    return float(df["Close"].iloc[-1])
+    close = float(df["Close"].iloc[-1])
+    high = float(df["High"].iloc[-1]) if "High" in df.columns else close
+    low = float(df["Low"].iloc[-1]) if "Low" in df.columns else close
+    return close, high, low
+
+
+def _son_fiyat(ticker: str, para_birimi: str = "TL"):
+    """Güncel kapanış (yerel para). Geriye dönük uyum için korunur."""
+    bar = _son_bar(ticker, para_birimi)
+    return bar[0] if bar else None
 
 
 def _gun_farki(baslangic, bitis) -> int | None:
@@ -116,22 +132,35 @@ def run(verbose: bool = True) -> dict:
 
     guncellenen = kapanan = 0
     for t in acik:
-        native = _son_fiyat(t["ticker"], t.get("para_birimi"))
-        if native is None:
+        bar = _son_bar(t["ticker"], t.get("para_birimi"))
+        if bar is None:
             if verbose:
                 print(f"  {t['ticker']}: fiyat yok, atlandı")
             continue
+        native, gun_yuksek, gun_dusuk = bar
         entry = t.get("entry_fiyat") or 0.0
         if not entry:
             continue
         pct = (native - entry) / entry * 100
 
-        # max_profit / max_drawdown (yüzde) güncelle
+        # max_profit / max_drawdown (kapanışa göre yüzde) güncelle
         eski_mp = t.get("max_profit")
         eski_md = t.get("max_drawdown")
         yeni_mp = round(pct if eski_mp is None else max(eski_mp, pct), 2)
         yeni_md = round(pct if eski_md is None else min(eski_md, pct), 2)
         db.update_trade_extremes(t["id"], yeni_md, yeni_mp)
+
+        # intraday_high_pct / intraday_low_pct: gün içi yüksek/dip ile genişlet
+        # (fitilleri de yakalar; kapanışa dayalı max_profit/drawdown'dan farkı bu)
+        gun_yuksek_pct = (gun_yuksek - entry) / entry * 100
+        gun_dusuk_pct = (gun_dusuk - entry) / entry * 100
+        eski_ih = t.get("intraday_high_pct")
+        eski_il = t.get("intraday_low_pct")
+        yeni_ih = round(gun_yuksek_pct if eski_ih is None
+                        else max(eski_ih, gun_yuksek_pct), 2)
+        yeni_il = round(gun_dusuk_pct if eski_il is None
+                        else min(eski_il, gun_dusuk_pct), 2)
+        db.update_trade_intraday(t["id"], yeni_ih, yeni_il)
         guncellenen += 1
 
         # Stop / hedef tetiği -> kapat

@@ -67,6 +67,80 @@ def _gece_haber_temizle() -> None:
         pass
 
 
+def _rejim_durum(skor):
+    """Makro rejim skorunu (0-100) brifing etiketlerine cevirir.
+
+    Esikler: >=60 Pozitif/Yuksek, 35-60 Notr/Orta, <=35 Negatif/Dusuk.
+    Doner (durum, uygunluk, negatif_mi)."""
+    if skor is None:
+        return None
+    if skor >= 60:
+        return "Pozitif", "Yüksek", False
+    if skor <= 35:
+        return "Negatif", "Düşük", True
+    return "Nötr", "Orta", False
+
+
+def _rejim_satirlari(rejim) -> list:
+    """Sabah brifinginin basina eklenen 'PİYASA REJİMİ' bloğu.
+
+    rejim: kombinasyon.guncel_rejim() ciktisi {skor, rejim, bist_g, ...}.
+    Negatif rejimde ek risk uyarisi satiri ekler. Veri yoksa bos liste."""
+    if not rejim or rejim.get("skor") is None:
+        return []
+    skor = rejim["skor"]
+    durum, uygunluk, negatif = _rejim_durum(skor)
+    bist_g = rejim.get("bist_g")
+    if bist_g is None:
+        yon = "Bilinmiyor"
+    elif bist_g > 0.3:
+        yon = "Yukarı"
+    elif bist_g < -0.3:
+        yon = "Aşağı"
+    else:
+        yon = "Yatay"
+    risk = max(1, min(10, round((100 - skor) / 10)))   # rejim dustukce risk artar
+    emoji = "🟢" if not negatif and skor >= 60 else ("🔴" if negatif else "🟡")
+    lines = [
+        f"{emoji} <b>PİYASA REJİMİ: {durum}</b>",
+        f"BIST yönü: {yon} · Risk: {risk}/10",
+        f"Bugün yeni AL için uygunluk: {uygunluk}",
+    ]
+    if negatif:
+        lines.append("⚠️ Olumsuz piyasa rejimi — yeni AL önerileri BEKLE'ye "
+                     "çekildi, pozisyon riskini düşük tut.")
+    return lines
+
+
+def _tetiklenen_senaryo_satirlari() -> list:
+    """GECE TETİKLENEN SENARYOLAR bloğu: senaryo_takip.json'da durumu 'gerceklesti'
+    olan senaryolari portfoy bolumunden ONCE one cikarir. Yoksa bos liste."""
+    try:
+        from src.ai import senaryo
+        kayit = senaryo.yukle() or {}
+    except Exception:
+        return []
+    tetiklenenler = [s for s in (kayit.get("senaryolar") or [])
+                     if (s.get("durum") or "").lower() == "gerceklesti"]
+    if not tetiklenenler:
+        return []
+    lines = ["", "<b>🌙 GECE TETİKLENEN SENARYOLAR</b>"]
+    aksiyonlar = []
+    for s in tetiklenenler[:3]:
+        metin = (s.get("metin") or "").strip()
+        if not metin:
+            continue
+        hisse = (s.get("hisse") or "").strip()
+        ek = f" → {_esc(hisse)}" if hisse else ""
+        lines.append(f"• {_esc(metin)}{ek}")
+        bk = (s.get("beklenen_karar") or "").strip()
+        if bk and hisse:
+            aksiyonlar.append(f"{hisse}: {bk}")
+    if aksiyonlar:
+        lines.append(f"Aksiyon: {_esc('; '.join(aksiyonlar))} yönünde değerlendirilebilir.")
+    return lines
+
+
 def _load_dotenv():
     env_path = Path(__file__).resolve().parents[2] / ".env"
     if not env_path.exists():
@@ -572,14 +646,25 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                   profil_uyari=None, zarar_uyarilari=None, senaryolar=None,
                   portfoy_guncel_gun=None, us_gundem=None, akademik_gundem=None,
                   akademik_ozet=None, sektor_uyarilari=None, kripto_gundem=None,
-                  vade_notu=None):
-    """SABAH brifingi — GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
+                  vade_notu=None, rejim=None):
+    """SABAH brifingi — PİYASA REJİMİ / GÜNÜN PLANI / PORTFÖY / FIRSATLAR / BUGÜN TAKİP.
 
     Sadece 5 karar kelimesi (AL/TUT/BEKLE/AZALT/UZAK DUR), izinli emojiler
     (🟢🟡🔴⚡📰), teknik oran yok, kısa. portfolio=None ise sel['portfolio']
     (tüm portföyler birleşik) kullanılır; kullanici_ad başlığı kişiselleştirir.
+    rejim verilir ve NEGATİF ise yeni AL önerileri BEKLE'ye düşürülür.
     """
     is_us = sel.get("market") in ("us", "abd")
+    # NEGATİF piyasa rejiminde yeni AL önerileri riskli -> BEKLE'ye düşür (kopya üstünde).
+    rejim_negatif = bool(rejim and rejim.get("skor") is not None and rejim["skor"] <= 35)
+    if rejim_negatif:
+        donus = []
+        for r in results:
+            if (not r.get("skipped")
+                    and (r.get("final_decision") or "").upper() == "AL"):
+                r = {**r, "final_decision": "BEKLE", "_rejim_dususu": True}
+            donus.append(r)
+        results = donus
     valid = [r for r in results if not r.get("skipped")]
     portfolio = portfolio if portfolio is not None else (sel.get("portfolio") or set())
 
@@ -589,6 +674,13 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     ad = f" · {str(kullanici_ad).capitalize()}" if kullanici_ad else ""
     baslik = "🇺🇸 ABD PİYASASI" if is_us else "GÜNÜN PLANI"
     lines = [f"<b>{baslik}</b>{ad} — {now:%d.%m %H:%M}"]
+
+    # PİYASA REJİMİ — mesajın başında (yalnız BIST brifingi; rejim verilirse)
+    if not is_us:
+        rejim_satir = _rejim_satirlari(rejim)
+        if rejim_satir:
+            lines.append("")
+            lines += rejim_satir
 
     if not valid:
         lines.append("")
@@ -619,6 +711,10 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                              "Önemli kararları sonrasına bırak.")
         except Exception:
             pass
+
+    # GECE TETİKLENEN SENARYOLAR — gerçekleşen senaryolar portföyden ÖNCE öne çıkar
+    if not is_us:
+        lines += _tetiklenen_senaryo_satirlari()
 
     # PORTFÖY (her zaman göster)
     pf_rows = [r for r in valid if _in_pf(r)]
@@ -873,6 +969,19 @@ def main(market="bist"):
         except Exception as e:
             print(f"  senaryo uretimi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
+    # PIYASA REJIMI: tek sefer hesapla (tum kullanicilara ayni); negatifse build_message
+    #    yeni AL onerilerini BEKLE'ye duser. Yalniz BIST brifinginde anlamli.
+    rejim = None
+    if not is_us:
+        try:
+            from src.ai import kombinasyon
+            rejim = kombinasyon.guncel_rejim()
+            if rejim:
+                print(f"  piyasa rejimi: {rejim.get('rejim')} (skor {rejim.get('skor')})")
+        except Exception as e:
+            print(f"  piyasa rejimi alinamadi: {type(e).__name__}")
+            rejim = None
+
     # 7) KISISEL gonderim: ortak piyasa/haber govdesi + her kullanicinin kendi
     #    portfoyune ozel "Portföyündeki hisseler" bolumu. DB'de telegram_id'si olan
     #    her kullaniciya kendi mesaji; DB disi env alicilara birlesik mesaj.
@@ -943,7 +1052,7 @@ def main(market="bist"):
                             senaryolar=senaryolar, portfoy_guncel_gun=guncel_gun,
                             us_gundem=us_gundem, akademik_gundem=akademik_gundem,
                             akademik_ozet=akademik_ozet, sektor_uyarilari=sektor_uy,
-                            kripto_gundem=kripto_gundem)
+                            kripto_gundem=kripto_gundem, rejim=rejim)
         # GECE GELEN HABERLER: kullanicinin izledigi hisseleri etkileyenler (varsa)
         try:
             from src.watchlist import load_index, load_personal
@@ -965,7 +1074,7 @@ def main(market="bist"):
                           senaryolar=senaryolar, us_gundem=us_gundem,
                           akademik_gundem=akademik_gundem,
                           akademik_ozet=akademik_ozet,
-                          kripto_gundem=kripto_gundem)   # portfolio=tum birlesik
+                          kripto_gundem=kripto_gundem, rejim=rejim)   # portfolio=tum birlesik
     gece_blok_genel = _gece_haber_blok()                    # filtresiz (tum hisseler)
     if gece_blok_genel:
         genel = genel + "\n\n" + gece_blok_genel

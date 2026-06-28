@@ -62,7 +62,15 @@ def is_us_market(code: str) -> bool:
 
 
 def is_us_ticker(ticker: str) -> bool:
-    """Ticker watchlist'te ABD piyasasi olarak mi tanimli? (RXT/NVDA gibi)."""
+    """Ticker ABD piyasasi mi? (RXT/NVDA gibi). Once enstruman ana tablosu
+    (instruments) okunur; orada yoksa watchlist.json'daki kisisel_diger isaretine
+    duser (geriye donuk uyum)."""
+    try:
+        from src.db import database as db
+        if db.get_instrument(ticker) is not None:
+            return db.is_us_instrument(ticker)
+    except Exception:
+        pass
     norm = str(ticker or "").upper().replace(".IS", "").strip()
     return is_us_market(load_markets().get(norm, ""))
 

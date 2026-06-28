@@ -213,6 +213,20 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS ix_trades_ticker_durum ON trades(ticker, durum);
 CREATE INDEX IF NOT EXISTS ix_trades_kullanici ON trades(kullanici_id, durum);
+-- Enstruman ana tablosu: ticker -> pazar/para birimi/borsa/saglayici. Tum is_us
+-- tespiti ve yfinance sembol uretimi (suffix_rule) bu tablodan okunur.
+--   suffix_rule: 'none'  -> sembol = ticker (US: NVDA)
+--                '.IS'   -> sembol = ticker + '.IS' (BIST: THYAO -> THYAO.IS)
+--                'custom'-> sembol = ticker'in kendisi (GMSTR.F gibi sonek gomulu)
+CREATE TABLE IF NOT EXISTS instruments (
+    ticker        TEXT PRIMARY KEY,
+    market        TEXT NOT NULL,
+    currency      TEXT NOT NULL,
+    exchange      TEXT,
+    data_provider TEXT,
+    suffix_rule   TEXT DEFAULT 'none',
+    is_active     INTEGER DEFAULT 1
+);
 """
 
 # Profil "cekirdek" alanlari (17) - guven skoru bu alanlarin doluluk oranindan hesaplanir
@@ -288,6 +302,12 @@ def _migrate(c) -> None:
                          ("risk_tercihi", "TEXT")):
             if col not in cols_pr:
                 c.execute(f"ALTER TABLE kullanici_profil ADD COLUMN {col} {tip}")
+    # trades: girisinden bu yana gorulen en yuksek/dusuk yuzde (gun ici takip)
+    cols_t = {r["name"] for r in c.execute("PRAGMA table_info(trades)")}
+    if "intraday_high_pct" not in cols_t:
+        c.execute("ALTER TABLE trades ADD COLUMN intraday_high_pct REAL")
+    if "intraday_low_pct" not in cols_t:
+        c.execute("ALTER TABLE trades ADD COLUMN intraday_low_pct REAL")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -310,6 +330,96 @@ def init_db() -> None:
     with get_conn() as c:
         c.executescript(SCHEMA)
         _migrate(c)
+    seed_instruments()
+
+
+# ---- instruments (enstruman ana tablosu) ----
+# Baslangic verileri. yeni ticker eklemek icin buraya bir satir ekle; init_db
+# idempotent olarak (INSERT OR IGNORE) doldurur, var olani EZMEZ.
+_US_TICKERS = ["SPCX", "NVDA", "AMD", "TSM", "ASML", "RKLB", "IONQ", "RGTI",
+               "ACHR", "BFLY", "MU", "CNCK", "RXT", "OSS", "QQQ", "VOO"]
+_BIST_TICKERS = [
+    "THYAO", "GARAN", "ASELS", "KCHOL", "TUPRS", "EREGL", "AKBNK", "YKBNK",
+    "SISE", "TCELL", "BIMAS", "FROTO", "TOASO", "EKGYO", "PETKM", "ARCLK",
+    "SAHOL", "HALKB", "VAKBN", "ISCTR", "TAVHL", "PGSUS", "MGROS", "ULKER",
+    "CCOLA", "DOHOL", "ENKAI", "KORDS", "TTKOM",
+]
+
+
+def _instrument_seed() -> list[tuple]:
+    """(ticker, market, currency, exchange, data_provider, suffix_rule) satirlari."""
+    rows = []
+    for t in _US_TICKERS:
+        rows.append((t, "US", "USD", "NASDAQ", "yfinance", "none"))
+    for t in _BIST_TICKERS:
+        rows.append((t, "BIST", "TRY", "BIST", "yfinance", ".IS"))
+    # Frankfurt'ta islem goren, sonek gomulu ozel sembol (TRY referansli).
+    rows.append(("GMSTR.F", "EU", "TRY", "Frankfurt", "yfinance", "custom"))
+    return rows
+
+
+def seed_instruments() -> None:
+    """Baslangic enstrumanlarini ekler (idempotent; var olani ezmez)."""
+    with get_conn() as c:
+        c.executemany(
+            "INSERT OR IGNORE INTO instruments "
+            "(ticker, market, currency, exchange, data_provider, suffix_rule, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1)",
+            _instrument_seed(),
+        )
+
+
+def _norm_ticker(ticker: str) -> str:
+    """Sadece BIST '.IS' ekini soyar; GMSTR.F gibi gomulu sonekler korunur."""
+    return str(ticker or "").upper().replace(".IS", "").strip()
+
+
+def get_instrument(ticker: str) -> dict | None:
+    """Ticker'in instruments kaydi (BIST '.IS' eki onemsenmez). Yoksa None."""
+    t = _norm_ticker(ticker)
+    if not t:
+        return None
+    with get_conn() as c:
+        r = c.execute("SELECT * FROM instruments WHERE ticker=?", (t,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_instruments(market=None, aktif=True) -> list[dict]:
+    q = "SELECT * FROM instruments WHERE 1=1"
+    args = []
+    if market:
+        q += " AND market=?"
+        args.append(str(market).upper())
+    if aktif is not None:
+        q += " AND is_active=?"
+        args.append(1 if aktif else 0)
+    q += " ORDER BY market, ticker"
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(q, args)]
+
+
+def is_us_instrument(ticker: str) -> bool:
+    """Ticker ABD piyasasi mi? (market=US ya da currency=USD). Tabloda yoksa False."""
+    inst = get_instrument(ticker)
+    if not inst:
+        return False
+    return (inst.get("market") or "").upper() == "US" or \
+           (inst.get("currency") or "").upper() == "USD"
+
+
+def instrument_symbol(ticker: str) -> str:
+    """yfinance sembolu (suffix_rule'a gore). Tabloda yoksa BIST varsayilir ('.IS').
+
+    none -> ticker, '.IS' -> ticker+'.IS', custom -> ticker'in kendisi."""
+    t = _norm_ticker(ticker)
+    inst = get_instrument(ticker)
+    if not inst:
+        return f"{t}.IS"
+    rule = (inst.get("suffix_rule") or "none").lower()
+    base = inst["ticker"]
+    if rule in (".is", "bist", "is"):
+        return f"{base}.IS"
+    return base   # 'none' (US) ve 'custom' (GMSTR.F) -> ticker dogrudan
 
 
 # ---- kaynak sicil ----
@@ -1128,6 +1238,14 @@ def update_trade_extremes(trade_id, max_drawdown, max_profit) -> None:
     with get_conn() as c:
         c.execute("UPDATE trades SET max_drawdown=?, max_profit=? WHERE id=?",
                   (max_drawdown, max_profit, trade_id))
+
+
+def update_trade_intraday(trade_id, intraday_high_pct, intraday_low_pct) -> None:
+    """Acik trade'in girisinden bu yana gorulen en yuksek/dusuk yuzdesini gunceller."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET intraday_high_pct=?, intraday_low_pct=? WHERE id=?",
+                  (intraday_high_pct, intraday_low_pct, trade_id))
 
 
 def close_trade(trade_id, kapanis_fiyat, kapanis_sebep=None, pnl_yuzde=None,

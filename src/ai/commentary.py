@@ -1141,6 +1141,12 @@ def _record_trades(results, verbose: bool = False, tarih=None):
         sig = r.get("kullanilan_on_sinyal") or {}
         fiyat = sig.get("son_kapanis")
         para_birimi = "USD" if (r.get("market") or "bist").lower() in ("us", "abd") else "TL"
+        # Enstruman ana tablosu varsa para birimini oradan dogrula (kaynak-i hakikat)
+        try:
+            if db.get_instrument(ticker) is not None:
+                para_birimi = "USD" if db.is_us_instrument(ticker) else "TL"
+        except Exception:
+            pass
         try:
             acik = db.get_open_trade(ticker)
             if karar == "AL":

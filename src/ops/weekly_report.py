@@ -151,6 +151,53 @@ def _trades_hafta(basla, bit):
     }
 
 
+def _acik_pozisyon_satirlari():
+    """AÇIK POZİSYONLAR bölümü: her açık trade için giriş/şu an/getiri + hedefe ve
+    stop'a uzaklık + max kâr + durum. Durum kuralı: stop'a %3'ten az uzaksa
+    '⚠️ Yakın takip', %5'ten fazla kârsa '✅ Sağlıklı', aksi halde '📊 İzleniyor'.
+    Veri yoksa [] döner."""
+    try:
+        acik = db.list_trades(durum="acik")
+    except Exception:
+        return []
+    if not acik:
+        return []
+    from src.ops.update_trades import _son_fiyat
+    satirlar = []
+    for t in acik:
+        entry = t.get("entry_fiyat")
+        if not entry:
+            continue
+        guncel = _son_fiyat(t.get("ticker"), t.get("para_birimi"))
+        if guncel is None:
+            continue
+        pnl = (guncel - entry) / entry * 100
+        parcalar = [f"Giriş {entry:g}", f"Şu an {guncel:g}", f"{pnl:+.1f}%"]
+        hedef = t.get("hedef_fiyat")
+        if hedef and guncel < hedef:
+            parcalar.append(f"Hedefe %{(hedef - guncel) / guncel * 100:.1f} kaldı")
+        stop = t.get("stop_fiyat")
+        stop_uzak = None
+        if stop and guncel > stop:
+            stop_uzak = (guncel - stop) / guncel * 100
+            parcalar.append(f"Stop'a %{stop_uzak:.1f} uzak")
+        # Max kâr: gün içi fitilleri de yakalayan intraday_high_pct, yoksa max_profit
+        max_kar = t.get("intraday_high_pct")
+        if max_kar is None:
+            max_kar = t.get("max_profit")
+        if isinstance(max_kar, (int, float)) and max_kar > 0:
+            parcalar.append(f"Max kâr: +%{max_kar:.1f}")
+        if stop_uzak is not None and stop_uzak < 3:
+            durum = "⚠️ Yakın takip"
+        elif pnl > 5:
+            durum = "✅ Sağlıklı"
+        else:
+            durum = "📊 İzleniyor"
+        parcalar.append(f"Durum: {durum}")
+        satirlar.append(f"<b>{t.get('ticker')}</b>: " + " | ".join(parcalar))
+    return satirlar
+
+
 def _kullanici_portfoy():
     """Her kullanici icin toplam portfoy kar/zarar yuzdesi (get_portfolio.ozet)."""
     out = []
@@ -221,6 +268,7 @@ def build_message(now, basla, bit):
     bist = _bist100_hafta()
     og = _ogrenme_ozet(basla, bit)
     tr = _trades_hafta(basla, bit)
+    acik_poz = _acik_pozisyon_satirlari()
 
     L = [f"<b>📅 Haftalık Performans Raporu</b> — {basla} → {bit}",
          "<i>Karar isabeti · portföy · öğrenme</i>", ""]
@@ -290,6 +338,12 @@ def build_message(now, basla, bit):
         L.append("")
         L.append(f"🤖 <b>Bot işlemleri:</b> {tr['acik']} açık pozisyon, "
                  "bu hafta kapanan işlem yok.")
+
+    # AÇIK POZİSYONLAR — her açık trade'in detayı (giriş/şu an/hedef/stop/durum)
+    if acik_poz:
+        L.append("")
+        L.append("📊 <b>AÇIK POZİSYONLAR</b>")
+        L += acik_poz
 
     msg = "\n".join(L)
     if len(msg) > 1500:

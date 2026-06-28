@@ -227,8 +227,7 @@ def check_stop_loss(now=None):
             seviye = smap.get(tkr)
             if seviye is None:
                 continue
-            usd = (p.get("para_birimi") or "TL").upper() == "USD"
-            sym = tkr if usd else f"{tkr}.IS"
+            sym, usd = _sembol_usd(p)
             fiyat = _alarm_price(sym)
             if fiyat is None or fiyat >= seviye:
                 continue
@@ -290,12 +289,11 @@ def _hedef_fiyat_map():
 
 
 def _pozisyon_us(p, tkr):
-    """Pozisyon ABD hissesi mi? para_birimi=USD ya da watchlist ticker isareti."""
+    """Pozisyon ABD hissesi mi? para_birimi=USD ya da enstruman ana tablosu isareti."""
     if (p.get("para_birimi") or "TL").upper() == "USD":
         return True
     try:
-        from src.watchlist import is_us_ticker
-        return is_us_ticker(tkr)
+        return db.is_us_instrument(tkr)
     except Exception:
         return False
 
@@ -330,8 +328,7 @@ def check_hedef_fiyat(now=None):
             hedef = hmap.get(tkr)
             if hedef is None:
                 continue
-            usd = _pozisyon_us(p, tkr)
-            sym = tkr if usd else f"{tkr}.IS"
+            sym, usd = _sembol_usd(p)
             fiyat = _alarm_price(sym)
             if fiyat is None or fiyat < hedef:      # henuz hedefe ulasmadi
                 continue
@@ -346,6 +343,99 @@ def check_hedef_fiyat(now=None):
                 tetik += 1
                 print(f"[{now:%Y-%m-%d %H:%M}] [hedef-fiyat] {tkr} {fiyat} >= "
                       f"{hedef} -> kullanici {uid} bildirildi.")
+    return tetik
+
+
+def _sembol_usd(rec: dict):
+    """Bir pozisyon/trade kaydi icin (yfinance_sembolu, usd_mu).
+
+    ABD tespiti ve sembol uretimi (.IS ekleme/cikarma) enstruman ana tablosundan
+    (instruments) okunur; tabloda yoksa para_birimi=USD ise duz sembol, degilse
+    BIST ('.IS'). Tum hedef/stop/takip bildirimleri ayni mantigi paylasir."""
+    tkr = (rec.get("ticker") or "").upper().replace(".IS", "")
+    usd = (rec.get("para_birimi") or "TL").upper() == "USD"
+    try:
+        usd = usd or db.is_us_instrument(tkr)
+        if db.get_instrument(tkr) is not None:
+            return db.instrument_symbol(tkr), usd
+    except Exception:
+        pass
+    return (tkr if usd else f"{tkr}.IS"), usd
+
+
+# Geriye donuk uyum: eski cagri adi
+_takip_sembol = _sembol_usd
+
+
+def check_pozisyon_takip(now=None) -> int:
+    """AL POZİSYONU TAKİP bildirimi (30 dk'lik taramada çalışır).
+
+    `trades` tablosundaki her açık pozisyon için giriş/hedef/stop seviyelerine
+    göre kademeli bildirim gönderir (her kademe gün içinde bir kez, spam önleme):
+      - hedef ilerlemesi %50 / %80 / %100 (giriş→hedef arası)
+      - stop yastığı %50'nin altına inince (giriş→stop arası kalan mesafe)
+    Pozisyonun sahibine (kullanici_id) özel; sahibi yoksa broadcast'e düşer.
+    """
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    try:
+        acik = db.list_trades(durum="acik")
+    except Exception as e:
+        print(f"[pozisyon-takip] DB hatasi: {type(e).__name__}")
+        return 0
+    today = now.date().isoformat()
+    tetik = 0
+    for t in acik:
+        tkr = (t.get("ticker") or "").upper().replace(".IS", "")
+        entry = t.get("entry_fiyat")
+        if not entry:
+            continue
+        sym, usd = _takip_sembol(t)
+        fiyat = _alarm_price(sym)
+        if fiyat is None:
+            continue
+        uid = t.get("kullanici_id") or 0
+        birim = "$" if usd else "TL"
+        gonderilen = db.alert_levels_today(tkr, today)
+
+        def _gonder(key: str, msg: str) -> bool:
+            nonlocal tetik
+            if key in gonderilen:
+                return False
+            db.record_alert(tkr, today, key, fiyat)
+            if _notify_alarm(uid, msg):
+                tetik += 1
+                print(f"[{now:%Y-%m-%d %H:%M}] [pozisyon-takip] {tkr} {key} "
+                      f"@ {fiyat:g} -> kullanici {uid}")
+                return True
+            return False
+
+        # Hedef ilerlemesi (giriş -> hedef). En yüksek YENİ kademeyi gönder.
+        hedef = t.get("hedef_fiyat")
+        if hedef and hedef > entry:
+            ilerleme = (fiyat - entry) / (hedef - entry)
+            if ilerleme >= 1.0:
+                _gonder(f"TAKIP100:{uid}",
+                        f"🎯 <b>{tkr}</b> hedefe ulaştı! Kâr realize etmeyi değerlendir.")
+            elif ilerleme >= 0.80:
+                _gonder(f"TAKIP80:{uid}",
+                        f"⚠️ <b>{tkr}</b> hedefin %80'ine ulaştı. Stop'u giriş fiyatının "
+                        f"üzerine çekmeyi değerlendir. Giriş: {entry:g} | Şu an: {fiyat:g} "
+                        f"| Hedef: {hedef:g}")
+            elif ilerleme >= 0.50:
+                _gonder(f"TAKIP50:{uid}",
+                        f"📈 <b>{tkr}</b> hedefin yarısına ulaştı! Giriş: {entry:g} | "
+                        f"Şu an: {fiyat:g} | Hedef: {hedef:g}")
+
+        # Stop yastığı (giriş -> stop arası kalan mesafe %50'nin altına inince).
+        stop = t.get("stop_fiyat")
+        if stop and entry > stop:
+            kalan = (fiyat - stop) / (entry - stop)   # 1.0 girişte, 0 stopta
+            if kalan < 0.50:
+                _gonder(f"TAKIPSTOP:{uid}",
+                        f"⚠️ <b>{tkr}</b> stop'a yaklaşıyor! Giriş: {entry:g} | "
+                        f"Şu an: {fiyat:g} | Stop: {stop:g}")
     return tetik
 
 
@@ -1081,6 +1171,12 @@ def main():
     except Exception as e:
         print(f"[hedef-fiyat] kontrol hatasi: {type(e).__name__}")
 
+    # AL pozisyonu kademeli takip (hedef %50/%80/%100, stop yaklaşması)
+    try:
+        check_pozisyon_takip(now)
+    except Exception as e:
+        print(f"[pozisyon-takip] kontrol hatasi: {type(e).__name__}")
+
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")
         return 0
@@ -1151,9 +1247,8 @@ def check_price_alarms(now=None) -> int:
         return 0
     tetik = 0
     for a in alarms:
-        tkr = (a.get("ticker") or "").upper()
-        usd = (a.get("para_birimi") or "TL").upper() == "USD"
-        sym = tkr if usd else f"{tkr}.IS"
+        tkr = (a.get("ticker") or "").upper().replace(".IS", "")
+        sym, usd = _sembol_usd(a)
         fiyat = _alarm_price(sym)
         if fiyat is None:
             continue
@@ -1179,6 +1274,12 @@ if __name__ == "__main__":
     if arg == "sektor":
         # proaktif sektor haber taramasi (30 dk'da bir, gece dahil)
         rc = 0 if _sektor_haber_tarama() >= 0 else 1
+        # AL pozisyonu kademeli takip de bu */30 kosusunda (gece/ABD seansi dahil).
+        # main() ile cakissa bile gunde-bir-kez spam korumasi yineleme yapmaz.
+        try:
+            check_pozisyon_takip()
+        except Exception as e:
+            print(f"[pozisyon-takip] kontrol hatasi: {type(e).__name__}")
     elif arg == "kap":
         # gun ici fiyatlanmamis KAP haberi taramasi (15 dk'da bir)
         rc = scan_kap_unpriced()

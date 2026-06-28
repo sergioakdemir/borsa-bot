@@ -228,6 +228,21 @@ def guncel_faktorler(ttl: float = _TTL) -> dict:
     return f
 
 
+def guncel_rejim(ttl: float = _TTL) -> dict:
+    """Canli piyasa rejimi (makro_rejim_skoru'nu guncel gunluk degisimlerle besler).
+
+    guncel_faktorler ile ayni 5 dk onbellegi paylasir (ham gunluk degisimler).
+    Donus: makro_rejim_skoru ciktisina ek olarak 'bist_g' (BIST gunluk %) icerir;
+    rejim/skor sabah brifinginde 'Piyasa Rejimi' blogunda kullanilir."""
+    guncel_faktorler(ttl)                     # _CACHE['ham']'i doldurur/tazeler
+    ham = _CACHE.get("ham") or {}
+    rejim = makro_rejim_skoru(usdtry_g=ham.get("usdtry_g"),
+                              bist_g=ham.get("bist_g"),
+                              brent_g=ham.get("brent_g"))
+    rejim["bist_g"] = ham.get("bist_g")
+    return rejim
+
+
 def skor_for(ticker: str, faktorler: dict = None):
     """Bir hisse icin (skor, aciklamalar, sektor). faktorler verilmezse canli (cache)."""
     sektor = _sektor_of(ticker)
