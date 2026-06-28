@@ -491,9 +491,27 @@ def list_users() -> list[dict]:
 
 
 def seed_users():
-    for ad in ("serhat", "yigit", "ufuk", "gokay"):
+    for ad in ("serhat", "yigit", "ufuk", "gokay", "baris"):
         add_user(ad)
     seed_gokay_profile()
+    seed_baris_profile()
+
+
+def seed_baris_profile():
+    """Baris: YENI kullanici. Profil bilgileri BOS birakilir (on-doldurma yok) ki
+    standart onboarding akisi (yeni yatirimci) calissin. Telegram baglantisi yok;
+    sifre sistemi aktif (sifre_hash NULL -> ilk giriste belirlenir; add_user yalniz
+    'ad' yazdigi icin bu otomatik saglanir).
+
+    Idempotent: kullanici elle profil doldurmussa (skor > 0) DOKUNMAZ. Aksi halde
+    profili olusturmaz; get_profile None doner -> onboarding_done False (tamamlanmadi).
+    seed_gokay_profile'in aksine kasitli olarak HICBIR alan on-doldurmaz."""
+    uid = user_id_by_ad("baris")
+    if uid is None:
+        return
+    # Profil zaten varsa (kullanici doldurmus) dokunma; yoksa bos/None birak.
+    # Boylece onboarding tamamlanmamis (profil_guven_skoru 0) durumda kalir.
+    return
 
 
 def seed_gokay_profile():

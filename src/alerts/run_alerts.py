@@ -119,6 +119,14 @@ def _son_karar(ticker):
     return _karar_map().get((ticker or "").upper())
 
 
+def _karar_kararsiz(karar) -> bool:
+    """Karar KARARSIZ/nötr mü? (BEKLE veya TUT). Böyle kararlarda düşük seviyeli
+    gün içi hareket bildirimi bastırılır; yalnız AL/SAT/AZALT/UZAK_DUR'da gönderilir.
+    İstisnalar (çağıran tarafta): %5+ ani hareket ve taze KAP haberi her zaman geçer."""
+    k = (karar or "").upper()
+    return "BEKLE" in k or "TUT" in k
+
+
 _STOP_MAP = None
 
 
@@ -1119,15 +1127,27 @@ def main():
                        default=0)
             if level_rank(level) > sent:
                 db.record_alert(ticker, today, level, info["change"])
-                # SEBEP: neden dustu/yukseldi? Varsa o gun cikan KAP haberiyle iliskilendir.
+                # Hareket nedeni icin o gun cikan KAP haberlerini cek (taze KAP istisnasi
+                # de bu listeden hesaplanir).
                 try:
                     haberler = filtered_news(ticker, source=news_src)
                 except Exception:
                     haberler = []
-                sebep = _hareket_sebebi(ticker, info["change"], haberler, now=now)
-                price_alerts.append({"ticker": ticker, "seviye": level,
-                                     "sebep": sebep, "portfoyde": portfoyde,
-                                     "karar": _son_karar(ticker), **info})
+                taze_kap = any(str(h.get("tarih", "")).startswith(today)
+                               for h in (haberler or []))
+                karar = _son_karar(ticker)
+                # KARARSIZ FILTRESI: AI karari BEKLE/TUT ise dusuk seviyeli (ACIL olmayan)
+                # hareket bildirimini bastir. Istisna: %5+ ani hareket (ACIL) veya bugun
+                # taze KAP haberi -> karar ne olursa olsun gonder.
+                if level != "ACIL" and not taze_kap and _karar_kararsiz(karar):
+                    print(f"[{now:%Y-%m-%d %H:%M}] [karar-filtre] {ticker} {karar} "
+                          f"(%{info['change']:+g}) dikkat hareketi bildirilmedi.")
+                else:
+                    # SEBEP: neden dustu/yukseldi? Varsa o gun cikan KAP haberiyle iliskilendir.
+                    sebep = _hareket_sebebi(ticker, info["change"], haberler, now=now)
+                    price_alerts.append({"ticker": ticker, "seviye": level,
+                                         "sebep": sebep, "portfoyde": portfoyde,
+                                         "karar": karar, **info})
         else:
             # Fiyat oynamamis -> KAP'ta taze fiyatlanmamis haber var mi? -> ACIL
             haber = unpriced_fresh_news(ticker, news_src)
@@ -1256,6 +1276,14 @@ def check_price_alarms(now=None) -> int:
         vurdu = (yon == "yukari" and fiyat >= hedef) or \
                 (yon == "asagi" and fiyat <= hedef)
         if not vurdu:
+            continue
+        # KARARSIZ FILTRESI: AI karari BEKLE/TUT ise bildirimi bastir (alarm AKTIF
+        # kalir; karar AL/SAT/AZALT/UZAK_DUR'a donunce tetiklenir). Hedefe %5+ asma
+        # kritik sayilir -> karar ne olursa olsun gonder.
+        asim = abs(fiyat - hedef) / hedef * 100 if hedef else 0
+        if asim < ANI_ESIK and _karar_kararsiz(_son_karar(tkr)):
+            print(f"[{now:%Y-%m-%d %H:%M}] [karar-filtre] {tkr} fiyat alarmi "
+                  f"{_son_karar(tkr)} karari nedeniyle bekletildi (alarm aktif).")
             continue
         birim = "$" if usd else "TL"
         ok = ">=" if yon == "yukari" else "<="

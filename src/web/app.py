@@ -86,7 +86,7 @@ def _dbg(adim: str, *args) -> None:
 app = Flask(__name__)
 
 # DB semasini/migrasyonlari hazirla (para_birimi, telegram_id, sifre_hash kolonlari vb.)
-# seed_users: serhat/yigit/ufuk/gokay'in (gokay = yeni 4. kullanici) var oldugunu garanti eder.
+# seed_users: serhat/yigit/ufuk/gokay/baris kullanicilarinin var oldugunu garanti eder.
 try:
     from src.db import database as _db
     _db.init_db()
@@ -416,9 +416,25 @@ def _minimal_card(ticker: str) -> dict:
     }
 
 
+_COMMENTARY_CACHE = {"ts": 0.0, "mtime": None, "data": None}
+_COMMENTARY_TTL = 300.0    # 5 dk; ai_commentary.json gun icinde nadiren degisir
+
+
 def _commentary_by_ticker() -> dict:
+    """ai_commentary.json -> {taban_kod: kayit}. 5 dk onbellekli (dosya 174KB+, her
+    istekte yeniden parse etmek ana sayfayi yavaslatiyordu). Dosya degisirse (mtime)
+    TTL dolmadan da tazelenir."""
+    path = DATA / "ai_commentary.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    c = _COMMENTARY_CACHE
+    if (c["data"] is not None and c["mtime"] == mtime
+            and (time.monotonic() - c["ts"]) < _COMMENTARY_TTL):
+        return c["data"]
     out = {}
-    for x in _read_json(DATA / "ai_commentary.json", []):
+    for x in _read_json(path, []):
         # Taban koda normalize et: kayit 'GMSTR.F' olabilir ama gosterim/arama
         # taban kodu ('GMSTR') kullanir -> .F/.IS eki yuzunden eslesememe olmasin.
         k = _base_kod(x.get("ticker") or "")
@@ -430,6 +446,7 @@ def _commentary_by_ticker() -> dict:
         if prev is not None and prev.get("skipped") is False and x.get("skipped"):
             continue
         out[k] = x
+    _COMMENTARY_CACHE.update(ts=time.monotonic(), mtime=mtime, data=out)
     return out
 
 
@@ -601,18 +618,24 @@ def _yf_prices(symbols: list[str]) -> dict:
 
 
 def _usdtry() -> float | None:
-    """Guncel USD/TRY kuru (makro -> yfinance yedek). Portfoy toplamini TL'ye cevirir."""
+    """Guncel USD/TRY kuru. Portfoy toplamini TL'ye cevirir.
+
+    HIZ: once data/macro_last.json'daki son bilinen kur (cron yazar) okunur; canli
+    get_macro() COK yavas oldugu icin (sayfalari sirayla cekiyor, ~1 dk) ana sayfa
+    istek yolunda CAGRILMAZ. Dosya yoksa yfinance tek sembol yedege duser."""
     ck = "usdtry"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
     rate = None
+    # 1) Son bilinen makro (hizli dosya okuma; cron 'macro_last.json'i guncel tutar)
     try:
-        from src.news.macro import get_macro
-        r = get_macro().get("usdtry")
+        from src.news.macro import _load_son_bilinen
+        r = _load_son_bilinen().get("usdtry")
         rate = float(r) if r else None
     except Exception:
         rate = None
+    # 2) Yedek: tek sembol yfinance (dosya yok/bos)
     if not rate:
         px = _yf_prices(["USDTRY=X"]).get("USDTRY=X", {})
         rate = px.get("fiyat")
@@ -897,11 +920,10 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             rows = [dict(r) for r in c.execute(
                 "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
 
-    # Guncel fiyat = CANLI kaynak. Once ozel kaynak (bigpara), sonra yfinance,
-    # son care bayat snapshot. GMSTR.F -> bigpara; TUPRS -> TUPRS.IS; USD kendi koduyla.
-    sym_of = {r["id"]: _yf_symbol(r["ticker"], r.get("para_birimi"))
-              for r in rows if (r["ticker"] or "").upper() not in _BIGPARA_SOURCES}
-    live = _yf_prices(list(sym_of.values())) if sym_of else {}
+    # Guncel fiyat = data/fiyat_cache.json (cron 5 dk'da bir toplu gunceller).
+    # CANLI yfinance cekmiyoruz -> ana sayfa hizli acilir. Cache'de olmayan ticker
+    # icin: bigpara (GMSTR) ya da AI sinyal kapanisi yedege duser (asagidaki dongu).
+    fiyat_cache = _fiyat_cache_oku()
 
     # Toplamlar TL bazinda: USD pozisyonlari guncel kurla cevrilir (kart'ta yine $)
     usdtry = _usdtry()
@@ -916,14 +938,14 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         rec = comm.get(tkr, {}) or {}
         sig = rec.get("kullanilan_on_sinyal", {}) or {}
 
-        # fiyat kaynagi onceligi: bigpara -> yfinance -> snapshot
+        # fiyat kaynagi onceligi: fiyat_cache.json -> bigpara (GMSTR) -> AI sinyal kapanisi
         guncel = gunluk = None
-        if raw in _BIGPARA_SOURCES:
+        crec = fiyat_cache.get(tkr.split(".")[0]) or {}
+        if crec.get("fiyat") is not None:
+            guncel, gunluk = crec.get("fiyat"), crec.get("gunluk")
+        elif raw in _BIGPARA_SOURCES:        # cache yoksa GMSTR icin ozel kaynak
             bp = _bigpara_price(_BIGPARA_SOURCES[raw])
             guncel, gunluk = bp.get("fiyat"), bp.get("gunluk")
-        else:
-            lp = live.get(sym_of.get(r["id"]), {}) or {}
-            guncel, gunluk = lp.get("fiyat"), lp.get("gunluk")
         if guncel is None:
             guncel = sig.get("son_kapanis")
         if gunluk is None:
@@ -1912,7 +1934,8 @@ def get_summary() -> dict:
 _AI_OVERVIEW_CACHE = {}          # kullanici -> (ts, metin)
 _AI_TTL = 1800.0
 _CHAT_MODEL = "claude-sonnet-4-6"
-_USER_AD = {"serhat": "Serhat", "yigit": "Yiğit", "ufuk": "Ufuk"}
+_USER_AD = {"serhat": "Serhat", "yigit": "Yiğit", "ufuk": "Ufuk",
+            "gokay": "Gökay", "baris": "Barış"}
 
 
 def _karar5(fd: str):
@@ -2190,12 +2213,31 @@ def get_today(kullanici=None) -> dict:
               "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
     tarih_str = f"Bugün · {now.day} {_AYLAR[now.month]}"
 
-    # "Hisselerimde durum": kullanicinin TUM pozisyonlari (AI yorumu olmayanlar dahil).
-    # get_portfolio canli fiyat + (varsa) AI analizini birlestirir.
-    try:
-        pozisyonlar = get_portfolio(kullanici).get("pozisyonlar", [])
-    except Exception:
-        pozisyonlar = []
+    # "Takip Ettiklerim" listesini once hesapla (portfoy ile PARALEL fiyat cekimi icin).
+    wl = _load_watchlist()
+    owned_set = {(t or "").upper() for t in owned}
+    seen_t = set(owned_set)
+    watch_bist = []
+    for t in wl.get("kisisel", []):
+        tk = (t or "").upper().split(".")[0]
+        if tk and tk not in seen_t:
+            seen_t.add(tk)
+            watch_bist.append(tk)
+
+    # PARALEL: portfoy (DB + fiyat_cache) ile takip listesi fiyatlari (fiyat_cache)
+    # ayni anda toplanir. Ikisi de canli yfinance YERINE data/fiyat_cache.json okur.
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _ex:
+        _f_pf = _ex.submit(get_portfolio, kullanici)
+        _f_wc = _ex.submit(_fiyat_cache_oku)
+        try:
+            pozisyonlar = _f_pf.result().get("pozisyonlar", [])
+        except Exception:
+            pozisyonlar = []
+        try:
+            _wcache = _f_wc.result()
+        except Exception:
+            _wcache = {}
     hisseler = [{
         "ticker": p.get("ticker"), "isim": p.get("isim"),
         "market": p.get("market", "bist"), "para_birimi": p.get("para_birimi", "₺"),
@@ -2251,22 +2293,12 @@ def get_today(kullanici=None) -> dict:
                  "detaylı yorum için kartlara dokun.")
     else:
         yorum = _overview_fallback(recs)
-    # "Takip Ettiklerim": kullanicinin kisisel BIST takip listesi, portfoyde
-    # OLMAYANLAR. Canli fiyat toplu cekilir; bot karari (varsa) eklenir.
-    wl = _load_watchlist()
-    owned_set = {(t or "").upper() for t in owned}
-    seen_t = set(owned_set)
-    watch_bist = []
-    for t in wl.get("kisisel", []):
-        tk = (t or "").upper().split(".")[0]
-        if tk and tk not in seen_t:
-            seen_t.add(tk)
-            watch_bist.append(tk)
-    live_w = _yf_prices([f"{t}.IS" for t in watch_bist]) if watch_bist else {}
+    # "Takip Ettiklerim": kisisel BIST takip listesi (portfoyde OLMAYANLAR). Fiyatlar
+    # yukarida portfoy ile PARALEL cekilen fiyat_cache'ten (_wcache); bot karari eklenir.
     takip_listesi = []
     for tk in watch_bist:
         card = _stock_card(comm[tk]) if tk in comm else _minimal_card(tk)
-        px = live_w.get(f"{tk}.IS") or {}
+        px = _wcache.get(tk) or {}
         fiyat = px.get("fiyat") if px.get("fiyat") is not None else card.get("fiyat")
         gunluk = px.get("gunluk") if px.get("gunluk") is not None else card.get("gunluk")
         takip_listesi.append({

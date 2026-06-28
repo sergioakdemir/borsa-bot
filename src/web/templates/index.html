@@ -806,6 +806,7 @@
   <button class="up-btn" onclick="setUser('yigit')"><span class="up-av y">Y</span>Yiğit</button>
   <button class="up-btn" onclick="setUser('ufuk')"><span class="up-av">U</span>Ufuk</button>
   <button class="up-btn" onclick="setUser('gokay')"><span class="up-av g">G</span>Gökay</button>
+  <button class="up-btn" onclick="setUser('baris')"><span class="up-av">B</span>Barış</button>
   <button class="up-close" id="up-close" onclick="closeUserPick()" style="display:none">Vazgeç</button>
 </div></div>
 
@@ -847,7 +848,7 @@
 <script>
 const loaded={};
 let CUR_USER=null,curTab="bugun";
-const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"},gokay:{ad:"Gökay",av:"G"}};
+const USERS={serhat:{ad:"Serhat",av:"S"},yigit:{ad:"Yiğit",av:"Y"},ufuk:{ad:"Ufuk",av:"U"},gokay:{ad:"Gökay",av:"G"},baris:{ad:"Barış",av:"B"}};
 let PENDING_USER=null,AUTH_MODE="login";   // giris ekrani durumu (sifre belirle/gir)
 
 /* ---- API guvenlik: aktif cihaz token'ini her /api/ istegine otomatik ekle ----
