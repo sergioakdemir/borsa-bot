@@ -920,10 +920,22 @@ def get_portfolio(kullanici: str | None = None) -> dict:
             rows = [dict(r) for r in c.execute(
                 "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
 
-    # Guncel fiyat = data/fiyat_cache.json (cron 5 dk'da bir toplu gunceller).
-    # CANLI yfinance cekmiyoruz -> ana sayfa hizli acilir. Cache'de olmayan ticker
-    # icin: bigpara (GMSTR) ya da AI sinyal kapanisi yedege duser (asagidaki dongu).
-    fiyat_cache = _fiyat_cache_oku()
+    # Guncel fiyat: Bota Sor ile AYNI kaynak -> _anlik_fiyatlar (kayit tazeyse
+    # data/fiyat_cache.json'dan aninda doner, bayatsa/yoksa yfinance->bigpara'ya
+    # duser). Boylece portfoy karti ile Bota Sor "Anlik veri" satiri TEK ve TUTARLI
+    # fiyati gosterir (eskiden burasi bayat cache'i okuyordu, AI ise tazesini -> celiski).
+    _port_basekodlar = []
+    for r in rows:
+        _raw = (r["ticker"] or "").upper()
+        _bk = (r.get("para_birimi") or "TL").upper()
+        _t = (_raw if _bk == "USD" else _raw.split(".")[0] or _raw).split(".")[0]
+        if _t and _t not in _port_basekodlar:
+            _port_basekodlar.append(_t)
+    try:
+        anlik_map = {(a.get("hisse") or "").upper(): a
+                     for a in _anlik_fiyatlar(_port_basekodlar, comm)}
+    except Exception:
+        anlik_map = {}
 
     # Toplamlar TL bazinda: USD pozisyonlari guncel kurla cevrilir (kart'ta yine $)
     usdtry = _usdtry()
@@ -938,12 +950,13 @@ def get_portfolio(kullanici: str | None = None) -> dict:
         rec = comm.get(tkr, {}) or {}
         sig = rec.get("kullanilan_on_sinyal", {}) or {}
 
-        # fiyat kaynagi onceligi: fiyat_cache.json -> bigpara (GMSTR) -> AI sinyal kapanisi
+        # fiyat kaynagi onceligi: _anlik_fiyatlar (cache/yfinance) -> bigpara (GMSTR)
+        # -> AI sinyal kapanisi. _anlik_fiyatlar Bota Sor ile ayni mantik (tutarlilik).
         guncel = gunluk = None
-        crec = fiyat_cache.get(tkr.split(".")[0]) or {}
-        if crec.get("fiyat") is not None:
-            guncel, gunluk = crec.get("fiyat"), crec.get("gunluk")
-        elif raw in _BIGPARA_SOURCES:        # cache yoksa GMSTR icin ozel kaynak
+        arec = anlik_map.get(tkr.split(".")[0]) or {}
+        if arec.get("fiyat") is not None:
+            guncel, gunluk = arec.get("fiyat"), arec.get("gunluk")
+        elif raw in _BIGPARA_SOURCES:        # _anlik veremezse GMSTR icin ozel kaynak
             bp = _bigpara_price(_BIGPARA_SOURCES[raw])
             guncel, gunluk = bp.get("fiyat"), bp.get("gunluk")
         if guncel is None:
@@ -4259,9 +4272,28 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
                     for t, satirlar in hisse_haberleri.items()]
         haber_metni = "\n\nHISSE HABERLERI (anlik tarama):\n" + "\n\n".join(parcalar)
 
+    # ENSTRUMAN TANIMI: instruments tablosundaki sirket aciklamasi -> AI'ya "bu
+    # sembol ne?" bilgisi (or. SPCX = SpaceX, ozel sirket DEGIL). Once commentary
+    # kaydindan, yoksa DB'den okunur (commentary.json henuz tazelenmemis olabilir).
+    enstruman_tanimlari = []
+    try:
+        from src.db import database as db
+        for t in _tickers[:4]:
+            tu = (t or "").upper()
+            ac = ((comm.get(tu) or {}).get("aciklama") or "").strip()
+            if not ac:
+                ac = ((db.get_instrument(tu) or {}).get("aciklama") or "").strip()
+            if ac:
+                enstruman_tanimlari.append(f"{tu}: {ac}")
+        _dbg("enstruman_tanimlari", enstruman_tanimlari)
+    except Exception as e:
+        _dbg("enstruman_tanimi HATA", f"{type(e).__name__}: {e}")
+
     baglam_metni = (
         "\n\nGÜNCEL BAĞLAM (her soruda yenilenir):\n"
-        f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
+        + (f"Enstrüman tanımları (resmi, doğru kabul et): "
+           f"{'; '.join(enstruman_tanimlari)}\n" if enstruman_tanimlari else "")
+        + f"Kullanici profili: {json.dumps(profil_ozet, ensure_ascii=False)}\n"
         f"Portfoy hisseleri (sahip olunan tum semboller): "
         f"{json.dumps(portfoy_semboller, ensure_ascii=False)}\n"
         f"Portfoyu (soruyla ilgili pozisyon detayi): {json.dumps(baglam, ensure_ascii=False)}\n"
@@ -4383,6 +4415,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         "verilir. Bir hisse 'Portfoy hisseleri'nde varsa sahip oldugunu, yoksa "
         "sahip OLMADIGINI soyle; 'Portfoy hisseleri' bos ise 'portfoy bilgine "
         "erisimim yok' de. 'portfoyunde yok / var' diye TAHMIN etme. "
+        "Baglamda 'Enstrüman tanımları' varsa bir sembolun NE oldugunu MUTLAKA bu "
+        "tanima gore acikla; tanima aykiri sey UYDURMA. Ozellikle: SPCX = Space "
+        "Exploration Technologies (SpaceX), NASDAQ'ta islem goruyor, Haziran 2026'da "
+        "halka arz oldu. SPCX OZEL SIRKET DEGILDIR; 'borsada islem gormez / ozel "
+        "sirket / hisse alinamaz' DEME. "
         "Bu yatirim tavsiyesi degildir.\n\n"
         "Sana sunlar verilir: kullanici profili, portfoyu (alis/adet/guncel/"
         "kar-zarar/tutma_gun/bot_karari), portfoy genel analizi (cesitlendirme/en "

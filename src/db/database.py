@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS instruments (
     exchange      TEXT,
     data_provider TEXT,
     suffix_rule   TEXT DEFAULT 'none',
-    is_active     INTEGER DEFAULT 1
+    is_active     INTEGER DEFAULT 1,
+    aciklama      TEXT
 );
 """
 
@@ -280,6 +281,12 @@ def _migrate(c) -> None:
     cols_p = {r["name"] for r in c.execute("PRAGMA table_info(portfoy)")}
     if "para_birimi" not in cols_p:
         c.execute("ALTER TABLE portfoy ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    tbls0 = {r["name"] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "instruments" in tbls0:              # sirket aciklamasi (Bota Sor AI baglami)
+        cols_i = {r["name"] for r in c.execute("PRAGMA table_info(instruments)")}
+        if "aciklama" not in cols_i:
+            c.execute("ALTER TABLE instruments ADD COLUMN aciklama TEXT")
     cols_d = {r["name"] for r in c.execute("PRAGMA table_info(decisions)")}
     if "yanlis_sebep" not in cols_d:
         c.execute("ALTER TABLE decisions ADD COLUMN yanlis_sebep TEXT")
@@ -346,6 +353,24 @@ _BIST_TICKERS = [
 ]
 
 
+# Sembol -> sirket aciklamasi. Bota Sor AI baglamina girer (or. "SPCX nedir?").
+# SPCX gibi karistirilan/yeni semboller icin "ne oldugu"nu netlestirir.
+_INSTRUMENT_ACIKLAMA = {
+    "SPCX": "Space Exploration Technologies (SpaceX), NASDAQ'ta işlem görüyor, "
+            "Haziran 2026'da halka arz oldu. Özel şirket DEĞİL.",
+    "NVDA": "NVIDIA — yapay zeka ve grafik işlemci (GPU) üreticisi.",
+    "AMD": "Advanced Micro Devices — CPU ve GPU üreticisi.",
+    "TSM": "Taiwan Semiconductor (TSMC) — dünyanın en büyük çip üreticisi (ADR).",
+    "ASML": "ASML — çip üretiminde kullanılan EUV litografi makineleri üreticisi (Hollanda).",
+    "MU": "Micron Technology — bellek (DRAM/NAND) çip üreticisi.",
+    "RKLB": "Rocket Lab — uzay fırlatma ve uydu şirketi.",
+    "IONQ": "IonQ — kuantum bilgisayar şirketi.",
+    "RGTI": "Rigetti Computing — kuantum bilgisayar şirketi.",
+    "QQQ": "Invesco QQQ — Nasdaq-100 endeksini izleyen ETF (tek hisse değil).",
+    "VOO": "Vanguard S&P 500 ETF — S&P 500 endeksini izleyen ETF (tek hisse değil).",
+}
+
+
 def _instrument_seed() -> list[tuple]:
     """(ticker, market, currency, exchange, data_provider, suffix_rule) satirlari."""
     rows = []
@@ -366,6 +391,12 @@ def seed_instruments() -> None:
             "(ticker, market, currency, exchange, data_provider, suffix_rule, is_active) "
             "VALUES (?, ?, ?, ?, ?, ?, 1)",
             _instrument_seed(),
+        )
+        # Aciklamalari her seferinde guncelle (var olan satirlari da kapsar; metin
+        # degisirse yeni metni yazar). NULL/bilinmeyen semboller atlanir.
+        c.executemany(
+            "UPDATE instruments SET aciklama=? WHERE ticker=?",
+            [(a, t) for t, a in _INSTRUMENT_ACIKLAMA.items()],
         )
 
 

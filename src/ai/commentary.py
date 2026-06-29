@@ -1009,6 +1009,14 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     hacim_anom = ctx["hacim_anom"]
     sektor = ctx["sektor"]
 
+    # Enstruman aciklamasi (instruments tablosu) -> AI baglamina girer. SPCX gibi
+    # karistirilan semboller icin "ne oldugu" netlessin diye kayda eklenir.
+    try:
+        from src.db import database as db
+        aciklama = (db.get_instrument(ticker) or {}).get("aciklama") or ""
+    except Exception:
+        aciklama = ""
+
     # Risk ajani: AL + risk>=10 -> VETO (esik 9'dan 10'a cikarildi: daha az iptal)
     vetoed = (v.karar == "AL" and v.risk >= 10)
     if vetoed:
@@ -1059,6 +1067,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "symbol": sig["sembol"],
         "market": "abd" if is_us else "bist",
         "para_birimi": "$" if is_us else "₺",
+        "aciklama": aciklama,
         "skipped": False,
         # --- AI ham ciktisi ---
         "karar": v.karar,
