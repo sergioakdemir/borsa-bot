@@ -42,11 +42,54 @@ _USAGE = ("Kullanim: /portfoy_ekle [kullanici] TICKER ADET FIYAT\n"
 
 def _help():
     return ("<b>Komutlar</b>\n"
+            "/kayit [ad]                                 -> bu Telegram hesabini kullaniciya bagla\n"
             "/portfoy_ekle [kullanici] TICKER ADET FIYAT [not]\n"
             "/portfoy [kullanici]\n"
             "/yardim\n\n"
             "Kullanici verilmezse varsayilan: serhat.\n"
             "Ornek: /portfoy_ekle THYAO 100 285.50")
+
+
+def _cmd_kayit(args, chat):
+    """Bu Telegram chat'ini bir DB kullanicisina baglar (telegram_id'yi yazar).
+    Boylece yeni/yeniden baslayan kullanicilar admin'in elle DB guncellemesine
+    gerek kalmadan kendilerini bildirim listesine ekler. Telegram kullanici adi
+    DB adiyla esmediginden eslestirme komutla (self-identify) yapilir."""
+    if not chat:
+        return None
+    users = {u["ad"].lower(): u for u in db.list_users()}
+    if not args:
+        adlar = ", ".join(sorted(users))
+        return ("ℹ️ Hangi kullanici oldugunu belirt: /kayit &lt;ad&gt;\n"
+                f"Mevcut adlar: {adlar}\n"
+                "Ornek: /kayit ufuk")
+    ad = args[0].lower()
+    if ad not in users:
+        adlar = ", ".join(sorted(users))
+        return f"⚠️ '{args[0]}' adli kullanici yok.\nMevcut adlar: {adlar}"
+    gercek_ad = users[ad]["ad"]
+    # Bu chat baska bir kullaniciya bagliysa once o baglantiyi kaldir (ayni
+    # chat_id'nin iki kullaniciya bagli kalmasini onler).
+    mevcut = db.get_user_by_telegram_id(chat)
+    if mevcut and mevcut["ad"].lower() != ad:
+        db.update_telegram_id(mevcut["id"], None)
+    db.set_telegram_id(gercek_ad, chat)     # ad'in eski/yanlis chat_id'sini de gunceller
+    return (f"✅ Bu Telegram hesabi <b>{gercek_ad}</b> olarak kaydedildi. "
+            "Bildirimler (sabah brifingi, uyarilar, haftalik rapor) buraya gelecek.")
+
+
+def _cmd_start(args, chat):
+    # Deep-link ile ad gelebilir: t.me/<bot>?start=ufuk  ->  "/start ufuk"
+    if args:
+        return _cmd_kayit(args, chat)
+    if chat:
+        u = db.get_user_by_telegram_id(chat)
+        if u:
+            return (f"👋 Merhaba <b>{u['ad']}</b>! Telegram hesabin zaten bagli; "
+                    "bildirimler buraya geliyor.\n\n" + _help())
+    return ("👋 <b>Borsa Uzmani</b> botuna hos geldin!\n"
+            "Bildirim alabilmek icin kendini tanit: /kayit &lt;ad&gt;\n"
+            "Ornek: /kayit ufuk\n\n" + _help())
 
 
 def _cmd_ekle(args):
@@ -84,7 +127,7 @@ def _cmd_list(args):
     return "\n".join(lines)
 
 
-def handle_command(text):
+def handle_command(text, chat=None):
     parts = (text or "").strip().split()
     if not parts or not parts[0].startswith("/"):
         return None
@@ -94,7 +137,11 @@ def handle_command(text):
         return _cmd_ekle(args)
     if cmd == "/portfoy":
         return _cmd_list(args)
-    if cmd in ("/yardim", "/help", "/start"):
+    if cmd == "/kayit":
+        return _cmd_kayit(args, chat)
+    if cmd == "/start":
+        return _cmd_start(args, chat)
+    if cmd in ("/yardim", "/help"):
         return _help()
     return None
 
@@ -116,7 +163,7 @@ def poll_once():
         ad = f"{frm.get('first_name', '')} {frm.get('last_name', '') or ''}".strip()
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] gelen: chat_id={chat} "
               f"ad={ad!r} user=@{frm.get('username')} text={text!r}")
-        reply = handle_command(text)
+        reply = handle_command(text, chat)
         if reply and chat:
             telegram.send_message(reply, chat_id=chat)
             handled += 1
