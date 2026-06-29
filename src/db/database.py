@@ -368,6 +368,14 @@ _INSTRUMENT_ACIKLAMA = {
     "RGTI": "Rigetti Computing — kuantum bilgisayar şirketi.",
     "QQQ": "Invesco QQQ — Nasdaq-100 endeksini izleyen ETF (tek hisse değil).",
     "VOO": "Vanguard S&P 500 ETF — S&P 500 endeksini izleyen ETF (tek hisse değil).",
+    "CNCK": "Coincheck — Japon kripto para borsası, NASDAQ'ta işlem görüyor.",
+    "RXT": "Rackspace Technology — bulut bilişim şirketi, NASDAQ.",
+    "THYAO": "Türk Hava Yolları — BIST'te işlem gören havacılık şirketi.",
+    "ASELS": "Aselsan — savunma elektroniği üreticisi, BIST.",
+    "GARAN": "Garanti BBVA — bankacılık, BIST.",
+    # GMSTR fon kaydı tabloda 'GMSTR.F' sonekiyle tutulur; UPDATE bu anahtarla eşleşir.
+    "GMSTR.F": "QNB Portföy Gümüş BYF — Borsa İstanbul'da işlem gören gümüş borsa "
+               "yatırım fonu (ETF).",
 }
 
 
@@ -412,6 +420,11 @@ def get_instrument(ticker: str) -> dict | None:
         return None
     with get_conn() as c:
         r = c.execute("SELECT * FROM instruments WHERE ticker=?", (t,)).fetchone()
+        # Taban kod eşleşmezse gömülü sonekli kaydı dene ('GMSTR' -> 'GMSTR.F')
+        # ki Bota Sor taban kodla aradığında fon kaydı/açıklaması bulunsun.
+        if not r:
+            r = c.execute("SELECT * FROM instruments WHERE ticker LIKE ?",
+                          (t + ".%",)).fetchone()
     return dict(r) if r else None
 
 
