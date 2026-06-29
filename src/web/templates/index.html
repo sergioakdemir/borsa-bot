@@ -1606,10 +1606,9 @@ function onbFinish(){try{localStorage.setItem("bb_onb_skip_"+CUR_USER,"1")}catch
   document.getElementById("onb").classList.remove("open");loaded.ayarlar=false;
   toast("Teşekkürler, seni artık daha iyi tanıyorum");if(curTab==="ayarlar")loadAyarlar()}
 
-/* ============ AYARLAR (accordion: profil / bildirim / karne / sistem) ============ */
-let MEM_FILTER="hepsi";
-// Hangi bölümler açık (memFilter re-render'ında konum korunsun diye kalıcı)
-const SACC_OPEN={profil:true,bildirim:false,karne:false,sistem:false};
+/* ============ AYARLAR (accordion: profil / sohbet / bildirim / karne / sistem) ============ */
+// Hangi bölümler açık (re-render'da konum korunsun diye kalıcı)
+const SACC_OPEN={profil:true,sohbet:false,bildirim:false,karne:false,sistem:false};
 function toggleSacc(id){SACC_OPEN[id]=!SACC_OPEN[id];
   const c=document.getElementById("sacc-"+id);if(c)c.classList.toggle("open",SACC_OPEN[id])}
 function saccHTML(id,baslik,icerik){
@@ -1626,8 +1625,9 @@ async function loadAyarlar(){const el=document.getElementById("page-ayarlar");
       fetch("/api/alarms"+uq()).then(r=>r.json()).catch(()=>({alarmlar:[]})),
       fetchChangelog()]);
     let h=`<h2 style="font-size:22px;font-weight:700;margin-bottom:4px">Ayarlar</h2>
-      <div class="tick" style="margin-bottom:14px">Profilin, bildirimler, karne ve sistem</div>`;
-    h+=saccHTML("profil","👤 Profilim",profileHTML(pf)+memoryHTML(mem));
+      <div class="tick" style="margin-bottom:14px">Profilin, sohbet geçmişin, bildirimler, karne ve sistem</div>`;
+    h+=saccHTML("profil","👤 Profilim",profileHTML(pf));
+    h+=saccHTML("sohbet","💬 Sohbet Geçmişi",sohbetGecmisiHTML(mem));
     h+=saccHTML("bildirim","🔔 Bildirimler",alarmsHTML(al.alarmlar||[]));
     h+=saccHTML("karne","📊 Karne",karneAyarHTML());
     h+=saccHTML("sistem","🔧 Sistem",sistemHTML(cl));
@@ -1715,31 +1715,29 @@ async function profRisk(){const v=prompt("Risk toleransın? (dusuk / orta / yuks
 async function profEdit(){const v=prompt("Ana yatırım hedefin nedir? (kısa yaz)");if(!v)return;await profSave({ana_hedef:v.trim()})}
 async function profSave(obj){try{await fetch("/api/profile/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER,...obj})});
   toast("Güncellendi");loaded.ayarlar=false;loadAyarlar()}catch(e){toast("Kaydedilemedi")}}
-let MEM_DATA=null;
-function memoryHTML(mem){MEM_DATA=mem;const kat=mem.kategoriler||{};
-  const adlar=["Öneriler","Kararlar","Sohbetler","Öğrendikleri"];
-  let h=`<div class="sec-title">Hafıza ve Geçmiş</div>`;
-  if(!mem.toplam){return h+empty("Bot henüz seninle ilgili bir şey hatırlamıyor.")}
-  h+=`<div class="mem-tabs"><button class="${MEM_FILTER==='hepsi'?'active':''}" onclick="memFilter('hepsi')">Hepsi</button>`+
-     adlar.map(a=>`<button class="${MEM_FILTER===a?'active':''}" onclick="memFilter('${a}')">${a}</button>`).join("")+`</div>`;
-  let items=[];adlar.forEach(a=>{if(MEM_FILTER==='hepsi'||MEM_FILTER===a)(kat[a]||[]).forEach(x=>items.push({...x,kat:a}))});
-  items.sort((x,y)=>(y.tarih||"").localeCompare(x.tarih||""));
-  if(!items.length)return h+empty("Bu kategoride kayıt yok");
-  h+=items.slice(0,60).map((x,i)=>{MEM_INDEX[x.id]=x;
-    const sc=x.sonuc?`<span class="chip ${/DOGRU|DOĞRU/.test(x.sonuc)?'green':/YANLIS|YANLIŞ/.test(x.sonuc)?'red':'gray'}">${esc(x.sonuc)}</span>`:"";
-    return`<div class="card" onclick="memDetail(${x.id})"><div class="row"><div class="name" style="font-size:14px">${esc(x.kat)}${x.ticker?` · ${esc(x.ticker)}`:""}</div><span class="tick">${esc(x.tarih)}</span></div>
-      <div class="pline" style="white-space:normal">${esc(x.ozet)} ${sc}</div></div>`}).join("");
+let MEM_INDEX={};
+// SOHBET GEÇMİŞİ: sadece "Sohbetler" kayıtlari (tip=sohbet). Her satir tarih +
+// ilk mesajin (soru) ilk 50 karakteri; tiklayinca soru/cevap modali acilir.
+function sohbetGecmisiHTML(mem){const kat=(mem&&mem.kategoriler)||{};
+  const list=(kat["Sohbetler"]||[]).slice().sort((x,y)=>(y.tarih||"").localeCompare(x.tarih||""));
+  let h=`<div class="sec-title">Sohbet Geçmişi</div>`;
+  if(!list.length)return h+empty("Henüz kayıtlı sohbet yok. 'Bota Sor'da soru sorduğunda burada birikir.");
+  h+=list.slice(0,80).map(x=>{MEM_INDEX[x.id]=x;
+    const ic=x.icerik;const ilk=(ic&&typeof ic==="object"&&ic.soru)?ic.soru:(x.ozet||"");
+    const s=String(ilk).trim();const k50=esc(s.slice(0,50)+(s.length>50?"…":""))||"(boş)";
+    return`<div class="card" onclick="sohbetDetail(${x.id})"><div class="row">
+      <div class="name" style="font-size:14px;font-weight:600">💬 ${k50}</div>
+      <span class="tick">${esc(x.tarih)}</span></div></div>`}).join("");
   h+=`<button class="prof-btn" style="width:100%;margin-top:12px" onclick="memClear()">Hafızamı temizle</button>`;
   return h}
-let MEM_INDEX={};
-function memFilter(f){MEM_FILTER=f;loadAyarlar()}
-function memDetail(id){const x=MEM_INDEX[id];if(!x)return;
-  let ic=x.icerik;let det="";
-  if(ic&&typeof ic==="object"){det=Object.entries(ic).map(([k,v])=>`<div class="row" style="margin-top:6px"><span class="muted">${esc(k)}</span><b style="max-width:60%;text-align:right;font-weight:600">${esc(typeof v==="object"?JSON.stringify(v):v)}</b></div>`).join("")}
-  else det=`<div class="quote">${esc(ic||"")}</div>`;
-  ovShow(`<h2 style="font-size:20px;font-weight:700">${esc(x.kat)}${x.ticker?" · "+esc(x.ticker):""}</h2>
-    <div class="tick" style="margin-bottom:10px">${esc(x.tarih)}</div>${det}
-    ${x.sonuc?`<div class="sec-title">Sonuç</div><div class="quote">${esc(x.sonuc)}</div>`:""}`)}
+function sohbetDetail(id){const x=MEM_INDEX[id];if(!x)return;
+  const ic=x.icerik||{};
+  const soru=(typeof ic==="object"&&ic.soru)?ic.soru:(x.ozet||"");
+  const cevap=(typeof ic==="object"&&ic.cevap)?ic.cevap:(typeof ic==="string"?ic:"");
+  ovShow(`<h2 style="font-size:20px;font-weight:700">💬 Sohbet</h2>
+    <div class="tick" style="margin-bottom:12px">${esc(x.tarih)}</div>
+    <div class="sec-title">Soru</div><div class="quote">${esc(soru)||"—"}</div>
+    ${cevap?`<div class="sec-title">Bot</div><div class="quote">${esc(cevap)}</div>`:""}`)}
 async function memClear(){if(!confirm("Botun seninle ilgili tüm hafızası silinecek. Emin misin?"))return;
   try{await fetch("/api/memory/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kullanici:CUR_USER})});
     toast("Hafıza temizlendi");loaded.ayarlar=false;loadAyarlar()}catch(e){toast("Silinemedi")}}
