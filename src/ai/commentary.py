@@ -147,6 +147,10 @@ SYSTEM = (
     "vermekten cekinme. Temkinli olmak iyidir ama surekli TUT demek de bir hata "
     "turudur. Puan 7 ve uzerinde guclu bir gorunum varsa AL'i dusun; her seyin "
     "mukemmel hizalanmasini bekleme.\n"
+    "YUKSEK PUAN DISIPLINI: Puan 8+ vermeden once kendine sor: gercekten sektor "
+    "lideri mi, analist konsensusu guclu mu, somut (taze) haber/katalizor var mi? "
+    "Bu uclunden en az ikisi net DEGILSE puani 7'de tut. Yuksek puan, sadece "
+    "iyimserlik degil; ayrisan ustun veriyle DESTEKLENMELI.\n"
     "BEKLE karari: SADECE gercekten belirsiz durumlarda (yon belirsiz, kritik bir "
     "veri/katalizor bekleniyor ya da sinyal olgunlasmadiysa) BEKLE de; diger tum "
     "durumlarda AL/TUT/AZALT/UZAK_DUR'dan birini tercih et. BEKLE secersen 'tekrar_bak_kosulu' "
@@ -1189,9 +1193,131 @@ def _gun_farki(baslangic, bitis) -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Karar ust-filtreleri (persist ONCESI): sektor tavani + tekrarli sinyal.
+# Sabah brifinginde ayni sektore yigilan ve yeni bilgisiz tekrar eden AL'lari
+# BEKLE'ye dusurur. Hem run_batch hem run, persiste _persist uzerinden girer.
+# ---------------------------------------------------------------------------
+# Tavan uygulanan 6 sektor: _sektor_of (internal) adi -> gerekce/kullanici adi.
+_TAVAN_SEKTORLER = {
+    "Bankacılık": "Bankacılık",
+    "Havacılık": "Havacılık",
+    "Enerji/Rafineri": "Enerji",
+    "Savunma": "Savunma",
+    "Telekom": "Telekom",
+    "Gayrimenkul": "GYO",
+}
+_SEKTOR_AL_TAVANI = 2          # ayni sektorde gunde en fazla bu kadar AL
+
+
+def _aktif_al(r) -> bool:
+    """Kayit gercek (uygulanabilir) bir AL mi? skip/kill/veto haric."""
+    return bool(r) and not r.get("skipped") and not r.get("kill_switch") \
+        and not r.get("vetoed") and (r.get("final_decision") == "AL")
+
+
+def _yeni_bilgi_var(r) -> bool:
+    """Kayitta taze (YENI/GUNCEL = son 3 gun) haber/KAP var mi? Tekrarli-sinyal
+    filtresi 'yeni sinyal yok' kararini buna gore verir. Tazelik bilinmiyorsa
+    haber var sayilir (guvenli taraf: AL'i dusurme)."""
+    haberler = r.get("haberler") or []
+    if not haberler:
+        return False
+    bilinen = [(h.get("tazelik") or "").upper() for h in haberler
+               if isinstance(h, dict) and h.get("tazelik")]
+    if not bilinen:
+        return True
+    return any(t in ("YENI", "GUNCEL") for t in bilinen)
+
+
+def _al_to_bekle(r, not_metni: str, verbose: bool = False) -> None:
+    """Bir AL kaydini YERINDE BEKLE'ye dusurur. AL'a ozgu alanlar temizlenir
+    (trade acilmaz, UI'da stale AL kalmaz); gerekce + sade_yorum'a not eklenir."""
+    r["karar"] = "BEKLE"
+    r["final_decision"] = "BEKLE"
+    r["final_label"] = _LABEL["BEKLE"]
+    onceki = (r.get("gerekce") or "").strip()
+    r["gerekce"] = (onceki + " " if onceki else "") + not_metni
+    sade = (r.get("sade_yorum") or "").strip()
+    r["sade_yorum"] = (sade + " " if sade else "") + not_metni
+    r["aksiyon"] = "Koşullar netleşince tekrar değerlendir"
+    for k in ("giris_seviyesi", "stop_loss", "hedef_fiyat", "cikis_stratejisi"):
+        if k in r:
+            r[k] = ""
+    r["position_size_oneri"] = None
+    r["entry_quality"] = None
+    r.setdefault("gozlemler", []).append(not_metni)
+    r["karar_filtresi"] = not_metni             # bayrak (UI/raporlama)
+    if verbose:
+        print(f"  [filtre] {r.get('ticker')}: AL -> BEKLE ({not_metni})")
+
+
+def _apply_karar_filtreleri(results, verbose: bool = False):
+    """AL kararlarina iki ust-kurali SIRAYLA uygular (persist oncesi):
+      1) Tekrarli sinyal: son 3 gunde ayni hisseye AL verilmis ve yeni bilgi
+         (taze haber/KAP) yoksa -> BEKLE.
+      2) Sektor tavani: izlenen 6 sektorde gunde max 2 AL; en dusuk puanli
+         fazlalik -> BEKLE.
+    Tekrarli sinyal ONCE uygulanir ki bayat AL'lar sektor kotasini doldurmasin.
+    results yerinde degistirilir (cagiranin gosterdigi kayitlar da guncellenir)."""
+    from src.db import database as db
+    from src.ai.learning import _sektor_of
+    bugun = datetime.now(_TZ).date()
+
+    # 1) Tekrarli sinyal filtresi (hisse bazli, bagimsiz)
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        ticker = (r.get("ticker") or "").upper().replace(".IS", "")
+        if not ticker:
+            continue
+        try:
+            gecmis = db.list_decisions_for(ticker, limit=5)
+        except Exception:
+            gecmis = []
+        son_al_fark = None
+        for g in gecmis:
+            if (g.get("karar") or "").upper() != "AL":
+                continue
+            try:
+                gd = datetime.fromisoformat(str(g.get("tarih") or "")[:10]).date()
+            except Exception:
+                continue
+            fark = (bugun - gd).days
+            if 1 <= fark <= 3:                  # bugun haric, son 3 gun
+                son_al_fark = fark
+                break
+        if son_al_fark is not None and not _yeni_bilgi_var(r):
+            _al_to_bekle(
+                r, f"{ticker} için {son_al_fark} gün önce AL verilmişti, yeni sinyal yok.",
+                verbose=verbose)
+
+    # 2) Sektor tavani (tekrarli sinyalden sonra kalan AL'lar uzerinde)
+    sektor_al = {}
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        sek = _sektor_of(r.get("ticker"))
+        if sek in _TAVAN_SEKTORLER:
+            sektor_al.setdefault(sek, []).append(r)
+    for sek, kayitlar in sektor_al.items():
+        if len(kayitlar) <= _SEKTOR_AL_TAVANI:
+            continue
+        # En guclu 2'yi koru: puan desc, esitlikte risk asc
+        kayitlar.sort(key=lambda r: (-(r.get("score") or 0),
+                                     (r.get("risk") or {}).get("score") or 0))
+        ad = _TAVAN_SEKTORLER[sek]
+        for r in kayitlar[_SEKTOR_AL_TAVANI:]:
+            _al_to_bekle(
+                r, f"{ad} sektöründe bugün zaten {_SEKTOR_AL_TAVANI} AL var.",
+                verbose=verbose)
+    return results
+
+
 def _persist(results, save: bool, verbose: bool):
     """Sonuclari decisions tablosuna yazar + ai_commentary.json'a kaydeder."""
     from src.db import database as db
+    _apply_karar_filtreleri(results, verbose=verbose)   # sektor tavani + tekrar filtresi
     today = datetime.now(_TZ).date().isoformat()
     for r in results:
         try:
@@ -1367,7 +1493,6 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
 def run(tickers: list[str], save: bool = True, verbose: bool = True,
         overview=None, learning=None, extra_context=None) -> list[dict]:
     from src.news.service import get_news_source
-    from src.db import database as db
     import anthropic
 
     _load_dotenv()
@@ -1389,7 +1514,6 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
               f"makro: {context['makro'].get('available')} | "
               f"piyasa: {gp.get('yon')} (BIST %{gp.get('bist100_gunluk_%')})")
     client = anthropic.Anthropic()
-    today = datetime.now(_TZ).date().isoformat()
 
     usage_acc = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     results = []
@@ -1418,27 +1542,9 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
                 print(f"  {t:7} {r['final_decision']:5} puan {r['score']}/10 "
                       f"risk {r['risk']['score']}/10 {r['eminlik']} "
                       f"haber={r['haber_sayisi']}")
-        # Karari decisions tablosuna yaz (sonuc=None)
-        try:
-            if r.get("kill_switch"):
-                db.record_decision(
-                    ticker=r["ticker"], karar="KILL_SWITCH", puan=None, risk=None,
-                    eminlik=None, gerekce=r.get("mesaj"), tarih=today)
-            elif not r.get("skipped"):
-                db.record_decision(
-                    ticker=r["ticker"], karar=r["final_decision"],
-                    puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
-                    eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today,
-                    tahmini_sure=(r.get("tahmini_sure") or None))
-        except Exception as e:
-            if verbose:
-                print(f"  [{t}] karar kaydi yazilamadi: {type(e).__name__}")
-
-    # Gercek islem defteri (trades): AL -> ac, AZALT/UZAK_DUR/SAT -> kapat
-    _record_trades(results, verbose=verbose, tarih=today)
-
-    if save:
-        _save_results(results, verbose=verbose)
+    # Persist (sektor tavani + tekrarli sinyal filtresi _persist icinde uygulanir,
+    # ardindan decisions + trades + ai_commentary.json yazilir). run_batch ile ayni yol.
+    _persist(results, save=save, verbose=verbose)
 
     # TOKEN OZET (batch ile ayni format) — fallback tek-tek cagri yolunda da
     maliyet = (usage_acc["input"] * _BATCH_FIYAT_INPUT
