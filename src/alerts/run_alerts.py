@@ -447,6 +447,137 @@ def check_pozisyon_takip(now=None) -> int:
     return tetik
 
 
+# ---------------------------------------------------------------------------
+# DİNAMİK ÇIKIŞ KONTROLLERİ (main() ile 30 dk'da bir, seans içinde)
+# Açık AL pozisyonları (trades, durum='acik', karar 'AL'*) için erken çıkış sinyali:
+#   1) trend bozuldu (son 3 günde -%5+)  2) haber değişti (olumsuz taze KAP)
+#   3) makro rejim Risk-On -> Risk-Off geçişi.
+# Hepsi günde bir kez (uyari_kayit ile spam önleme).
+# ---------------------------------------------------------------------------
+def _acik_al_pozisyonlari():
+    """trades tablosundaki açık AL pozisyonları (durum='acik', karar 'AL' ile başlar)."""
+    try:
+        acik = db.list_trades(durum="acik")
+    except Exception as e:
+        print(f"[dinamik-cikis] DB hatasi: {type(e).__name__}")
+        return []
+    return [t for t in acik if (t.get("karar") or "").upper().startswith("AL")]
+
+
+def _uc_gun_getiri(sym):
+    """Son 3 işlem günü % değişimi (yfinance 7d penceresi). Veri yoksa None."""
+    try:
+        import yfinance as yf
+        h = yf.Ticker(sym).history(period="7d")
+        if h is None or h.empty:
+            return None
+        c = h["Close"].dropna()
+        if len(c) < 4:
+            return None
+        onceki, son = float(c.iloc[-4]), float(c.iloc[-1])   # 3 işlem günü önce -> son
+        if onceki <= 0:
+            return None
+        return round((son - onceki) / onceki * 100, 2)
+    except Exception:
+        return None
+
+
+def check_trend_break(now=None) -> int:
+    """TREND BOZULDU: açık AL pozisyonu son 3 günde -%5'ten fazla düştüyse uyar."""
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    today = now.date().isoformat()
+    tetik = 0
+    for t in _acik_al_pozisyonlari():
+        tkr = (t.get("ticker") or "").upper().replace(".IS", "")
+        uid = t.get("kullanici_id") or 0
+        key = f"TRENDBROKE:{uid}"
+        if key in db.alert_levels_today(tkr, today):
+            continue
+        sym, _usd = _sembol_usd(t)
+        g3 = _uc_gun_getiri(sym)
+        if g3 is None or g3 > -5.0:
+            continue
+        db.record_alert(tkr, today, key, g3)
+        if _notify_alarm(uid, f"⚠️ <b>{tkr}</b>'da trend bozuldu — son 3 günde "
+                              f"%{g3:.1f}. Pozisyonda çıkışı değerlendir."):
+            tetik += 1
+            print(f"[{now:%Y-%m-%d %H:%M}] [trend-break] {tkr} {g3:.1f}% -> kullanici {uid}")
+    return tetik
+
+
+def check_news_flip(now=None) -> int:
+    """HABER DEĞİŞTİ: açık AL pozisyonuna TAZE + FİYATLANMAMIŞ bir KAP bildirimi
+    gelip OLUMSUZ yorumlanıyorsa uyar (long'tayken negatif haber). Bildirim başına
+    günde bir kez."""
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    try:
+        from src.news.service import get_news_source
+        news_src, _ = get_news_source(verbose=False)
+    except Exception:
+        news_src = None
+    today = now.date().isoformat()
+    tetik = 0
+    for t in _acik_al_pozisyonlari():
+        tkr = (t.get("ticker") or "").upper().replace(".IS", "")
+        uid = t.get("kullanici_id") or 0
+        haber = unpriced_fresh_news(tkr, news_src)
+        if not haber:
+            continue
+        key = f"NEWSFLIP:{uid}:{_kap_key(haber.get('disclosure_id'), haber.get('baslik'))}"
+        if key in db.alert_levels_today(tkr, today):
+            continue
+        yorum = _kap_yorum(tkr, haber)
+        if not yorum or "OLUMSUZ" not in yorum.upper():
+            continue                          # yalnız açıkça olumsuz KAP'ta uyar
+        db.record_alert(tkr, today, key, 0)
+        baslik = (haber.get("baslik") or "").strip()[:120]
+        if _notify_alarm(uid, f"📰 <b>{tkr}</b> için haber değişti — negatif KAP:\n"
+                              f"“{baslik}”\n{yorum}\n"
+                              f"Hedefi/pozisyonu gözden geçir."):
+            tetik += 1
+            print(f"[{now:%Y-%m-%d %H:%M}] [news-flip] {tkr} -> kullanici {uid}")
+    return tetik
+
+
+def check_regime_flip(now=None) -> int:
+    """MAKRO REJİM DEĞİŞTİ: piyasa rejimi Risk-On'dan Risk-Off'a geçtiyse ve açık AL
+    pozisyonu varsa, sahiplerine tek uyarı gönderir. Önceki rejim ayar tablosunda
+    saklanır; yalnız On->Off kenarında tetiklenir (günde bir kez)."""
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    try:
+        from src.ai.kombinasyon import guncel_rejim
+        rej = (guncel_rejim() or {}).get("rejim")
+    except Exception:
+        return 0
+    if not rej:
+        return 0
+    onceki = db.get_setting("son_makro_rejim")
+    db.set_setting("son_makro_rejim", rej)
+    if onceki != "Risk-On" or rej != "Risk-Off":
+        return 0                              # yalnız Risk-On -> Risk-Off geçişi
+    al_pozlar = _acik_al_pozisyonlari()
+    if not al_pozlar:
+        return 0
+    today = now.date().isoformat()
+    if "REGIMEFLIP" in db.alert_levels_today("_MARKET_", today):
+        return 0
+    db.record_alert("_MARKET_", today, "REGIMEFLIP", 0)
+    msg = ("🌡️ <b>Makro rejim değişti: Risk-On → Risk-Off.</b> Portföydeki AL "
+           "pozisyonlarını gözden geçir; yeni risk almada temkinli ol.")
+    tetik = 0
+    for uid in {t.get("kullanici_id") or 0 for t in al_pozlar}:
+        if _notify_alarm(uid, msg):
+            tetik += 1
+    print(f"[{now:%Y-%m-%d %H:%M}] [regime-flip] Risk-On->Risk-Off, {tetik} kullanici")
+    return tetik
+
+
 def _seviye(change_abs, portfoyde):
     """Hareketi içsel uyarı seviyesine indirger: 'ACIL' (ani), 'IZLE' (dikkat) veya None.
     Eşik listeye göre: portföy %2.5, radar %3; %5+ ani."""
@@ -1196,6 +1327,20 @@ def main():
         check_pozisyon_takip(now)
     except Exception as e:
         print(f"[pozisyon-takip] kontrol hatasi: {type(e).__name__}")
+
+    # Dinamik çıkış kontrolleri (açık AL pozisyonları için erken çıkış sinyalleri)
+    try:
+        check_trend_break(now)
+    except Exception as e:
+        print(f"[trend-break] kontrol hatasi: {type(e).__name__}")
+    try:
+        check_news_flip(now)
+    except Exception as e:
+        print(f"[news-flip] kontrol hatasi: {type(e).__name__}")
+    try:
+        check_regime_flip(now)
+    except Exception as e:
+        print(f"[regime-flip] kontrol hatasi: {type(e).__name__}")
 
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")

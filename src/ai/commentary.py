@@ -813,19 +813,87 @@ _LABEL = {"AL": "AL", "TUT": "TUT", "BEKLE": "BEKLE", "AZALT": "AZALT",
 _EMINLIK_GUVEN = {"Yüksek": 85, "Orta": 70, "Düşük": 50}
 
 
-def _pozisyon_buyuklugu(eminlik, kalite_skoru) -> str:
-    """AL kararinda onerilen pozisyon buyuklugu: guven (eminlik) + giris kalitesi
-    skorunu birlestirir.
-      - Yuksek guven (>80) + yuksek kalite (>80): tam pozisyon (%5-8)
-      - Dusuk guven (<60) veya dusuk kalite (<40): kucuk test pozisyonu (%1-2)
-      - aksi halde: yari pozisyon (%2-4)"""
+_POZ_KADEME = {
+    1: "Küçük test pozisyonu — portföyün %1-2'si",
+    2: "Yarı pozisyon — portföyün %3-4'ü",
+    3: "Tam pozisyon — portföyün %5-8'i",
+}
+
+
+def _pozisyon_buyuklugu(eminlik, kalite_skoru, ev=None) -> str:
+    """AL kararinda onerilen pozisyon buyuklugu (kademe): eminlik (guven) + giris
+    kalitesi + Beklenen Deger (EV).
+      - Yuksek guven (>80) + yuksek kalite (>80): tam pozisyon (%5-8)   [kademe 3]
+      - Orta guven (60-80):                       yari pozisyon (%3-4)   [kademe 2]
+      - Dusuk guven (<60) veya dusuk kalite (<40): kucuk test (%1-2)     [kademe 1]
+    EV > 1.5 ise pozisyon bir kademe artirilir (en fazla tam pozisyon)."""
     guven = _EMINLIK_GUVEN.get((eminlik or "").strip(), 60)
     kalite = kalite_skoru if isinstance(kalite_skoru, (int, float)) else 50
     if guven > 80 and kalite > 80:
-        return "Tam pozisyon — portföyün %5-8'i"
-    if guven < 60 or kalite < 40:
-        return "Küçük test pozisyonu — portföyün %1-2'si"
-    return "Yarı pozisyon — portföyün %2-4'ü"
+        kademe = 3
+    elif guven < 60 or kalite < 40:
+        kademe = 1
+    else:
+        kademe = 2
+    if isinstance(ev, (int, float)) and ev > 1.5:      # yuksek EV -> bir kademe artir
+        kademe = min(3, kademe + 1)
+    return _POZ_KADEME[kademe]
+
+
+# --- Sabit risk butcesi (pozisyon boyutlandirma) ---------------------------
+# Kullanici risk toleransina gore islem basina riske edilecek TL. Profil yoksa
+# 'orta' (1000 TL) varsayilir. morning.py kullanici profiliyle override edebilir.
+VARSAYILAN_RISK_TL = 1000.0
+RISK_TL_HARITA = {"dusuk": 500.0, "orta": 1000.0, "yuksek": 2000.0}
+
+
+def risk_butcesi_tl(risk_toleransi=None) -> float:
+    """Kullanici risk toleransi ('dusuk'/'orta'/'yuksek') -> islem basina risk (TL)."""
+    return RISK_TL_HARITA.get((risk_toleransi or "").strip().lower(), VARSAYILAN_RISK_TL)
+
+
+def pozisyon_lot(giris, stop, risk_tl=VARSAYILAN_RISK_TL) -> dict | None:
+    """Sabit risk butcesinden lot buyuklugu:
+        lot = risk_tl / (giris * stop_yuzde/100) = risk_tl / (giris - stop)
+    giris: giris fiyati (numerik). stop: stop-loss fiyati (numerik, giris altinda).
+    stop verilmemis/gecersizse varsayilan %8 stop kullanilir.
+    Doner: {risk_tl, stop_yuzde, lot, giris, stop, varsayilan_stop} veya None."""
+    if not (isinstance(giris, (int, float)) and giris > 0):
+        return None
+    varsayilan_stop = False
+    if not (isinstance(stop, (int, float)) and 0 < stop < giris):
+        stop = round(giris * 0.92, 2)          # varsayilan %8 stop
+        varsayilan_stop = True
+    hisse_basi_risk = giris - stop
+    if hisse_basi_risk <= 0:
+        return None
+    lot = int(risk_tl / hisse_basi_risk)
+    if lot < 1:
+        return None
+    return {
+        "risk_tl": round(risk_tl), "stop_yuzde": round(hisse_basi_risk / giris * 100, 1),
+        "lot": lot, "giris": round(giris, 2), "stop": round(stop, 2),
+        "varsayilan_stop": varsayilan_stop,
+    }
+
+
+# EV istatistikleri (surec ici 5 dk cache; her hisse icin DB'yi yeniden taramamak icin)
+_EV_STATS = {"ts": 0.0, "sektor": None, "genel": None}
+
+
+def _ev_istatistik():
+    """EV icin sektor/genel istatistikleri (surec ici 5 dk onbellek)."""
+    import time as _t
+    now = _t.time()
+    if _EV_STATS["sektor"] is not None and now - _EV_STATS["ts"] < 300:
+        return _EV_STATS["sektor"], _EV_STATS["genel"]
+    try:
+        from src.ai import expected_value as _ev
+        _EV_STATS.update(ts=now, sektor=_ev.sektor_istatistikleri(),
+                         genel=_ev.genel_istatistik())
+    except Exception:
+        _EV_STATS.update(ts=now, sektor={}, genel=None)
+    return _EV_STATS["sektor"], _EV_STATS["genel"]
 
 
 # Verdict pydantic semasinin Batch API icin acik JSON-schema karsiligi
@@ -1082,15 +1150,32 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     # momentum/risk bilesenlerinden 0-100 skor + yildiz + oneri.
     entry_quality = None
     position_size_oneri = None
+    expected_value = None
+    position_size_tl = None
     if final_decision == "AL":
         try:
             from src.ai import entry_quality as eq
             entry_quality = eq.hesapla(sig, v.risk)
         except Exception:
             entry_quality = None
-        # Pozisyon buyuklugu onerisi: eminlik (guven) + giris kalitesi skoru
         kalite_skoru = (entry_quality or {}).get("skor")
-        position_size_oneri = _pozisyon_buyuklugu(v.eminlik, kalite_skoru)
+        # Beklenen Deger (EV): sektor/genel hit_rate + karara ozel hedef/stop R/R
+        guncel = sig.get("son_kapanis")
+        hedef_num = parse_first_price(getattr(v, "hedef_fiyat", ""))
+        stop_num = parse_first_price(getattr(v, "stop_loss", ""))
+        try:
+            from src.ai import expected_value as _ev
+            sektor_ist, genel_ist = _ev_istatistik()
+            expected_value = _ev.karar_ev(ticker, guncel=guncel, hedef=hedef_num,
+                                          stop=stop_num, sektor_ist=sektor_ist,
+                                          genel_ist=genel_ist)
+        except Exception:
+            expected_value = None
+        ev_deger = (expected_value or {}).get("ev")
+        # Pozisyon buyuklugu onerisi: eminlik + giris kalitesi + EV kademesi
+        position_size_oneri = _pozisyon_buyuklugu(v.eminlik, kalite_skoru, ev_deger)
+        # Sabit risk butcesi lot (sistem geneli: varsayilan 1000 TL/islem)
+        position_size_tl = pozisyon_lot(guncel, stop_num)
 
     # --- Karar tipine gore aksiyon + stop-loss (deterministik) ---
     son_kapanis = sig.get("son_kapanis")
@@ -1142,6 +1227,10 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "cikis_stratejisi": (getattr(v, "cikis_stratejisi", "") or "").strip(),
         # Pozisyon buyuklugu onerisi (yalniz AL); diger kararlarda None
         "position_size_oneri": position_size_oneri,
+        # Sabit risk butcesi lot (yalniz AL): {risk_tl, stop_yuzde, lot, ...} veya None
+        "position_size_tl": position_size_tl,
+        # Beklenen Deger (yalniz AL): {ev, hit_rate, ort_kazanc, ort_kayip, ...} veya None
+        "expected_value": expected_value,
         # Giris kalitesi (yalniz AL): {skor, yildiz, oneri, kirilim} veya None
         "entry_quality": entry_quality,
         # TUT degerlendirme penceresi (AI tahmini, islem gunu); diger kararlarda 0
@@ -1308,6 +1397,8 @@ def _al_to_bekle(r, not_metni: str, verbose: bool = False) -> None:
         if k in r:
             r[k] = ""
     r["position_size_oneri"] = None
+    r["position_size_tl"] = None
+    r["expected_value"] = None
     r["entry_quality"] = None
     r.setdefault("gozlemler", []).append(not_metni)
     r["karar_filtresi"] = not_metni             # bayrak (UI/raporlama)

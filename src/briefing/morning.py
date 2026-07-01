@@ -106,6 +106,15 @@ def _rejim_satirlari(rejim) -> list:
         f"BIST yönü: {yon} · Risk: {risk}/10",
         f"Bugün yeni AL için uygunluk: {uygunluk}",
     ]
+    # 4 alt skor (Likidite / Risk iştahı / Momentum / Makro) + en zayıf alan uyarısı
+    alt = rejim.get("alt_skorlar")
+    if alt:
+        lines.append(
+            f"Likidite: {alt['likidite']} | Risk iştahı: {alt['risk_istahi']} | "
+            f"Momentum: {alt['momentum']} | Makro: {alt['makro']}")
+        dusuk = alt.get("dusuk")
+        if dusuk and dusuk[1] < 40:
+            lines.append(f"⚠️ Zayıf alan — {dusuk[0]}: {dusuk[1]}/100; bu başlıkta dikkatli ol.")
     if negatif:
         lines.append("⚠️ Olumsuz piyasa rejimi — yeni AL önerileri BEKLE'ye "
                      "çekildi, pozisyon riskini düşük tut.")
@@ -491,6 +500,11 @@ def _karar_motoru_satirlari(r):
         if eq.get("skor") is not None:
             out.append(f"Giriş kalitesi: {eq.get('yildiz', '')} ({eq['skor']}/100)"
                        + (f" — {eq['oneri']}" if eq.get("oneri") else ""))
+        ev = r.get("expected_value") or {}
+        if ev.get("ev") is not None:     # Beklenen Deger (EV)
+            out.append(f"Beklenen değer (EV): {ev['ev']:+.2f} "
+                       f"(hit %{ev['hit_rate']*100:.0f} · +%{ev['ort_kazanc']:.1f}/"
+                       f"-%{ev['ort_kayip']:.1f})")
         p = []
         if giris: p.append(f"Giriş: {giris}")
         if hedef: p.append(f"Hedef: {hedef}")
@@ -499,6 +513,11 @@ def _karar_motoru_satirlari(r):
             out.append(" | ".join(p))
         if pozisyon:                     # pozisyon buyuklugu onerisi (yalniz AL)
             out.append(f"Pozisyon: {pozisyon}")
+        lot = r.get("position_size_tl")  # sabit risk butcesi lot
+        if lot and lot.get("lot"):
+            out.append(f"Risk: {lot['risk_tl']} TL | Stop: %{lot['stop_yuzde']:g} | "
+                       f"Önerilen lot: {lot['lot']} adet"
+                       + (" (varsayılan %8 stop)" if lot.get("varsayilan_stop") else ""))
     elif fd == "TUT" and stop:
         out.append(f"Stop: {stop}")
     if cikis and fd in ("AL", "TUT"):    # cikis stratejisi (AL/TUT)
@@ -508,39 +527,65 @@ def _karar_motoru_satirlari(r):
     return out
 
 
-def _firsat_siralamasi(valid):
-    """AL kararlarini expected_value'ya gore siralar (en iyi 3 firsat).
+def _ev_ata(valid):
+    """Her AL kararina Beklenen Deger (EV) ekler: r['_ev'] (float) + r['_ev_detay'].
 
-    expected_value = (hedef_fiyat - guncel_fiyat) * entry_quality_skoru / 100
-    Yalniz hedef fiyati + giris kalitesi skoru olan AL'ler degerlendirilir.
-    Doner: [{ticker, yildiz, hedef_pct, ev}, ...] (en fazla 3, ev azalan)."""
+    EV = hit_rate*ort_kazanc - (1-hit_rate)*abs(ort_kayip) (src.ai.expected_value).
+    hit_rate sektor/genel/varsayilan istatistikten; ort_kazanc/kayip karara ozel
+    hedef/stop numerikse gercek R/R'den. Sektor istatistikleri bir kez cekilir."""
+    from src.ai import expected_value as ev_mod
     from src.ai.commentary import parse_first_price
-    out = []
+    try:
+        sektor_ist = ev_mod.sektor_istatistikleri()
+        genel_ist = ev_mod.genel_istatistik()
+    except Exception:
+        sektor_ist, genel_ist = {}, None
     for r in valid:
         if (r.get("final_decision") or "").upper() != "AL":
             continue
-        eq = r.get("entry_quality") or {}
-        skor = eq.get("skor")
         guncel = (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis")
         hedef = parse_first_price(r.get("hedef_fiyat"))
-        if skor is None or not guncel or hedef is None or hedef <= guncel:
+        stop = parse_first_price(r.get("stop_loss"))
+        try:
+            d = ev_mod.karar_ev((r.get("ticker") or "").upper(), guncel=guncel,
+                                hedef=hedef, stop=stop, sektor_ist=sektor_ist,
+                                genel_ist=genel_ist)
+        except Exception:
             continue
-        ev = (hedef - guncel) * skor / 100
-        hedef_pct = (hedef - guncel) / guncel * 100
+        r["_ev"] = d["ev"]
+        r["_ev_detay"] = d
+
+
+def _firsat_siralamasi(valid):
+    """AL kararlarini EV'ye gore siralar (en iyi 3). r['_ev'] onceden _ev_ata ile
+    hesaplanmis olmali. Doner: [{ticker, yildiz, hedef_pct, ev}, ...] (ev azalan)."""
+    from src.ai.commentary import parse_first_price
+    out = []
+    for r in valid:
+        if (r.get("final_decision") or "").upper() != "AL" or r.get("_ev") is None:
+            continue
+        eq = r.get("entry_quality") or {}
+        guncel = (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis")
+        hedef = parse_first_price(r.get("hedef_fiyat"))
+        hedef_pct = ((hedef - guncel) / guncel * 100
+                     if (guncel and hedef and hedef > guncel) else None)
         out.append({"ticker": (r.get("ticker") or "").upper(),
                     "yildiz": eq.get("yildiz") or "",
-                    "hedef_pct": hedef_pct, "ev": ev})
+                    "hedef_pct": hedef_pct, "ev": r["_ev"]})
     out.sort(key=lambda x: x["ev"], reverse=True)
     return out[:3]
 
 
 def _firsat_satirlari(firsatlar):
-    """Firsat siralamasini Telegram satirlarina cevirir."""
+    """Firsat siralamasini Telegram satirlarina cevirir. Format:
+    'ASELS — EV: +1.2 | Giriş: ★★★★★ (| Hedef: +%X)'."""
     lines = ["", "<b>🎯 BUGÜNÜN EN İYİ FIRSATLARI</b>"]
     for i, f in enumerate(firsatlar, 1):
-        lines.append(
-            f"{i}. <b>{_esc(f['ticker'])}</b> — Giriş: {f['yildiz']} | "
-            f"Hedef: +%{f['hedef_pct']:.0f} | EV: +{f['ev']:.1f}")
+        parca = (f"{i}. <b>{_esc(f['ticker'])}</b> — EV: {f['ev']:+.1f} | "
+                 f"Giriş: {f['yildiz']}")
+        if f.get("hedef_pct") is not None:
+            parca += f" | Hedef: +%{f['hedef_pct']:.0f}"
+        lines.append(parca)
     return lines
 
 
@@ -711,6 +756,7 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             donus.append(r)
         results = donus
     valid = [r for r in results if not r.get("skipped")]
+    _ev_ata(valid)          # AL kararlarina Beklenen Deger (EV) ekle (siralama icin)
     portfolio = portfolio if portfolio is not None else (sel.get("portfolio") or set())
 
     def _in_pf(r):
@@ -795,9 +841,11 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     if firsatlar:
         lines += _firsat_satirlari(firsatlar)
 
-    # FIRSATLAR (max 5) — portföy dışı AL sinyalleri
+    # FIRSATLAR (max 5) — portföy dışı AL sinyalleri; puan yerine EV'ye göre sırala
+    # (EV yoksa puana düş — geriye uyumluluk)
     firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"]
-    firsat.sort(key=lambda r: r.get("score") or 0, reverse=True)
+    firsat.sort(key=lambda r: (r.get("_ev") if r.get("_ev") is not None
+                               else (r.get("score") or 0)), reverse=True)
     if firsat:
         lines.append("")
         lines.append("<b>FIRSATLAR</b>")

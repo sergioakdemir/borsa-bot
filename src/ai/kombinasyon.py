@@ -186,6 +186,101 @@ def makro_rejim_skoru(usdtry_g=None, bist_g=None, brent_g=None,
     return {"skor": skor, "rejim": rejim, "bilesenler": bilesenler}
 
 
+# --- Makro rejim: 4 alt skor (Likidite / Risk istahi / Momentum / Makro) ------
+_ALT_ADLAR = {"likidite": "Likidite", "risk_istahi": "Risk iştahı",
+              "momentum": "Momentum", "makro": "Makro"}
+# Genel rejim = 4 alt skorun agirlikli ortalamasi (toplam = 1.0)
+_ALT_AGIRLIK = {"likidite": 0.25, "risk_istahi": 0.30, "momentum": 0.25, "makro": 0.20}
+
+
+def makro_alt_skorlar(ham: dict | None = None) -> dict:
+    """Makro rejimi 4 alt bilesene ayirir; her biri 0-100 (50 = notr taban).
+
+      - Likidite   : TL/dolar yonu + CDS (ulke risk primi)
+      - Risk istahi: VIX + piyasa yonu (S&P futures / BIST) + yabanci akisi
+      - Momentum   : BIST gunluk/haftalik trend + sektor rotasyon genisligi
+      - Makro      : reel faiz (politika faizi - TUFE)
+
+    Her kaynak try/except ile korunur; veri yoksa ilgili bilesen notr (50) kalir.
+    ham: guncel_rejim'in _CACHE['ham']'i (usdtry_g/bist_g...) — verilirse tekrar
+    yfinance cekmez. Donus: {likidite, risk_istahi, momentum, makro, genel,
+    dusuk: (ad, skor)} — dusuk, en zayif alani (uyari icin) gosterir."""
+    try:
+        from src.news.macro import get_macro
+        m = get_macro() or {}
+    except Exception:
+        m = {}
+    ham = ham or {}
+    usdtry_g, bist_g = ham.get("usdtry_g"), ham.get("bist_g")
+
+    # --- Likidite ---
+    lik = 50.0
+    if usdtry_g is not None:
+        lik += _clamp(-usdtry_g * 4, -20, 20)        # TL degerlenir -> likidite +
+    cds = m.get("turkey_cds")
+    if isinstance(cds, (int, float)):
+        lik += 15 if cds < 150 else 5 if cds < 250 else -5 if cds < 300 else -20
+    likidite = int(round(_clamp(lik, 0, 100)))
+
+    # --- Risk istahi ---
+    ri = 50.0
+    vix = m.get("vix")
+    if isinstance(vix, (int, float)):
+        ri += 20 if vix < 15 else 8 if vix < 20 else -8 if vix < 30 else -22
+    spf = m.get("sp_futures_degisim")
+    if isinstance(spf, (int, float)):
+        ri += _clamp(spf * 3, -10, 10)
+    if bist_g is not None:
+        ri += _clamp(bist_g * 2, -8, 8)
+    try:
+        from src.news.foreign_investor import get_foreign_flow
+        ff = get_foreign_flow() or {}
+        if ff.get("available"):
+            yon = (ff.get("yon") or "").upper()
+            ri += 12 if yon == "ALIYOR" else -12 if yon == "SATIYOR" else 0
+    except Exception:
+        pass
+    risk_istahi = int(round(_clamp(ri, 0, 100)))
+
+    # --- Momentum ---
+    mo = 50.0
+    if bist_g is not None:
+        mo += _clamp(bist_g * 5, -18, 18)
+    try:
+        from src.news.market_overview import get_market_overview
+        ov = get_market_overview() or {}
+        haft = ov.get("bist100_haftalik_%")
+        if isinstance(haft, (int, float)):
+            mo += _clamp(haft * 1.5, -12, 12)
+    except Exception:
+        pass
+    try:
+        from src.ai.sektor_rotasyon import sektor_rotasyonu
+        sektorler = (sektor_rotasyonu() or {}).get("sektorler") or {}
+        if sektorler:
+            oran = sum(1 for v in sektorler.values() if v > 0) / len(sektorler)
+            mo += _clamp((oran - 0.5) * 30, -15, 15)  # sektor genisligi (breadth)
+    except Exception:
+        pass
+    momentum = int(round(_clamp(mo, 0, 100)))
+
+    # --- Makro (reel faiz) ---
+    mk = 50.0
+    tufe, pol = m.get("tufe_yillik"), m.get("politika_faizi")
+    if isinstance(tufe, (int, float)) and isinstance(pol, (int, float)):
+        mk += _clamp((pol - tufe) * 1.5, -20, 20)     # pozitif reel faiz -> istikrar
+    elif isinstance(tufe, (int, float)):
+        mk += 8 if tufe < 40 else -8 if tufe > 60 else 0
+    makro = int(round(_clamp(mk, 0, 100)))
+
+    alt = {"likidite": likidite, "risk_istahi": risk_istahi,
+           "momentum": momentum, "makro": makro}
+    alt["genel"] = int(round(sum(alt[k] * _ALT_AGIRLIK[k] for k in _ALT_AGIRLIK)))
+    dk = min(_ALT_ADLAR, key=lambda k: alt[k])
+    alt["dusuk"] = (_ALT_ADLAR[dk], alt[dk])
+    return alt
+
+
 # --- Canli faktorler (surec ici onbellekli; ask_bot + commentary paylasir) ---
 _CACHE = {"ts": 0.0, "faktorler": None, "ham": None}
 _TTL = 300.0       # 5 dk (fiyat cache penceresiyle ayni)
@@ -253,6 +348,11 @@ def guncel_rejim(ttl: float = _TTL) -> dict:
                               bist_g=ham.get("bist_g"),
                               brent_g=ham.get("brent_g"), cds=cds)
     rejim["bist_g"] = ham.get("bist_g")
+    # 4 alt skor (Likidite / Risk istahi / Momentum / Makro) — brifingde gosterilir
+    try:
+        rejim["alt_skorlar"] = makro_alt_skorlar(ham)
+    except Exception:
+        rejim["alt_skorlar"] = None
     return rejim
 
 
