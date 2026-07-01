@@ -7,11 +7,17 @@ Yanlis cikan kararlar icin ucuz Haiku ile kisa 'neden yanlis' analizi yapilir
 (decisions.yanlis_sebep). Degerlendirme penceresi: AL=5, SAT=3, TUT=10, BEKLE=5 islem gunu.
 
 Kazanma kurali (karar yonune gore):
-  AL / AL_TEMKINLI : fiyat yukseldi VE BIST-100'den %2'den fazla geri kalmadiysa DOGRU
-                     (hisse +%3 ama BIST +%5 ise aslinda kotu karar -> YANLIS)
+  AL / AL_TEMKINLI : ENDEKSTEN 1.5 puandan fazla geri kalmadiysa DOGRU
+                     (piyasa_farki >= -1.5). Benchmark: BIST hisseleri -> XU100.IS,
+                     ABD hisseleri -> SPY. Benchmark verisi yoksa mutlak yon (fiyat
+                     yukseldiyse DOGRU) uygulanir.
   SAT / GUCLU_SAT / AZALT : fiyat dustuyse DOGRU
   TUT / BEKLE      : fiyat ~yatay kaldiysa (|degisim| <= %5) DOGRU
   VETO / UZAK_DUR  : islemden kacinildi; fiyat yukselmediyse (<= 0) DOGRU
+
+piyasa_farki (her yonlu karar icin) = hisse_getiri - benchmark_getiri (ayni pencere).
+BIST hisseleri XU100.IS'e, ABD hisseleri SPY'a gore olculur. decisions.piyasa_farki
+kolonuna yazilir; gecmis kayitlar 'backfill' ile geriye donuk doldurulabilir.
 """
 import sys
 from datetime import datetime, timedelta
@@ -47,49 +53,27 @@ def _kapanis_gun(karar: str, tahmini_sure=None) -> int:
     return KAPANIS_GUN_VARSAYILAN
 
 
-# AL kararinin piyasaya gore tolere edilen geri kalmasi (yuzde puan) - VARSAYILAN.
-# BIST hareketi bilinmiyorsa kullanilir; biliniyorsa _tolerans() ile dinamiklesir.
-# Hisse yukselse bile BIST-100'den bu kadar fazla geride kaldiysa AL basarisiz sayilir.
-PIYASA_GERI_KALMA = 2.0
-
-
-def _tolerans(bist_degisim) -> float:
-    """BIST hareketinin BUYUKLUGUNE gore AL'in tolere edilen piyasa geri kalmasi (puan).
-
-    Piyasa cok hareketliyse tek bir hissenin endeksten sapmasi normaldir; bu yuzden
-    tolerans hareketle birlikte buyur:
-      |BIST| < %1  -> %2  (sakin gun, kati kiyas)
-      |BIST| %1-3  -> %3
-      |BIST| > %3  -> %4.5 (oynak gun, gevsek kiyas)
-    bist_degisim None ise sabit varsayilan (PIYASA_GERI_KALMA)."""
-    if bist_degisim is None:
-        return PIYASA_GERI_KALMA
-    h = abs(bist_degisim)
-    if h < 1:
-        return 2.0
-    if h <= 3:
-        return 3.0
-    return 4.5
+# AL basari esigi: hisse endeksten (BIST -> XU100.IS, ABD -> SPY) EN FAZLA bu kadar
+# puan geri kalabilir. piyasa_farki >= -1.5 ise AL DOGRU sayilir; yani hisse endekse
+# yakin/uzerinde performans gosterdiyse basarili (mutlak yukselis sarti kaldirildi).
+AL_PIYASA_ESIGI = -1.5
 
 
 def _verdict(karar: str, degisim: float, piyasa_farki: float = None,
              bist_degisim: float = None) -> bool:
-    """Karar dogru mu? AL'da piyasa kiyasi devreye girer: fiyat yukselmis OLSA bile
-    BIST-100'den tolerans'tan fazla geride kaldiysa AL basarisiz sayilir
-    ('hisse +%3 ama BIST +%5' -> aslinda kotu karar). Tolerans BIST gunluk hareketinin
-    buyuklugune gore dinamiktir (bkz. _tolerans); bist_degisim None ise %2 sabit."""
+    """Karar dogru mu? AL'da PIYASA KIYASI belirleyicidir: hisse benchmark'tan
+    (BIST -> XU100.IS, ABD -> SPY) 1.5 puandan fazla geride kalmadiysa (piyasa_farki
+    >= -1.5) AL DOGRU'dur. Benchmark verisi yoksa mutlak yon (fiyat yukseldiyse DOGRU)
+    kullanilir. bist_degisim parametresi geriye donuk uyum icin korunur (kullanilmaz)."""
     k = (karar or "").upper()
     if "VETO" in k or "UZAK" in k:   # VETO / UZAK_DUR: girilmedi -> yukselmediyse dogru
         return degisim <= 0
     if "SAT" in k or "AZALT" in k:   # SAT, GUCLU_SAT, AZALT
         return degisim < 0
-    if "AL" in k:           # AL, AL_TEMKINLI: yukseldi VE piyasadan cok geri kalmadi
-        if degisim <= 0:
-            return False
-        tol = _tolerans(bist_degisim)
-        if piyasa_farki is not None and piyasa_farki < -tol:
-            return False
-        return True
+    if "AL" in k:           # AL, AL_TEMKINLI: endeksten 1.5 puandan cok geri kalmadiysa DOGRU
+        if piyasa_farki is not None:
+            return piyasa_farki >= AL_PIYASA_ESIGI
+        return degisim > 0             # benchmark verisi yok -> mutlak yon
     return abs(degisim) <= TUT_BANT   # TUT
 
 
@@ -192,35 +176,17 @@ def _is_bist(ticker: str) -> bool:
     return isinstance(_market_for(ticker), BIST)
 
 
-def _index_change(karar_tarihi: str, kapanis_gun: int):
-    """BIST-100 (XU100.IS) endeksinin ayni pencere icindeki yuzde degisimi.
-    Veri yoksa None. Hisse degisimi ile ayni bar mantigini kullanir."""
-    return _symbol_change("XU100.IS", karar_tarihi, kapanis_gun)
+def _benchmark_symbol(ticker: str) -> str:
+    """Hissenin piyasa kiyas endeksi: BIST -> XU100.IS, ABD -> SPY."""
+    return "XU100.IS" if _is_bist(ticker) else "SPY"
 
 
-def _bist_gunluk_degisim():
-    """BIST-100'un (XU100.IS) en son islem gunundeki gunluk yuzde degisimi
-    (son kapanis vs onceki kapanis). Dinamik AL toleransini belirlemek icin
-    kullanilir (bkz. _tolerans). Veri yoksa None."""
-    from src.data.factory import get_data_source
-    start = (datetime.now(_TZ).date() - timedelta(days=12)).isoformat()
-    try:
-        df = get_data_source().get_history("XU100.IS", start=start)
-    except Exception:
-        return None
-    if df is None or df.empty:
-        return None
-    if "Volume" in df.columns:
-        df = df[(df["Volume"] > 0) & df["Close"].notna()]
-    else:
-        df = df[df["Close"].notna()]
-    if len(df) < 2:
-        return None
-    son = float(df["Close"].iloc[-1])
-    onceki = float(df["Close"].iloc[-2])
-    if not onceki:
-        return None
-    return round((son - onceki) / onceki * 100, 2)
+def _benchmark_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
+    """Hissenin benchmark'inin (BIST -> XU100.IS, ABD -> SPY) ayni pencere icindeki
+    yuzde degisimi. Veri yoksa None. Hisse degisimi ile ayni bar mantigini kullanir."""
+    return _symbol_change(_benchmark_symbol(ticker), karar_tarihi, kapanis_gun)
+
+
 
 
 # --- L2: 'Neden yanlis cikti?' kisa Haiku analizi ---
@@ -281,13 +247,9 @@ def run(verbose: bool = True) -> int:
             "SELECT * FROM decisions WHERE (sonuc IS NULL OR sonuc='') "
             "AND tarih < ? ORDER BY id", (cutoff,))]
 
-    # BIST gunluk hareketine gore dinamik AL toleransi (sakin gun kati, oynak gun gevsek)
-    bist_gunluk = _bist_gunluk_degisim()
     if verbose:
-        tol = _tolerans(bist_gunluk)
-        bg = f"%{bist_gunluk:+.2f}" if bist_gunluk is not None else "bilinmiyor"
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)} "
-              f"| BIST gunluk: {bg} -> AL toleransi %{tol:g}")
+              f"| AL basari esigi: piyasa_farki >= {AL_PIYASA_ESIGI}")
     guncellenen = 0
     for r in rows:
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))   # TUT'ta AI tahmini sure
@@ -297,14 +259,12 @@ def run(verbose: bool = True) -> int:
                 print(f"  {r['ticker']} ({r['tarih']}, {r['karar']}): "
                       f"{kg} islem gunu dolmadi / veri yok -> bekliyor")
             continue
-        # PIYASAYA KARSI: BIST hissesinde ayni pencerede BIST-100 degisimini kiyasla
+        # PIYASAYA KARSI: benchmark (BIST -> XU100.IS, ABD -> SPY) ayni pencerede
         piyasa_farki = None
-        if _is_bist(r["ticker"]):
-            bist_deg = _index_change(r["tarih"], kg)
-            if bist_deg is not None:
-                piyasa_farki = round(deg - bist_deg, 2)
-        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki,
-                         bist_degisim=bist_gunluk)
+        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg)
+        if bench_deg is not None:
+            piyasa_farki = round(deg - bench_deg, 2)
+        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
         if piyasa_farki is not None:
             sonuc += f" · piyasa {piyasa_farki:+.1f}p"
@@ -357,9 +317,59 @@ def mini_update(verbose: bool = True) -> int:
     return guncellenen
 
 
+def backfill_piyasa_farki(verbose: bool = True) -> int:
+    """GERIYE DONUK piyasa_farki doldurma (+ AL sonuc yeniden degerlendirme).
+
+    sonuc'u DOLU (degerlendirilmis) tum kararlar icin, karardan degerlendirme
+    penceresine kadar olan hisse getirisi ile benchmark getirisi (BIST -> XU100.IS,
+    ABD -> SPY) farkini hesaplar ve decisions.piyasa_farki'na yazar. Yeni AL basari
+    kriteri (piyasa_farki >= -1.5) devreye girdigi icin sonuc metnindeki DOGRU/YANLIS
+    de guncel _verdict ile yeniden turetilip yazilir (tutarlilik).
+
+    KILL_SWITCH kararlari + fiyat/benchmark verisi gelmeyenler atlanir (mevcut
+    kayit korunur). Tekrar calistirilabilir (idempotent)."""
+    from src.db import database as db
+    db.init_db()
+    with db.get_conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM decisions WHERE sonuc IS NOT NULL AND sonuc <> '' "
+            "ORDER BY id")]
+    if verbose:
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] backfill piyasa_farki: "
+              f"{len(rows)} degerlendirilmis karar taranacak")
+    guncellenen = 0
+    for r in rows:
+        karar = (r.get("karar") or "").upper()
+        if "KILL" in karar:                      # KILL_SWITCH -> degerlendirme yok
+            continue
+        kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))
+        deg = _price_change(r["ticker"], r["tarih"], kg)
+        if deg is None:                          # fiyat penceresi/veri yok -> koru
+            continue
+        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg)
+        piyasa_farki = round(deg - bench_deg, 2) if bench_deg is not None else None
+        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
+        sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
+        if piyasa_farki is not None:
+            sonuc += f" · piyasa {piyasa_farki:+.1f}p"
+        db.set_decision_outcome(r["id"], sonuc, piyasa_farki=piyasa_farki)
+        guncellenen += 1
+        if verbose:
+            pf = f"{piyasa_farki:+.1f}p" if piyasa_farki is not None else "—"
+            print(f"  {r['ticker']:7} {r['karar']:11} {r['tarih']} "
+                  f"({kg}ig) -> {sonuc}  [piyasa_farki {pf}]")
+    if verbose:
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] backfill: {guncellenen} karar "
+              f"piyasa_farki + sonuc guncellendi.")
+    return guncellenen
+
+
 if __name__ == "__main__":
     import sys as _sys
-    if len(_sys.argv) > 1 and _sys.argv[1] == "mini":
+    arg = _sys.argv[1] if len(_sys.argv) > 1 else ""
+    if arg == "mini":
         mini_update()
+    elif arg == "backfill":
+        backfill_piyasa_farki()
     else:
         run()

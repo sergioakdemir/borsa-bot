@@ -167,6 +167,43 @@ def _batch_cek(yf_syms: list[str]) -> dict:
     return out
 
 
+def _sma_batch(yf_map: dict) -> dict:
+    """Her hisse icin SMA20/50/200 trendini TEK yf.download batch'i (1y) ile hesaplar.
+
+    yf_map: {ticker: yf_sembol}. Doner: {ticker: {"sma_trend": "güçlü yükseliş" /
+    "güçlü düşüş" / "yatay/belirsiz", "sma20_uzeri": bool}}. Boylece sabah brifingi
+    (presignal + market breadth) SMA'yi cache'den okur, yfinance'e tekrar gitmez.
+    Veri yetersiz/hatali hisseler cikti disinda kalir."""
+    if not yf_map:
+        return {}
+    from src.ai.presignal import _sma, _sma_trend_label
+    import yfinance as yf
+    syms = sorted(set(yf_map.values()))
+    try:
+        df = yf.download(syms, period="1y", interval="1d", progress=False,
+                         threads=True, auto_adjust=True)
+        closes_all = df["Close"]
+    except Exception:
+        return {}
+    tek = len(syms) == 1
+    out = {}
+    for t, sym in yf_map.items():
+        try:
+            col = (closes_all.dropna() if tek else closes_all[sym].dropna())
+            closes = [float(x) for x in col.tolist() if x == x and x]   # NaN/0 ele
+        except Exception:
+            continue
+        if len(closes) < 20:                     # SMA20 icin bile yetersiz -> atla
+            continue
+        last = closes[-1]
+        label = _sma_trend_label(last, _sma(closes, 20), _sma(closes, 50),
+                                 _sma(closes, 200))
+        s20 = _sma(closes, 20)
+        out[t] = {"sma_trend": label,
+                  "sma20_uzeri": bool(s20 is not None and last > s20)}
+    return out
+
+
 def _investing_fiyat(url: str):
     """Investing.com enstruman sayfasindan {fiyat, gunluk} ceker (requests + bs4).
 
@@ -357,10 +394,23 @@ def guncelle() -> dict:
         print(f"[bilgi] {t} fiyati {kaynak}'ten: {d['fiyat']} "
               f"(gunluk %{gunluk if gunluk is not None else '—'})")
 
+    # 3) SMA20/50/200 trendini onceden hesapla (TEK batch) ve cache'e goml.
+    #    BIGPARA_ONLY fonlari (yfinance yanlis fiyatlar) SMA'dan disla. presignal +
+    #    market breadth bu degeri cache'den okur -> sabah brifingi 0 ek ag istegi.
+    sma_map = {t: _yf_sembol(t, sembol_market[t])
+               for t in cache if t not in BIGPARA_ONLY}
+    sma_sonuc = _sma_batch(sma_map)
+    sma_sayi = 0
+    for t, d in sma_sonuc.items():
+        if t in cache:
+            cache[t]["sma_trend"] = d.get("sma_trend")
+            cache[t]["sma20_uzeri"] = d.get("sma20_uzeri")
+            sma_sayi += 1
+
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
                           encoding="utf-8")
     return {"istenen": len(sembol_market), "cekilen": len(cache),
-            "borsa_mcp": mcp_sayi, "diger": len(cache) - mcp_sayi,
+            "borsa_mcp": mcp_sayi, "diger": len(cache) - mcp_sayi, "sma": sma_sayi,
             "basarisiz": len(sembol_market) - len(cache), "dosya": str(CACHE_PATH)}
 
 
@@ -370,7 +420,7 @@ def main() -> None:
     print(f"[{now:%Y-%m-%d %H:%M}] fiyat cache guncellendi: "
           f"{ozet['cekilen']}/{ozet['istenen']} hisse cekildi "
           f"(borsa_mcp={ozet.get('borsa_mcp', 0)}, diger={ozet.get('diger', 0)}, "
-          f"{ozet['basarisiz']} basarisiz) -> {ozet['dosya']}")
+          f"sma={ozet.get('sma', 0)}, {ozet['basarisiz']} basarisiz) -> {ozet['dosya']}")
 
 
 if __name__ == "__main__":

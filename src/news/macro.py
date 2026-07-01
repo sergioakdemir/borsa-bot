@@ -423,6 +423,124 @@ def _fred_fed_funds():
 
 
 # ---------------------------------------------------------------------------
+# Dunya piyasalari sabah gostergeleri (yfinance, tek batch):
+#   ES=F  -> S&P 500 futures (gece kapanisi yonu, gunluk %)
+#   ^VIX  -> korku endeksi (seviye; 20+ risk-off)
+#   DX-Y.NYB -> dolar endeksi (seviye; ~104)
+#   ^N225 -> Nikkei 225 (Asya, gunluk %)
+#   000001.SS -> Shanghai Composite (Asya, gunluk %)
+# ---------------------------------------------------------------------------
+_DUNYA_SEMBOL = {
+    "sp_futures": "ES=F",        # kullanici notu "/ES=F" -> yfinance sembolu "ES=F"
+    "vix": "^VIX",
+    "dxy": "DX-Y.NYB",
+    "nikkei": "^N225",
+    "shanghai": "000001.SS",
+}
+
+
+def _dunya_gostergeleri() -> dict:
+    """S&P futures / VIX / DXY / Nikkei / Shanghai — TEK yfinance batch.
+
+    Doner: {sp_futures_degisim, vix, dxy, nikkei_degisim, shanghai_degisim}.
+    Futures/Nikkei/Shanghai gunluk % (son iki kapanis), VIX/DXY seviye (son kapanis).
+    Her alan bagimsiz; cekilemeyen None kalir (get_macro son_bilinen'e duser)."""
+    out = {"sp_futures_degisim": None, "vix": None, "dxy": None,
+           "nikkei_degisim": None, "shanghai_degisim": None}
+    try:
+        import logging
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        import yfinance as yf
+        df = yf.download(list(_DUNYA_SEMBOL.values()), period="5d", interval="1d",
+                         progress=False, threads=True, auto_adjust=True)
+        closes = df["Close"]
+    except Exception:
+        return out
+
+    def _son_degisim(sym):
+        """(son_kapanis, gunluk_%) — veri yoksa (None, None)."""
+        try:
+            col = closes[sym].dropna()
+        except Exception:
+            return None, None
+        if len(col) == 0:
+            return None, None
+        last = float(col.iloc[-1])
+        deg = None
+        if len(col) >= 2 and float(col.iloc[-2]):
+            prev = float(col.iloc[-2])
+            deg = round((last - prev) / prev * 100, 2)
+        return round(last, 2), deg
+
+    _, out["sp_futures_degisim"] = _son_degisim(_DUNYA_SEMBOL["sp_futures"])
+    out["vix"], _ = _son_degisim(_DUNYA_SEMBOL["vix"])
+    out["dxy"], _ = _son_degisim(_DUNYA_SEMBOL["dxy"])
+    _, out["nikkei_degisim"] = _son_degisim(_DUNYA_SEMBOL["nikkei"])
+    _, out["shanghai_degisim"] = _son_degisim(_DUNYA_SEMBOL["shanghai"])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Turkiye CDS (5 yillik, basis point) - MacroVar.com (haftalik guncelleme).
+# get_macro() CDS'i macro_last.json'dan (son bilinen) okur; guncelle_cds() Pazartesi
+# 09:00 cron ile MacroVar'dan tazeler. CDS makro rejim skoruna girer (300+ risk-off,
+# 150 alti risk-on) - bkz. kombinasyon.makro_rejim_skoru.
+# ---------------------------------------------------------------------------
+_MACROVAR_CDS_URL = "https://macrovar.com/turkey/turkey-credit-default-swaps/"
+_CDS_MAKUL = (50, 1500)          # makul Turkiye 5y CDS bandi (bp) - parse hatasi eler
+
+
+def _macrovar_cds():
+    """MacroVar Turkiye CDS sayfasindan guncel 5 yillik CDS'i (basis point, int)
+    ceker. Sayfadaki 'Turkey 5Y/5 Year CDS' / 'Credit Default Swap' yakininda makul
+    bir sayi (50-1500 bp) aranir. MacroVar Cloudflare arkasinda oldugundan once
+    curl_cffi (chrome taklidi), sonra requests denenir. Erisilemez/parse edilemezse
+    None (get_macro son bilinen degere duser)."""
+    html = _fetch(_MACROVAR_CDS_URL) or _fetch_html(_MACROVAR_CDS_URL)
+    if not html:
+        _log_macro_hata(_MACROVAR_CDS_URL, "FETCH_BASARISIZ (CDS sayfasi cekilemedi)")
+        return None
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    # 'Turkey 5 Year CDS ... 305.20' / 'Credit Default Swap(s) ... 305' kaliplari
+    for anahtar in ("Turkey 5Y", "Turkey 5 Year", "Turkey 5-Year", "5Y CDS",
+                    "5 Year CDS", "Credit Default Swap", "CDS"):
+        for m in re.finditer(re.escape(anahtar) + r"[^0-9]{0,40}([0-9]{2,4}(?:\.[0-9]+)?)",
+                             t, re.IGNORECASE):
+            try:
+                v = int(round(float(m.group(1))))
+            except (TypeError, ValueError):
+                continue
+            if _CDS_MAKUL[0] <= v <= _CDS_MAKUL[1]:
+                return v
+    _log_macro_hata(_MACROVAR_CDS_URL,
+                    "CDS_PARSE_BASARISIZ (sayfa geldi ama makul CDS bulunamadi)")
+    return None
+
+
+def guncel_cds():
+    """get_macro icin son bilinen Turkiye CDS (macro_last.json 'turkey_cds'); yoksa None.
+    Canli scraping YAPMAZ (haftalik cron guncelledigi degeri okur)."""
+    return _load_son_bilinen().get("turkey_cds")
+
+
+def guncelle_cds(verbose: bool = True):
+    """HAFTALIK CRON girisi (Pazartesi 09:00): MacroVar'dan Turkiye CDS'i ceker ve
+    macro_last.json'a yazar. Basarisizsa son bilinen deger korunur. Cekilen degeri
+    (veya None) dondurur."""
+    v = _macrovar_cds()
+    if v is not None:
+        _kaydet_son_bilinen({"turkey_cds": v})
+        if verbose:
+            print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] Turkiye CDS guncellendi: {v} bp")
+    else:
+        eski = guncel_cds()
+        if verbose:
+            print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] Turkiye CDS alinamadi "
+                  f"(MacroVar); son bilinen: {eski}")
+    return v
+
+
+# ---------------------------------------------------------------------------
 # TCMB PPK kararlari - data/ppk_kararlari.json (gecmis kararlar + son degisim bp)
 # ---------------------------------------------------------------------------
 _PPK_KARARLARI = Path(__file__).resolve().parents[2] / "data" / "ppk_kararlari.json"
@@ -1070,6 +1188,23 @@ def get_macro() -> dict:
                            "TCMB faiz beklenti verisi alınamadı (macro.py) "
                            "-> varsayılan 0 kullanıldı.")
 
+    # 7) DUNYA PIYASALARI (sabah): S&P futures / VIX / DXY / Nikkei / Shanghai.
+    # Tek yfinance batch; cekilemeyen alan son_bilinen'e duser (bos kalmasin).
+    dunya = _dunya_gostergeleri()
+    for ad in ("sp_futures_degisim", "vix", "dxy",
+               "nikkei_degisim", "shanghai_degisim"):
+        v = dunya.get(ad)
+        if v is not None:
+            out[ad] = v
+            taze[ad] = v
+            if "yahoo(dunya)" not in out["kaynaklar"]:
+                out["kaynaklar"].append("yahoo(dunya)")
+        else:
+            out[ad] = son_bilinen.get(ad)      # yedek: son bilinen (yoksa None)
+
+    # 8) Turkiye CDS (bp) - haftalik cron gunceller; burada son bilineni oku.
+    out["turkey_cds"] = guncel_cds()
+
     # taze cekilen degerleri kalici sakla (sonraki yedek icin)
     _kaydet_son_bilinen(taze)
 
@@ -1172,3 +1307,13 @@ def evds_macro() -> dict:
     else:
         out["neden"] = "EVDS3 yanit vermedi (muhtemelen proxy POST kisiti / no-KYC)"
     return out
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    # Haftalik CDS guncelleme: `python -m src.news.macro cds` (Pazartesi 09:00 cron).
+    if len(_sys.argv) > 1 and _sys.argv[1] == "cds":
+        guncelle_cds()
+    else:
+        import json as _json
+        print(_json.dumps(get_macro(), ensure_ascii=False, indent=2))

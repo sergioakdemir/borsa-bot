@@ -140,11 +140,12 @@ def _clamp(v, lo, hi):
 
 
 def makro_rejim_skoru(usdtry_g=None, bist_g=None, brent_g=None,
-                      fed=None, tcmb=None) -> dict:
+                      fed=None, tcmb=None, cds=None) -> dict:
     """Piyasa risk istahini 0-100 arasi tek skora indirger (100 = tam Risk-On).
 
     50 notr taban; her makro bilesen katki ekler/cikarir. fed/tcmb =
     fed_tcmb_analiz ciktisindaki banka dict'leri (sürpriz/karar yonu icin).
+    cds = Turkiye 5y CDS (bp): 300+ ise risk-off (-5), 150 alti ise risk-on (+3).
     Skora gore rejim: >=60 Risk-On, <=40 Risk-Off, arasi Nötr.
     Donus: {"skor": int, "rejim": str, "bilesenler": [(ad, katki)]}."""
     skor = 50.0
@@ -164,6 +165,12 @@ def makro_rejim_skoru(usdtry_g=None, bist_g=None, brent_g=None,
     if brent_g is not None:
         # petrol yükselişi ithalatçı TR için hafif risk-off
         _ekle("petrol", _clamp(-brent_g * 1.5, -6, 6))
+    if cds is not None:
+        # yüksek CDS (ülke risk primi) risk-off; düşük CDS risk-on
+        if cds >= 300:
+            _ekle("CDS (yüksek risk primi)", -5)
+        elif cds < 150:
+            _ekle("CDS (düşük risk primi)", +3)
     for banka, ad in ((fed, "Fed"), (tcmb, "TCMB")):
         if not banka:
             continue
@@ -236,9 +243,15 @@ def guncel_rejim(ttl: float = _TTL) -> dict:
     rejim/skor sabah brifinginde 'Piyasa Rejimi' blogunda kullanilir."""
     guncel_faktorler(ttl)                     # _CACHE['ham']'i doldurur/tazeler
     ham = _CACHE.get("ham") or {}
+    cds = None
+    try:
+        from src.news.macro import get_macro
+        cds = get_macro().get("turkey_cds")
+    except Exception:
+        cds = None
     rejim = makro_rejim_skoru(usdtry_g=ham.get("usdtry_g"),
                               bist_g=ham.get("bist_g"),
-                              brent_g=ham.get("brent_g"))
+                              brent_g=ham.get("brent_g"), cds=cds)
     rejim["bist_g"] = ham.get("bist_g")
     return rejim
 
@@ -277,7 +290,8 @@ def makro_durum(ttl: float = _TTL) -> dict:
         m.get("tcmb_degisim_bp"), m.get("tcmb_beklenti_bp"))
     rejim = makro_rejim_skoru(
         usdtry_g=deg.get("USDTRY=X"), bist_g=deg.get("XU100.IS"),
-        brent_g=deg.get("BZ=F"), fed=analiz.get("fed"), tcmb=analiz.get("tcmb"))
+        brent_g=deg.get("BZ=F"), fed=analiz.get("fed"), tcmb=analiz.get("tcmb"),
+        cds=m.get("turkey_cds"))
     durum = {"rejim": rejim, "fed_tcmb": analiz}
     _MAKRO_CACHE.update(ts=now, durum=durum)
     return durum

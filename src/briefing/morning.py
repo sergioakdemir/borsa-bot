@@ -112,6 +112,51 @@ def _rejim_satirlari(rejim) -> list:
     return lines
 
 
+def _dunya_satiri(makro=None) -> str | None:
+    """🌍 DÜNYA bloğu: S&P futures / VIX / DXY (+ Asya: Nikkei, Shanghai).
+
+    makro: get_macro() ciktisi (verilmezse burada cekilir - 5 dk cache). Ornek:
+    '🌍 Dünya: S&P futures +%0.3 | VIX 18 | DXY 104 | Nikkei +%0.5 | Shanghai -%0.2'.
+    Hicbir alan gelmezse None."""
+    if makro is None:
+        try:
+            from src.news.macro import get_macro
+            makro = get_macro()
+        except Exception:
+            return None
+    if not makro:
+        return None
+    parcalar = []
+    spf = makro.get("sp_futures_degisim")
+    if spf is not None:
+        parcalar.append(f"S&P futures {spf:+.1f}%")
+    vix = makro.get("vix")
+    if vix is not None:
+        parcalar.append(f"VIX {vix:.0f}")
+    dxy = makro.get("dxy")
+    if dxy is not None:
+        parcalar.append(f"DXY {dxy:.0f}")
+    nikkei = makro.get("nikkei_degisim")
+    if nikkei is not None:
+        parcalar.append(f"Nikkei {nikkei:+.1f}%")
+    shanghai = makro.get("shanghai_degisim")
+    if shanghai is not None:
+        parcalar.append(f"Shanghai {shanghai:+.1f}%")
+    if not parcalar:
+        return None
+    return "🌍 <b>Dünya:</b> " + " | ".join(_esc(p) for p in parcalar)
+
+
+def _sektor_rotasyon_satiri() -> str | None:
+    """📊 Sektör rotasyonu satiri (son 5 gun en guclu/zayif sektor). Veri yoksa None."""
+    try:
+        from src.ai import sektor_rotasyon
+        satir = sektor_rotasyon.brifing_satiri()
+    except Exception:
+        return None
+    return _esc(satir) if satir else None
+
+
 def _tetiklenen_senaryo_satirlari() -> list:
     """GECE TETİKLENEN SENARYOLAR bloğu: senaryo_takip.json'da durumu 'gerceklesti'
     olan senaryolari portfoy bolumunden ONCE one cikarir. Yoksa bos liste."""
@@ -681,6 +726,15 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
         if rejim_satir:
             lines.append("")
             lines += rejim_satir
+        # 🌍 DÜNYA (S&P futures/VIX/DXY/Nikkei/Shanghai) + 📊 Sektör rotasyonu
+        dunya = _dunya_satiri()          # get_macro (5 dk cache) icinden okur
+        rotasyon = _sektor_rotasyon_satiri()
+        if dunya or rotasyon:
+            lines.append("")
+            if dunya:
+                lines.append(dunya)
+            if rotasyon:
+                lines.append(rotasyon)
 
     if not valid:
         lines.append("")

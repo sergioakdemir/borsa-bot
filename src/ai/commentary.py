@@ -147,10 +147,15 @@ SYSTEM = (
     "vermekten cekinme. Temkinli olmak iyidir ama surekli TUT demek de bir hata "
     "turudur. Puan 7 ve uzerinde guclu bir gorunum varsa AL'i dusun; her seyin "
     "mukemmel hizalanmasini bekleme.\n"
-    "YUKSEK PUAN DISIPLINI: Puan 8+ vermeden once kendine sor: gercekten sektor "
-    "lideri mi, analist konsensusu guclu mu, somut (taze) haber/katalizor var mi? "
-    "Bu uclunden en az ikisi net DEGILSE puani 7'de tut. Yuksek puan, sadece "
-    "iyimserlik degil; ayrisan ustun veriyle DESTEKLENMELI.\n"
+    "YUKSEK PUAN DISIPLINI (Puan 8): Puan 8 vermek icin su dort kosuldan EN AZ IKISI "
+    "net saglanmali: (1) guclu yukselis trendi (fiyat tum ortalamalarin uzerinde), "
+    "(2) analist konsensusu AL ve en az 10 analist, (3) son 24 saatte olumlu haber/KAP "
+    "bildirimi, (4) F/K sektor ortalamasinin altinda (ucuz). Bu dortten en az ikisi net "
+    "DEGILSE puani 7'de tut. Yuksek puan, sadece iyimserlik degil; ayrisan ustun veriyle "
+    "DESTEKLENMELI.\n"
+    "AL ESIGI (piyasaya gore): BIST hisselerinde AL demek icin puan 8+ ara (daha "
+    "secici ol). ABD hisselerinde puan 7+ yeterli. Esigin altinda guclu bir gorunum "
+    "olsa bile AL yerine TUT/BEKLE tercih et.\n"
     "BEKLE karari: SADECE gercekten belirsiz durumlarda (yon belirsiz, kritik bir "
     "veri/katalizor bekleniyor ya da sinyal olgunlasmadiysa) BEKLE de; diger tum "
     "durumlarda AL/TUT/AZALT/UZAK_DUR'dan birini tercih et. BEKLE secersen 'tekrar_bak_kosulu' "
@@ -213,6 +218,16 @@ SYSTEM = (
     "AL kararinda daha secici ve temkinli ol, eminligi abartma; piyasa YUKSELIYORSA "
     "firsatlari daha cesur degerlendir. Genel yonu hissenin kendi verisiyle dengele, "
     "tek basina belirleyici yapma.\n\n"
+    "PIYASA GENISLIGI (MARKET BREADTH): Veride 'piyasa_baglami.market_breadth' varsa "
+    "(izleme listesindeki hisselerin yuzde kaci kisa vadeli ortalamasinin uzerinde) "
+    "dikkate al. Oran %70+ ise (durum 'güçlü') piyasa genis tabanli yukseliste, AL "
+    "kararlarina daha olumlu bak. Oran %30 altinda ise (durum 'zayıf') piyasa zayif; "
+    "yeni AL yerine BEKLE'ye yaklas ve eminligi dusur.\n\n"
+    "SEKTOR ROTASYONU: Veride 'piyasa_baglami.sektor_rotasyonu' (bu hafta guclu/zayif "
+    "sektorler) ve hisseye ozel 'sektor_gucu' ('güçlü'/'zayıf'/'nötr') varsa dikkate al. "
+    "Hissenin sektoru bu hafta GUCLU ise AL'i destekler; ZAYIF ise AL'da daha secici ol, "
+    "ayni firsatta guclu sektordeki hisseyi tercih et. Sektor gucunu tek basina "
+    "belirleyici yapma, hisse verisiyle birlikte tart.\n\n"
     "MAKRO GOSTERGELER: Veride 'piyasa_baglami.makro' varsa (USD/TRY, TR 10 yillik "
     "tahvil faizi, TCMB politika faizi, TUFE) dikkate al. Yuksek/yukselen politika "
     "faizi ve tahvil getirisi borsa icin baski yaratir (ozellikle borca/faize duyarli "
@@ -704,8 +719,30 @@ def market_context(rss_src=None, overview=None) -> dict:
         yabanci = get_foreign_flow()
     except Exception:
         yabanci = {"available": False}
-    return {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview,
-            "yabanci_yatirimci": yabanci}
+    # Market breadth (izleme listesi SMA20 uzeri orani) - fiyat_cache'ten, ek ag istegi yok
+    try:
+        from src.ai.presignal import market_breadth
+        breadth = market_breadth()
+    except Exception:
+        breadth = None
+    # Sektor rotasyonu (son 5 gun) - compact: yalniz en guclu + en zayif sektor
+    rotasyon = None
+    try:
+        from src.ai import sektor_rotasyon
+        rot = sektor_rotasyon.sektor_rotasyonu()
+        if rot and rot.get("guclu"):
+            rotasyon = {"guclu": f"{rot['guclu'][0]} {rot['guclu'][1]:+.1f}%"}
+            if rot.get("zayif") and rot["zayif"][0] != rot["guclu"][0]:
+                rotasyon["zayif"] = f"{rot['zayif'][0]} {rot['zayif'][1]:+.1f}%"
+    except Exception:
+        rotasyon = None
+    ctx = {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview,
+           "yabanci_yatirimci": yabanci}
+    if breadth:
+        ctx["market_breadth"] = breadth
+    if rotasyon:
+        ctx["sektor_rotasyonu"] = rotasyon
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +1001,14 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         sektor_notu = SEKTOR_NOTLARI.get(ticker)
         if sektor_notu:
             payload["sektor_notu"] = sektor_notu
+        # Sektor gucu (bu haftaki rotasyon): 'güçlü'/'zayıf'/'nötr' - AL'da guclu sektor tercih
+        try:
+            from src.ai import sektor_rotasyon
+            gucu = sektor_rotasyon.sektor_gucu(ticker)
+            if gucu:
+                payload["sektor_gucu"] = gucu
+        except Exception:
+            pass
         # Tarihsel senaryo (makro kosullarla eslestirilmis) - yalniz BIST
         try:
             from src.ai.scenarios import get_scenario_context
@@ -1218,6 +1263,15 @@ _TAVAN_SEKTORLER = {
 }
 _SEKTOR_AL_TAVANI = 2          # ayni sektorde gunde en fazla bu kadar AL
 
+# AL icin minimum puan esigi (piyasaya gore): BIST daha secici (8), ABD (7).
+_AL_PUAN_ESIGI = {"bist": 8, "abd": 7}
+
+
+def _al_puan_esigi_ad(r) -> int:
+    """Kaydin piyasasina gore AL minimum puan esigi (BIST 8, ABD 7)."""
+    mk = (r.get("market") or "bist").lower()
+    return _AL_PUAN_ESIGI["abd"] if mk in ("us", "abd") else _AL_PUAN_ESIGI["bist"]
+
 
 def _aktif_al(r) -> bool:
     """Kayit gercek (uygulanabilir) bir AL mi? skip/kill/veto haric."""
@@ -1272,6 +1326,33 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
     from src.db import database as db
     from src.ai.learning import _sektor_of
     bugun = datetime.now(_TZ).date()
+
+    # 0a) AL PUAN ESIGI: BIST'te puan<8, ABD'de puan<7 olan AL -> BEKLE (daha secici).
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        esik = _al_puan_esigi_ad(r)
+        if (r.get("score") or 0) < esik:
+            mk = "BIST" if _al_puan_esigi_ad(r) == _AL_PUAN_ESIGI["bist"] else "ABD"
+            _al_to_bekle(
+                r, f"{mk} AL eşiği puan {esik}; puan {r.get('score')} yetersiz.",
+                verbose=verbose)
+
+    # 0b) MARKET BREADTH: izleme listesi zayifsa (<%30 SMA20 uzeri) yeni BIST AL -> BEKLE.
+    try:
+        from src.ai.presignal import market_breadth
+        breadth = market_breadth()
+    except Exception:
+        breadth = None
+    if breadth and breadth.get("durum") == "zayıf":
+        for r in results or []:
+            if not _aktif_al(r):
+                continue
+            if (r.get("market") or "bist").lower() in ("us", "abd"):
+                continue                          # breadth BIST metrigi; ABD'yi etkileme
+            _al_to_bekle(
+                r, f"Piyasa geneli zayıf (breadth %{breadth.get('oran')}); "
+                   "yeni AL BEKLE'ye çekildi.", verbose=verbose)
 
     # 1) Tekrarli sinyal filtresi (hisse bazli, bagimsiz)
     for r in results or []:

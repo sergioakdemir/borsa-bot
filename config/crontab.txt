@@ -3,6 +3,8 @@ CRON_TZ=Europe/Istanbul
 0 9 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.briefing.morning >> /root/borsa-bot/logs/briefing.log 2>&1
 # Haftalik ozet raporu: Pazartesi 08:30 (sabah brifinginden once)
 30 8 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.weekly_report >> /root/borsa-bot/logs/weekly_report.log 2>&1
+# Turkiye CDS haftalik guncelleme (MacroVar): Pazartesi 09:00 -> makro rejim skoruna girer
+0 9 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.macro cds >> /root/borsa-bot/logs/macro_cds.log 2>&1
 # ABD brifingi: hafta ici 15:30 (ABD acilisindan once, sadece ABD hisseleri)
 30 15 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.briefing.morning us >> /root/borsa-bot/logs/briefing_us.log 2>&1
 # PPK gunu politika faizi otomasyonu: her gun 14:30 (PPK degilse sessiz cikar)

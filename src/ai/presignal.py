@@ -3,13 +3,17 @@ onceden hesaplanmis teknik sinyal ozeti uretir. Token tasarrufu saglar.
 
 Tum sayilar gercek veriden deterministik hesaplanir; AI yorumlar, hesaplamaz.
 """
+import json
 import statistics
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .metrics import compute_metrics
 
 _TZ = ZoneInfo("Europe/Istanbul")
+_CACHE_PATH = Path(__file__).resolve().parents[2] / "data" / "fiyat_cache.json"
+_FIYAT_CACHE = {"mtime": None, "data": {}}
 
 # Trend etiketi -> AI baglamina girecek sade aciklama. SMA sayilari kullaniciya
 # ASLA gosterilmez; sadece "yukari/asagi/yatay" trend olarak aktarilir.
@@ -39,12 +43,74 @@ def _sma_trend_label(last, s20, s50, s200):
     return "yatay/belirsiz"
 
 
+def _load_fiyat_cache() -> dict:
+    """data/fiyat_cache.json'i mtime-onbellekli okur (update_fiyat_cache uretir).
+    Icinde her hisse icin onceden hesaplanmis 'sma_trend' + 'sma20_uzeri' bulunur."""
+    try:
+        mtime = _CACHE_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if _FIYAT_CACHE["mtime"] != mtime:
+        try:
+            _FIYAT_CACHE["data"] = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            _FIYAT_CACHE["data"] = {}
+        _FIYAT_CACHE["mtime"] = mtime
+    return _FIYAT_CACHE["data"] or {}
+
+
+def _cache_sma_trend(symbol) -> str | None:
+    """fiyat_cache'ten onceden hesaplanmis SMA trend etiketini (context'e cevrilmis)
+    dondurur. Cache yoksa/hissede yoksa None -> cagiran yfinance'e duser."""
+    base = (symbol or "").upper().replace(".IS", "").strip()
+    if not base:
+        return None
+    entry = _load_fiyat_cache().get(base)
+    if not isinstance(entry, dict):
+        return None
+    label = entry.get("sma_trend")
+    return _TREND_CONTEXT.get(label) if label else None
+
+
+def market_breadth() -> dict | None:
+    """Watchlist (BIST endeks + kisisel) hisselerinden kaci SMA20 UZERINDE?
+    fiyat_cache'ten onceden hesaplanmis 'sma20_uzeri' okur (ek ag istegi yok).
+
+    Doner: {"oran": %, "guclu": n, "toplam": n, "durum": "güçlü"/"zayıf"/"nötr"}.
+      oran >= 70 -> "güçlü" (AL kararlarina pozitif)
+      oran <  30 -> "zayıf" (AL -> BEKLE egilimi)
+    Yeterli cache verisi yoksa None."""
+    try:
+        from src.watchlist import load_index, load_personal
+        tickerlar = {t for t in (load_index() + load_personal()) if t}
+    except Exception:
+        return None
+    cache = _load_fiyat_cache()
+    toplam = guclu = 0
+    for t in tickerlar:
+        entry = cache.get((t or "").upper().replace(".IS", ""))
+        if not isinstance(entry, dict) or entry.get("sma20_uzeri") is None:
+            continue
+        toplam += 1
+        if entry.get("sma20_uzeri"):
+            guclu += 1
+    if toplam < 5:                    # anlamli breadth icin yeterli hisse yok
+        return None
+    oran = round(guclu / toplam * 100, 1)
+    durum = "güçlü" if oran >= 70 else "zayıf" if oran < 30 else "nötr"
+    return {"oran": oran, "guclu": guclu, "toplam": toplam, "durum": durum}
+
+
 def compute_sma_trend(symbol, src=None) -> str | None:
-    """yfinance'den ~200 islem gunluk kapanisla SMA20/50/200 hesaplayip trend
-    etiketi dondurur (guclu yukselis / guclu dusus / yatay). Yalnizca AI baglamina
-    girer; SMA rakamlari kullaniciya ASLA gosterilmez. Veri yoksa None."""
+    """SMA20/50/200 trend etiketi (guclu yukselis / guclu dusus / yatay). ONCE
+    fiyat_cache'ten onceden hesaplanmis degeri okur (sabah brifingi ek ag istegi
+    yapmasin); yoksa yfinance'den ~200 islem gunluk kapanisla hesaplar. Yalnizca AI
+    baglamina girer; SMA rakamlari kullaniciya ASLA gosterilmez. Veri yoksa None."""
     if not symbol:
         return None
+    onbellek = _cache_sma_trend(symbol)
+    if onbellek is not None:
+        return onbellek
     try:
         from ..data.factory import get_data_source
         src = src or get_data_source()
