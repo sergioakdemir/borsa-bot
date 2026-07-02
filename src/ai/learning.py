@@ -162,11 +162,11 @@ SEKTOR_HISSE = {
     "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
     "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
     # Cam / Sanayi
-    "SISE": "Cam", "DNISI": "Sanayi", "UCAK": "Sanayi",
+    "SISE": "Cam", "DNISI": "Sanayi", "UCAK": "Sanayi", "PRKAB": "Sanayi",
     # BYF / Fon
     "GMSTR": "Değerli Metal",
     # Medya / Turizm
-    "HURGZ": "Medya", "NTTUR": "Turizm",
+    "HURGZ": "Medya", "NTTUR": "Turizm", "MERIT": "Turizm",
 }
 
 

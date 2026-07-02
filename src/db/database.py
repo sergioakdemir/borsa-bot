@@ -367,7 +367,7 @@ _BIST_TICKERS = [
     "METRO", "DEVA", "ECILC", "AEFES", "NTTUR", "BRYAT", "AGHOL", "KFEIN",
     "GESAN", "BMEKS", "BFREN", "EGEEN", "HURGZ", "IHLGM", "SILVR", "RAYSG",
     "DNISI", "UCAK", "GLBMD", "CEMAS", "TSKB", "ODAS", "EUPWR", "KONTR",
-    "KAREL", "NUHCM",
+    "KAREL", "NUHCM", "PRKAB", "MERIT",
 ]
 
 
