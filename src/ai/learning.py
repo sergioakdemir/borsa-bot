@@ -110,19 +110,63 @@ def build_learning_notes(tickers, limit: int = 10) -> dict:
 # L3: Sektor bazli ogrenme
 # ---------------------------------------------------------------------------
 SEKTOR_HISSE = {
+    # Bankacılık / Finans
     "GARAN": "Bankacılık", "AKBNK": "Bankacılık", "ISCTR": "Bankacılık",
     "YKBNK": "Bankacılık", "HALKB": "Bankacılık", "VAKBN": "Bankacılık",
+    "QNBFIN": "Bankacılık", "SKBNK": "Bankacılık", "TSKB": "Bankacılık",
+    "GLBMD": "Finans",
+    # Havacılık / Yer hizmetleri
     "THYAO": "Havacılık", "PGSUS": "Havacılık", "TAVHL": "Havacılık",
+    "CLEBI": "Havacılık",
+    # Enerji
     "TUPRS": "Enerji/Rafineri", "PETKM": "Enerji/Rafineri", "AYGAZ": "Enerji/Rafineri",
-    "ASELS": "Savunma", "AGHOL": "Savunma",
+    "AKSEN": "Enerji", "ZOREN": "Enerji", "ENJSA": "Enerji", "ODAS": "Enerji",
+    "EUPWR": "Enerji", "GESAN": "Enerji",
+    # Savunma
+    "ASELS": "Savunma", "OTKAR": "Savunma",
+    # Demir-Çelik / Döküm
     "EREGL": "Demir-Çelik", "KRDMD": "Demir-Çelik", "KORDS": "Demir-Çelik",
-    "EKGYO": "Gayrimenkul",
-    "TOASO": "Otomotiv", "FROTO": "Otomotiv",
-    "BIMAS": "Perakende", "MGROS": "Perakende",
-    "ULKER": "Gıda", "CCOLA": "İçecek",
+    "CEMAS": "Demir-Çelik",
+    # Çimento
+    "NUHCM": "Çimento",
+    # Madencilik
+    "KOZAL": "Madencilik", "KOZAA": "Madencilik",
+    # Gayrimenkul (GYO)
+    "EKGYO": "Gayrimenkul", "TRGYO": "Gayrimenkul", "ISGYO": "Gayrimenkul",
+    "ALGYO": "Gayrimenkul", "SNGYO": "Gayrimenkul", "IHLGM": "Gayrimenkul",
+    # Otomotiv / Yan sanayi
+    "TOASO": "Otomotiv", "FROTO": "Otomotiv", "TTRAK": "Otomotiv",
+    "DOAS": "Otomotiv", "BFREN": "Otomotiv", "EGEEN": "Otomotiv",
+    # Perakende / Giyim
+    "BIMAS": "Perakende", "MGROS": "Perakende", "SOKM": "Perakende",
+    "CRFSA": "Perakende", "MAVI": "Perakende", "LCWGK": "Perakende",
+    "ADESE": "Perakende", "BMEKS": "Perakende",
+    # Gıda / İçecek
+    "ULKER": "Gıda", "CCOLA": "İçecek", "AEFES": "İçecek",
+    # Telekom
     "TCELL": "Telekom", "TTKOM": "Telekom",
+    # Holding
     "KCHOL": "Holding", "SAHOL": "Holding", "DOHOL": "Holding", "ENKAI": "Holding",
-    "ARCLK": "Dayanıklı Tüketim", "SISE": "Cam",
+    "AGHOL": "Holding", "ALARK": "Holding", "ECZYT": "Holding", "ECILC": "Holding",
+    "METRO": "Holding", "BRYAT": "Holding",
+    # Sağlık / İlaç
+    "MPARK": "Sağlık", "SELEC": "Sağlık", "DEVA": "Sağlık",
+    # Sigorta
+    "TURSG": "Sigorta", "ANSGR": "Sigorta", "RAYSG": "Sigorta",
+    # Teknoloji / Yazılım
+    "LOGO": "Teknoloji", "NETAS": "Teknoloji", "KFEIN": "Teknoloji",
+    "KAREL": "Teknoloji", "KONTR": "Teknoloji",
+    # Kimya / Tarım
+    "HEKTS": "Kimya",
+    # Dayanıklı Tüketim
+    "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
+    "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
+    # Cam / Sanayi
+    "SISE": "Cam", "DNISI": "Sanayi", "UCAK": "Sanayi",
+    # BYF / Fon
+    "GMSTR": "Değerli Metal",
+    # Medya / Turizm
+    "HURGZ": "Medya", "NTTUR": "Turizm",
 }
 
 

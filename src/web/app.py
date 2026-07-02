@@ -31,7 +31,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
@@ -834,6 +834,12 @@ def get_stocks() -> dict:
 def _search_bist(q: str) -> list[dict]:
     """BIST: yerel evrende ticker/sirket adina gore (Turkce duyarsiz)."""
     nq = _norm(q).strip()
+    # Kullanici tam sembolu yazarsa ('GMSTR.F', 'THYAO.IS') borsa/fon ekini at:
+    # COMPANY_NAMES taban kodla ('GMSTR') tutuluyor -> eksiz eslesme icin soy.
+    for _suf in (".is", ".f"):
+        if nq.endswith(_suf):
+            nq = nq[: -len(_suf)]
+            break
     if not nq:
         return []
     comm = _commentary_by_ticker()
@@ -917,8 +923,10 @@ def get_portfolio(kullanici: str | None = None) -> dict:
                 "SELECT p.* FROM portfoy p JOIN kullanici k ON k.id = p.kullanici_id "
                 "WHERE LOWER(k.ad) = LOWER(?) ORDER BY p.id", (kullanici,))]
         else:
-            rows = [dict(r) for r in c.execute(
-                "SELECT * FROM portfoy ORDER BY kullanici_id, id")]
+            # GUVENLIK: kullanici belirtilmezse BOS don. Eskiden tum kullanicilarin
+            # pozisyonlari birlestiriliyordu -> kullanici param'i dusen her istekte
+            # capraz sizinti (baskasinin QQQ'su vs. yanlis portfoyde) olusuyordu.
+            rows = []
 
     # Guncel fiyat: Bota Sor ile AYNI kaynak -> _anlik_fiyatlar (kayit tazeyse
     # data/fiyat_cache.json'dan aninda doner, bayatsa/yoksa yfinance->bigpara'ya
@@ -5102,6 +5110,25 @@ def _gelen_token():
             or request.args.get("bb_devtok"))
 
 
+def _istek_kullanici_param():
+    """Istemcinin istekte belirttigi kullanici adi (varsa): query / JSON govde /
+    form (foto yukleme). Yoksa None."""
+    v = request.args.get("kullanici")
+    if not v:
+        try:
+            j = request.get_json(silent=True)
+        except Exception:
+            j = None
+        if isinstance(j, dict):
+            v = j.get("kullanici")
+    if not v:
+        try:
+            v = request.form.get("kullanici")
+        except Exception:
+            v = None
+    return (str(v).strip() or None) if v else None
+
+
 @app.before_request
 def _api_auth_guard():
     path = request.path or ""
@@ -5110,13 +5137,29 @@ def _api_auth_guard():
     if path in _AUTH_MUAF_TAM or path.startswith(_AUTH_MUAF_PREFIX):
         return None                                  # auth + saglik uclari muaf
     tok = _gelen_token()
+    uid = None
     if tok and _db is not None:
         try:
-            if _db.device_token_kullanici_id(tok) is not None:
-                return None                          # gecerli token -> devam
+            uid = _db.device_token_kullanici_id(tok)
         except Exception:
-            pass
-    return jsonify({"ok": False, "hata": "Yetkisiz: geçerli giriş (cihaz token) gerekli"}), 401
+            uid = None
+    if uid is None:
+        return jsonify({"ok": False,
+                        "hata": "Yetkisiz: geçerli giriş (cihaz token) gerekli"}), 401
+    # Token gecerli -> giris yapan kullaniciyi otoriter kimlik olarak sakla.
+    g.uid = uid
+    try:
+        g.kullanici_ad = _db.user_ad_by_id(uid)
+    except Exception:
+        g.kullanici_ad = None
+    # CAPRAZ ERISIM ENGELI: istekte baska bir 'kullanici' belirtilmisse ve bu,
+    # token sahibinden farkliysa reddet. Boylece hicbir uc istemcinin gonderdigi
+    # kullanici param'ina korsuz guvenmez (portfoy/hisse karismasi buradan cikiyordu).
+    istenen = _istek_kullanici_param()
+    if istenen and g.kullanici_ad and istenen.lower() != g.kullanici_ad.lower():
+        return jsonify({"ok": False,
+                        "hata": "Yetkisiz: başka kullanıcının verisine erişim"}), 403
+    return None
 
 
 @app.route("/api/health")

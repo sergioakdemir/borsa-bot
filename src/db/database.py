@@ -226,7 +226,8 @@ CREATE TABLE IF NOT EXISTS instruments (
     data_provider TEXT,
     suffix_rule   TEXT DEFAULT 'none',
     is_active     INTEGER DEFAULT 1,
-    aciklama      TEXT
+    aciklama      TEXT,
+    sektor        TEXT
 );
 """
 
@@ -287,6 +288,14 @@ def _migrate(c) -> None:
         cols_i = {r["name"] for r in c.execute("PRAGMA table_info(instruments)")}
         if "aciklama" not in cols_i:
             c.execute("ALTER TABLE instruments ADD COLUMN aciklama TEXT")
+        if "sektor" not in cols_i:          # sektor rotasyonu + karar motoru baglami
+            c.execute("ALTER TABLE instruments ADD COLUMN sektor TEXT")
+        # GMSTR.F Borsa Istanbul gumus BYF'sidir; eski kayit yanlislikla 'EU'/
+        # 'Frankfurt' isaretliydi -> yfinance 'GMSTR.F' (Frankfurt) bos donuyordu.
+        # BIST'e duzelt (canli fiyat zaten bigpara/MCP'den; alarm/trade yolu da artik
+        # dogru borsayi sorar). instrument_symbol '.F' -> '.IS' cevirir.
+        c.execute("UPDATE instruments SET market='BIST', exchange='BIST' "
+                  "WHERE ticker='GMSTR.F' AND (market='EU' OR exchange='Frankfurt')")
     cols_d = {r["name"] for r in c.execute("PRAGMA table_info(decisions)")}
     if "yanlis_sebep" not in cols_d:
         c.execute("ALTER TABLE decisions ADD COLUMN yanlis_sebep TEXT")
@@ -350,6 +359,15 @@ _BIST_TICKERS = [
     "SISE", "TCELL", "BIMAS", "FROTO", "TOASO", "EKGYO", "PETKM", "ARCLK",
     "SAHOL", "HALKB", "VAKBN", "ISCTR", "TAVHL", "PGSUS", "MGROS", "ULKER",
     "CCOLA", "DOHOL", "ENKAI", "KORDS", "TTKOM",
+    # Watchlist genisletme (100 hisse hedefi) — BIST tarama evreni.
+    "KOZAL", "KOZAA", "KRDMD", "VESBE", "VESTEL", "TTRAK", "OTKAR", "DOAS",
+    "LOGO", "NETAS", "ALARK", "QNBFIN", "SKBNK", "TRGYO", "MPARK", "MAVI",
+    "LCWGK", "CRFSA", "SOKM", "TURSG", "ANSGR", "AKSEN", "ZOREN", "ENJSA",
+    "CLEBI", "HEKTS", "ECZYT", "SELEC", "ISGYO", "ALGYO", "SNGYO", "ADESE",
+    "METRO", "DEVA", "ECILC", "AEFES", "NTTUR", "BRYAT", "AGHOL", "KFEIN",
+    "GESAN", "BMEKS", "BFREN", "EGEEN", "HURGZ", "IHLGM", "SILVR", "RAYSG",
+    "DNISI", "UCAK", "GLBMD", "CEMAS", "TSKB", "ODAS", "EUPWR", "KONTR",
+    "KAREL", "NUHCM",
 ]
 
 
@@ -386,13 +404,16 @@ def _instrument_seed() -> list[tuple]:
         rows.append((t, "US", "USD", "NASDAQ", "yfinance", "none"))
     for t in _BIST_TICKERS:
         rows.append((t, "BIST", "TRY", "BIST", "yfinance", ".IS"))
-    # Frankfurt'ta islem goren, sonek gomulu ozel sembol (TRY referansli).
-    rows.append(("GMSTR.F", "EU", "TRY", "Frankfurt", "yfinance", "custom"))
+    # GMSTR.F: Borsa Istanbul gumus BYF'si. Ticker'da '.F' fonu isaretler (Yahoo
+    # Frankfurt eki DEGIL); instrument_symbol bunu 'GMSTR.IS'e cevirir. Fiyat
+    # yfinance'te guvenilmez -> canli grafik bigpara/MCP'den gelir (bkz. app.py).
+    rows.append(("GMSTR.F", "BIST", "TRY", "BIST", "yfinance", "custom"))
     return rows
 
 
 def seed_instruments() -> None:
     """Baslangic enstrumanlarini ekler (idempotent; var olani ezmez)."""
+    from src.ai.learning import SEKTOR_HISSE      # sektor: tek kaynak (lazy import)
     with get_conn() as c:
         c.executemany(
             "INSERT OR IGNORE INTO instruments "
@@ -406,6 +427,17 @@ def seed_instruments() -> None:
             "UPDATE instruments SET aciklama=? WHERE ticker=?",
             [(a, t) for t, a in _INSTRUMENT_ACIKLAMA.items()],
         )
+        # Sektor bilgisini her seferinde SEKTOR_HISSE'den yaz (BIST hisseleri).
+        # Ticker'daki '.F'/'.IS' eki onemsenmez (GMSTR.F -> GMSTR gibi taban kod).
+        sektor_satir = []
+        for tk in _BIST_TICKERS + ["GMSTR.F"]:
+            sek = SEKTOR_HISSE.get(_norm_ticker(tk)) or SEKTOR_HISSE.get(
+                _norm_ticker(tk).replace(".F", ""))
+            if sek:
+                sektor_satir.append((sek, tk))
+        if sektor_satir:
+            c.executemany(
+                "UPDATE instruments SET sektor=? WHERE ticker=?", sektor_satir)
 
 
 def _norm_ticker(ticker: str) -> str:
@@ -461,9 +493,13 @@ def instrument_symbol(ticker: str) -> str:
         return f"{t}.IS"
     rule = (inst.get("suffix_rule") or "none").lower()
     base = inst["ticker"]
+    # BYF/fon ic isareti '.F' -> BIST yfinance sembolu 'XXX.IS' (Yahoo Frankfurt
+    # eki '.F' DEGIL; oyle sorulunca bos donuyordu). Or. 'GMSTR.F' -> 'GMSTR.IS'.
+    if base.upper().endswith(".F"):
+        return f"{base[:-2]}.IS"
     if rule in (".is", "bist", "is"):
         return f"{base}.IS"
-    return base   # 'none' (US) ve 'custom' (GMSTR.F) -> ticker dogrudan
+    return base   # 'none' (US) -> ticker dogrudan
 
 
 # ---- kaynak sicil ----
@@ -750,6 +786,17 @@ def user_id_by_ad(ad):
         r = c.execute("SELECT id FROM kullanici WHERE LOWER(ad)=LOWER(?)",
                       (str(ad),)).fetchone()
         return r["id"] if r else None
+
+
+def user_ad_by_id(uid):
+    """kullanici_id -> ad (yoksa None). Cihaz token'i -> giris yapan kullanici adi
+    cozumlemek icin (API guvenlik guard'i istenen kullanici ile eslesmeyi dogrular)."""
+    if uid is None:
+        return None
+    init_db()
+    with get_conn() as c:
+        r = c.execute("SELECT ad FROM kullanici WHERE id=?", (int(uid),)).fetchone()
+        return r["ad"] if r else None
 
 
 def portfolio_last_update(kullanici_id) -> str | None:
