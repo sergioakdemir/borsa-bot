@@ -150,7 +150,7 @@ SEKTOR_HISSE = {
     # Holding
     "KCHOL": "Holding", "SAHOL": "Holding", "DOHOL": "Holding", "ENKAI": "Holding",
     "AGHOL": "Holding", "ALARK": "Holding", "ECZYT": "Holding", "ECILC": "Holding",
-    "METRO": "Holding", "BRYAT": "Holding", "GSDHO": "Holding",
+    "METRO": "Holding", "BRYAT": "Holding", "GSDHO": "Holding", "TKFEN": "Holding",
     # Sağlık / İlaç
     "MPARK": "Sağlık", "SELEC": "Sağlık", "DEVA": "Sağlık", "RTALB": "Sağlık",
     # Sigorta
@@ -159,7 +159,7 @@ SEKTOR_HISSE = {
     "LOGO": "Teknoloji", "NETAS": "Teknoloji", "KFEIN": "Teknoloji",
     "KAREL": "Teknoloji", "KONTR": "Teknoloji",
     # Kimya / Tarım
-    "HEKTS": "Kimya", "GUBRF": "Kimya",
+    "HEKTS": "Kimya", "GUBRF": "Kimya", "AKSA": "Kimya", "SASA": "Kimya",
     # Dayanıklı Tüketim
     "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
     "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",

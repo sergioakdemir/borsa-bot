@@ -369,6 +369,7 @@ _BIST_TICKERS = [
     "DNISI", "UCAK", "GLBMD", "CEMAS", "TSKB", "ODAS", "EUPWR", "KONTR",
     "KAREL", "NUHCM", "PRKAB", "MERIT",
     "YKGYO", "HLGYO", "PEGYO", "GSDHO", "KARSN", "MIPAZ", "RTALB", "GUBRF",
+    "AKSA", "SASA", "TKFEN",
 ]
 
 
