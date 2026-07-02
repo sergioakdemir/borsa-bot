@@ -368,6 +368,7 @@ _BIST_TICKERS = [
     "GESAN", "BMEKS", "BFREN", "EGEEN", "HURGZ", "IHLGM", "SILVR", "RAYSG",
     "DNISI", "UCAK", "GLBMD", "CEMAS", "TSKB", "ODAS", "EUPWR", "KONTR",
     "KAREL", "NUHCM", "PRKAB", "MERIT",
+    "YKGYO", "HLGYO", "PEGYO", "GSDHO", "KARSN", "MIPAZ", "RTALB", "GUBRF",
 ]
 
 

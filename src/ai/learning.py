@@ -134,13 +134,15 @@ SEKTOR_HISSE = {
     # Gayrimenkul (GYO)
     "EKGYO": "Gayrimenkul", "TRGYO": "Gayrimenkul", "ISGYO": "Gayrimenkul",
     "ALGYO": "Gayrimenkul", "SNGYO": "Gayrimenkul", "IHLGM": "Gayrimenkul",
+    "YKGYO": "Gayrimenkul", "HLGYO": "Gayrimenkul", "PEGYO": "Gayrimenkul",
     # Otomotiv / Yan sanayi
     "TOASO": "Otomotiv", "FROTO": "Otomotiv", "TTRAK": "Otomotiv",
     "DOAS": "Otomotiv", "BFREN": "Otomotiv", "EGEEN": "Otomotiv",
+    "KARSN": "Otomotiv",
     # Perakende / Giyim
     "BIMAS": "Perakende", "MGROS": "Perakende", "SOKM": "Perakende",
     "CRFSA": "Perakende", "MAVI": "Perakende", "LCWGK": "Perakende",
-    "ADESE": "Perakende", "BMEKS": "Perakende",
+    "ADESE": "Perakende", "BMEKS": "Perakende", "MIPAZ": "Perakende",
     # Gıda / İçecek
     "ULKER": "Gıda", "CCOLA": "İçecek", "AEFES": "İçecek",
     # Telekom
@@ -148,16 +150,16 @@ SEKTOR_HISSE = {
     # Holding
     "KCHOL": "Holding", "SAHOL": "Holding", "DOHOL": "Holding", "ENKAI": "Holding",
     "AGHOL": "Holding", "ALARK": "Holding", "ECZYT": "Holding", "ECILC": "Holding",
-    "METRO": "Holding", "BRYAT": "Holding",
+    "METRO": "Holding", "BRYAT": "Holding", "GSDHO": "Holding",
     # Sağlık / İlaç
-    "MPARK": "Sağlık", "SELEC": "Sağlık", "DEVA": "Sağlık",
+    "MPARK": "Sağlık", "SELEC": "Sağlık", "DEVA": "Sağlık", "RTALB": "Sağlık",
     # Sigorta
     "TURSG": "Sigorta", "ANSGR": "Sigorta", "RAYSG": "Sigorta",
     # Teknoloji / Yazılım
     "LOGO": "Teknoloji", "NETAS": "Teknoloji", "KFEIN": "Teknoloji",
     "KAREL": "Teknoloji", "KONTR": "Teknoloji",
     # Kimya / Tarım
-    "HEKTS": "Kimya",
+    "HEKTS": "Kimya", "GUBRF": "Kimya",
     # Dayanıklı Tüketim
     "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
     "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
