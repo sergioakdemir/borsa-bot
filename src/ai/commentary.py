@@ -1131,7 +1131,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         aciklama = ""
 
     # Risk ajani: AL + risk>=10 -> VETO (esik 9'dan 10'a cikarildi: daha az iptal)
-    vetoed = (v.karar == "AL" and v.risk >= 10)
+    vetoed = (v.karar == "AL" and v.risk >= 9)
     if vetoed:
         final_decision = "VETO"
         final_label = f"VETO (risk {v.risk}/10) -> islem yok"
