@@ -52,3 +52,4 @@ CRON_TZ=Europe/Istanbul
 */30 9-19 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor market >> /root/borsa-bot/logs/health_monitor.log 2>&1
 # Bilanco aciklama takvimi guncelle (THYAO/GARAN/... buyuk hisseler): her Pazartesi 08:00
 0 8 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.bilanco_takvimi >> /root/borsa-bot/logs/bilanco_takvimi.log 2>&1
+30 18 * * 1-5 /root/borsa-bot/venv/bin/python -m src.ops.yukselis_hafizasi >> /root/borsa-bot/logs/yukselis_hafizasi.log 2>&1
