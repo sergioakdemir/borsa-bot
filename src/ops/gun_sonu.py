@@ -215,14 +215,23 @@ def _hisse_satiri(rec, ticker, birim="TL", yorum_map=None):
 
 
 def build_message(portfolio, kmap, overview, yarin, now, kullanici_ad=None, yorum_map=None):
+    from src.notify import filtre
     ad = f" · {str(kullanici_ad).capitalize()}" if kullanici_ad else ""
     lines = [f"<b>GÜN SONU</b>{ad} — {now:%d.%m %H:%M}", _esc(_genel_ozet(overview))]
     lines += ["", "<b>PORTFÖY</b>"]
     # portfolio: {ticker: para_birimi} (TL/USD)
     pf = sorted(portfolio)
     if pf:
+        # Bildirim geçit filtresi — gün sonu brifingi portföy odaklı olduğundan bu geçit
+        # pratikte pass-through'tur (tüm semboller portföyde). Portföy dışı bir sembol
+        # eklenirse (karar!=AL veya puan<8) kural gereği otomatik elenir.
+        pf_set = {(t or "").upper().replace(".IS", "") for t in portfolio}
         for tkr in pf:
-            lines.append(_hisse_satiri(kmap.get(tkr), tkr, portfolio.get(tkr, "TL"),
+            rec = kmap.get(tkr)
+            if not filtre.should_notify(tkr, None, "karar", portfoy=pf_set,
+                                        karar=(rec or {}).get("final_decision")):
+                continue
+            lines.append(_hisse_satiri(rec, tkr, portfolio.get(tkr, "TL"),
                                        yorum_map=yorum_map))
     else:
         lines.append("Takip ettiğin portföy hissesi yok.")

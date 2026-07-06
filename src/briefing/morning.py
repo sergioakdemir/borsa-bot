@@ -594,13 +594,18 @@ def _ev_ata(valid):
         r["_ev_detay"] = d
 
 
-def _firsat_siralamasi(valid):
+def _firsat_siralamasi(valid, portfolio=None):
     """AL kararlarini EV'ye gore siralar (en iyi 3). r['_ev'] onceden _ev_ata ile
-    hesaplanmis olmali. Doner: [{ticker, yildiz, hedef_pct, ev}, ...] (ev azalan)."""
+    hesaplanmis olmali. Doner: [{ticker, yildiz, hedef_pct, ev}, ...] (ev azalan).
+    Portföy dışı fırsatlar yalnızca puan>=8 ise listelenir (bildirim kuralı)."""
     from src.ai.commentary import parse_first_price
+    from src.notify import filtre
     out = []
     for r in valid:
         if (r.get("final_decision") or "").upper() != "AL" or r.get("_ev") is None:
+            continue
+        if not filtre.should_notify(r.get("ticker"), None, "karar", portfoy=portfolio,
+                                    karar="AL", puan=r.get("score")):
             continue
         eq = r.get("entry_quality") or {}
         guncel = (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis")
@@ -880,13 +885,17 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
             lines.append(_esc(u))
 
     # BUGÜNÜN EN İYİ FIRSATLARI — AL kararlarini expected_value'ya gore sirala (max 3)
-    firsatlar = _firsat_siralamasi(valid)
+    # Bildirim kuralı: portföy dışı fırsat yalnızca puan>=8 ise gösterilir.
+    from src.notify import filtre
+    firsatlar = _firsat_siralamasi(valid, portfolio)
     if firsatlar:
         lines += _firsat_satirlari(firsatlar)
 
     # FIRSATLAR (max 5) — portföy dışı AL sinyalleri; puan yerine EV'ye göre sırala
-    # (EV yoksa puana düş — geriye uyumluluk)
-    firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"]
+    # (EV yoksa puana düş — geriye uyumluluk). Yalnızca puan>=8 olanlar (bildirim kuralı).
+    firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"
+              and filtre.should_notify(r.get("ticker"), None, "karar", portfoy=portfolio,
+                                       karar="AL", puan=r.get("score"))]
     firsat.sort(key=lambda r: (r.get("_ev") if r.get("_ev") is not None
                                else (r.get("score") or 0)), reverse=True)
     if firsat:

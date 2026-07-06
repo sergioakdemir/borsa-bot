@@ -1245,10 +1245,15 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
         if not tg:
             continue
         uid = u["id"]
-        izlenen = pf_of.get(uid, set()) | watch
+        from src.notify import filtre
+        pf_uid = pf_of.get(uid, set())
+        izlenen = pf_uid | watch
         bloklar = []
         for h, info in haberler.items():
             etkilenen = sorted(info["hisseler"] & izlenen)
+            # BİLDİRİM GEÇİT: genel haber portföy dışı hisseler için susturulur (kural).
+            etkilenen = [t for t in etkilenen
+                         if filtre.should_notify(t, uid, "haber", portfoy=pf_uid)]
             if not etkilenen:
                 continue
             tok = f"SEKTORHB:{uid}:{h}"
@@ -1394,6 +1399,26 @@ def main():
         check_early_loss(now)
     except Exception as e:
         print(f"[early-loss] kontrol hatasi: {type(e).__name__}")
+
+    # BİLDİRİM GEÇİT FİLTRESİ — portföy dışı hisseler için gürültüyü kes:
+    #   portföydeki hisse -> her uyarı geçer
+    #   portföy dışı      -> fiyat/hacim yalnızca |günlük %|>=5; KAP haberi (zorunlu) geçer
+    # Broadcast market geneli olduğu için user_id=None ("herhangi bir portföyde mi").
+    from src.notify import filtre
+    _once_f, _once_h = len(price_alerts), len(vol_alerts)
+    price_alerts = [a for a in price_alerts
+                    if filtre.should_notify(a["ticker"], None, "fiyat", portfoy=portfolio,
+                                            gunluk_degisim=a.get("change"),
+                                            karar=a.get("karar"))]
+    vol_alerts = [a for a in vol_alerts
+                  if filtre.should_notify(a["ticker"], None, "hacim", portfoy=portfolio,
+                                          gunluk_degisim=a.get("change"))]
+    news_alerts = [a for a in news_alerts
+                   if filtre.should_notify(a["ticker"], None, "kap", portfoy=portfolio,
+                                           kap_zorunlu=True)]
+    if _once_f - len(price_alerts) or _once_h - len(vol_alerts):
+        print(f"[{now:%Y-%m-%d %H:%M}] [bildirim-filtre] portföy dışı susturuldu: "
+              f"{_once_f - len(price_alerts)} fiyat + {_once_h - len(vol_alerts)} hacim.")
 
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")
