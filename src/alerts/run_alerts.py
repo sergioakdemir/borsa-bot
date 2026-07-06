@@ -578,6 +578,55 @@ def check_regime_flip(now=None) -> int:
     return tetik
 
 
+def _islem_gunu_gecti(baslangic_iso, bugun_date) -> int | None:
+    """baslangic (dahil) -> bugun (haric) arasi gecen ISLEM GUNU (Pzt-Cum) sayisi.
+    Hafta sonlarini eler (resmi tatilleri saymaz; yaklasik). Parse hatasinda None."""
+    try:
+        import numpy as np
+        a = datetime.fromisoformat(str(baslangic_iso)[:10]).date()
+        return int(np.busday_count(a.isoformat(), bugun_date.isoformat()))
+    except Exception:
+        return None
+
+
+def check_early_loss(now=None) -> int:
+    """ERKEN UYARI (ilk 2 gun): acik AL pozisyonu acilistan itibaren >=2 islem gunu
+    gecmis, hic kara girmemis (max_profit<=0) ve su an -%2'den fazla zararda ise
+    sahibine gunde bir kez Telegram uyarisi gonderir."""
+    now = now or datetime.now(_TZ)
+    if not telegram.is_configured():
+        return 0
+    today = now.date().isoformat()
+    tetik = 0
+    for t in _acik_al_pozisyonlari():
+        tkr = (t.get("ticker") or "").upper().replace(".IS", "")
+        entry = t.get("entry_fiyat")
+        if not entry:
+            continue
+        gun = _islem_gunu_gecti(t.get("acilis_tarihi"), now.date())
+        if gun is None or gun < 2:
+            continue
+        if (t.get("max_profit") or 0) > 0:        # bir kez kara girmis -> erken uyari degil
+            continue
+        uid = t.get("kullanici_id") or 0
+        key = f"EARLYLOSS:{uid}"
+        if key in db.alert_levels_today(tkr, today):
+            continue
+        sym, _usd = _sembol_usd(t)
+        fiyat = _alarm_price(sym)
+        if fiyat is None:
+            continue
+        pnl = (fiyat - entry) / entry * 100
+        if pnl >= -2.0:                            # yeterli zarar yok
+            continue
+        db.record_alert(tkr, today, key, round(pnl, 2))
+        if _notify_alarm(uid, f"⚠️ <b>ERKEN UYARI:</b> {tkr} 2 gündür hiç kâra girmedi, "
+                              f"-%{abs(pnl):.1f} zararda. Pozisyonu gözden geçir."):
+            tetik += 1
+            print(f"[{now:%Y-%m-%d %H:%M}] [early-loss] {tkr} {pnl:.1f}% -> kullanici {uid}")
+    return tetik
+
+
 def _seviye(change_abs, portfoyde):
     """Hareketi içsel uyarı seviyesine indirger: 'ACIL' (ani), 'IZLE' (dikkat) veya None.
     Eşik listeye göre: portföy %2.5, radar %3; %5+ ani."""
@@ -1341,6 +1390,10 @@ def main():
         check_regime_flip(now)
     except Exception as e:
         print(f"[regime-flip] kontrol hatasi: {type(e).__name__}")
+    try:
+        check_early_loss(now)
+    except Exception as e:
+        print(f"[early-loss] kontrol hatasi: {type(e).__name__}")
 
     if not price_alerts and not news_alerts and not vol_alerts:
         print(f"[{now:%Y-%m-%d %H:%M}] Yeni uyari yok ({checked} hisse bugun islemde).")

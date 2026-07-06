@@ -1445,6 +1445,25 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
                 r, f"Piyasa geneli zayıf (breadth %{breadth.get('oran')}); "
                    "yeni AL BEKLE'ye çekildi.", verbose=verbose)
 
+    # 0c) ENTRY QUALITY (giris kalitesi) filtresi: AL kararinda EQ skoru hesaplanmissa
+    #   - skor < 60        -> AL'i BEKLE'ye cek (daha iyi giris noktasi bekle)
+    #   - 60 <= skor <= 75 -> yarim pozisyon onerisiyle devam et
+    # Sektor tavanindan ONCE calisir ki dusuk kaliteli AL kotayi doldurmasin.
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        eq_skor = (r.get("entry_quality") or {}).get("skor")
+        if eq_skor is None:
+            continue
+        if eq_skor < 60:
+            _al_to_bekle(
+                r, "Giriş kalitesi düşük (EQ < 60), daha iyi giriş noktası bekle",
+                verbose=verbose)
+        elif eq_skor <= 75:
+            r["position_size_oneri"] = "Yarım pozisyon — portföyün %2-3'ü"
+            if verbose:
+                print(f"  [filtre] {r.get('ticker')}: EQ {eq_skor} -> yarım pozisyon")
+
     # 1) Tekrarli sinyal filtresi (hisse bazli, bagimsiz)
     for r in results or []:
         if not _aktif_al(r):

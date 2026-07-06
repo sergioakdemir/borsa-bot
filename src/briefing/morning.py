@@ -286,6 +286,44 @@ def _zarar_satirlari(uyarilar):
     return lines
 
 
+_bozuk_cache = {}
+
+
+def _bozuk_pozisyon_satiri():
+    """trades: açık, hiç kâra girmemiş (max_profit<=0) ve şu an -%2'den fazla zararda
+    olan pozisyonları tek satırda işaretler ('BOZUK POZİSYONLAR'). Fiyat/DB hatasında
+    sessizce None döner (brifingi düşürmez). Gün-anahtarlı önbellek: aynı gün içinde
+    (çok kullanıcılı brifingde) fiyatları tek kez çeker."""
+    from datetime import datetime as _dt
+    key = _dt.now().date().isoformat()
+    if key in _bozuk_cache:
+        return _bozuk_cache[key]
+    sonuc = None
+    try:
+        from src.db import database as db
+        from src.ops.update_trades import _son_fiyat
+        bozuk = []
+        for t in db.list_trades(durum="acik"):
+            mp = t.get("max_profit")
+            entry = t.get("entry_fiyat")
+            if mp is None or not entry or mp > 0:   # veri yok ya da bir kez kâra girmiş
+                continue
+            fiyat = _son_fiyat(t.get("ticker"), t.get("para_birimi"))
+            if not fiyat:
+                continue
+            if (fiyat - entry) / entry * 100 < -2.0:
+                bozuk.append((t.get("ticker") or "").upper().replace(".IS", ""))
+        if bozuk:
+            sonuc = ("🔴 <b>BOZUK POZİSYONLAR:</b> " +
+                     ", ".join(_esc(x) for x in bozuk) +
+                     " — bu hisseler hiç kâra girmedi. Yeni AL açmadan önce bunları "
+                     "gözden geçir.")
+    except Exception:
+        sonuc = None
+    _bozuk_cache[key] = sonuc
+    return sonuc
+
+
 _TR_AYLAR = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
              "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
 
@@ -781,6 +819,11 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
                 lines.append(dunya)
             if rotasyon:
                 lines.append(rotasyon)
+        # BOZUK POZİSYONLAR: açık trade'lerde hiç kâra girmemiş + zararda olan hisseler
+        bozuk_satiri = _bozuk_pozisyon_satiri()
+        if bozuk_satiri:
+            lines.append("")
+            lines.append(bozuk_satiri)
 
     if not valid:
         lines.append("")

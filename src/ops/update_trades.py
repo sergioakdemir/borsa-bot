@@ -75,6 +75,19 @@ def _gun_farki(baslangic, bitis) -> int | None:
         return None
 
 
+def _islem_gunu(baslangic, bugun_date) -> int | None:
+    """baslangic (dahil) -> bugun (haric) arasi gecen ISLEM GUNU (Pzt-Cum) sayisi.
+    Hafta sonlarini eler (resmi tatilleri saymaz; yaklasik). Parse hatasinda None."""
+    try:
+        import numpy as np
+        a = datetime.fromisoformat(str(baslangic)[:10]).date()
+        b = bugun_date if hasattr(bugun_date, "isoformat") else \
+            datetime.fromisoformat(str(bugun_date)[:10]).date()
+        return int(np.busday_count(a.isoformat(), b.isoformat()))
+    except Exception:
+        return None
+
+
 def _fiyat_str(fiyat: float) -> str:
     """Fiyati gereksiz ondalik olmadan yazar: 295.0 -> '295', 295.5 -> '295.5'."""
     return f"{fiyat:g}"
@@ -122,6 +135,33 @@ def _kapanis_bildir(t: dict, sebep: str, native: float, pnl_y: float) -> None:
               f"{type(e).__name__}")
 
 
+def _trade_bildir(t: dict, mesaj: str) -> None:
+    """Genel trade bildirimi (time-stop / trailing-stop). Sahibine (telegram_id
+    varsa), yoksa yoneticilere dusulur. Hata cron'u dusurmez."""
+    try:
+        from src.db import database as db
+        from src.notify import telegram
+    except Exception:
+        return
+    chat_id = None
+    uid = t.get("kullanici_id") or 0
+    if uid:
+        try:
+            u = db.get_user_by_id(uid)
+            if u and u.get("telegram_id"):
+                chat_id = u["telegram_id"]
+        except Exception:
+            chat_id = None
+    try:
+        if chat_id:
+            telegram.send_message(mesaj, chat_id=chat_id)
+        else:
+            telegram.notify_admins(mesaj, prefix="")
+    except Exception as e:
+        print(f"    [bildirim] {t.get('ticker')} bildirim gonderilemedi: "
+              f"{type(e).__name__}")
+
+
 def run(verbose: bool = True) -> dict:
     from src.db import database as db
     db.init_db()
@@ -162,6 +202,40 @@ def run(verbose: bool = True) -> dict:
                         else min(eski_il, gun_dusuk_pct), 2)
         db.update_trade_intraday(t["id"], yeni_ih, yeni_il)
         guncellenen += 1
+
+        is_al = (t.get("karar") or "").upper().startswith("AL")
+        birim = "$" if (t.get("para_birimi") or "TL").upper() == "USD" else "TL"
+
+        # TRAILING STOP (AL): kâr eşiklerini geçince stop'u yukarı çek.
+        #   max_profit >= %6 -> stop = entry + kârın yarısı (entry*(1 + mp*0.5/100))
+        #   max_profit >= %4 -> stop = entry (başabaş), stop hâlâ entry altındaysa
+        # Stop yalnız YUKARI çekilir (asla düşürülmez).
+        cur_stop = t.get("stop_fiyat")
+        if is_al and entry and cur_stop is not None:
+            yeni_stop = None
+            if yeni_mp >= 6.0:
+                yeni_stop = round(entry * (1 + (yeni_mp * 0.5) / 100.0), 2)
+            elif yeni_mp >= 4.0 and cur_stop < entry:
+                yeni_stop = round(entry, 2)
+            if yeni_stop is not None and yeni_stop > cur_stop:
+                db.update_trade_stop(t["id"], yeni_stop)
+                t["stop_fiyat"] = yeni_stop        # sonraki tetik güncel stop'u kullansın
+                _trade_bildir(t, f"🔒 STOP GÜNCELLENDİ: {t['ticker']} stop "
+                                 f"{_fiyat_str(cur_stop)} → {_fiyat_str(yeni_stop)} {birim}")
+                if verbose:
+                    print(f"  {t['ticker']:7} TRAILING stop {cur_stop} -> {yeni_stop}")
+
+        # TIME STOP (AL): 5 işlem günü geçmiş, kâr <%1 ve şu an zararda -> aday işaretle
+        # (yalnız ilk kez; time_stop_adayi=1 ise tekrar bildirim yok).
+        if is_al and not t.get("time_stop_adayi"):
+            gecen = _islem_gunu(t.get("acilis_tarihi"), bugun)
+            if gecen is not None and gecen >= 5 and yeni_mp < 1.0 and pct < 0:
+                db.mark_time_stop(t["id"], 1)
+                _trade_bildir(t, f"⏰ TIME STOP ADAYI: {t['ticker']} 5 gündür "
+                                 f"kıpırdamıyor. Pozisyonu değerlendir.")
+                if verbose:
+                    print(f"  {t['ticker']:7} TIME-STOP adayı ({gecen} işlem günü, "
+                          f"maxP %{yeni_mp}, güncel %{round(pct, 2)})")
 
         # Stop / hedef tetiği -> kapat
         stop = t.get("stop_fiyat")

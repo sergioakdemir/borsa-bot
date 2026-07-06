@@ -324,6 +324,8 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE trades ADD COLUMN intraday_high_pct REAL")
     if "intraday_low_pct" not in cols_t:
         c.execute("ALTER TABLE trades ADD COLUMN intraday_low_pct REAL")
+    if "time_stop_adayi" not in cols_t:
+        c.execute("ALTER TABLE trades ADD COLUMN time_stop_adayi INTEGER DEFAULT 0")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -1357,6 +1359,20 @@ def update_trade_intraday(trade_id, intraday_high_pct, intraday_low_pct) -> None
     with get_conn() as c:
         c.execute("UPDATE trades SET intraday_high_pct=?, intraday_low_pct=? WHERE id=?",
                   (intraday_high_pct, intraday_low_pct, trade_id))
+
+
+def update_trade_stop(trade_id, stop_fiyat) -> None:
+    """Acik trade'in stop_fiyat seviyesini gunceller (trailing stop icin)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET stop_fiyat=? WHERE id=?", (stop_fiyat, trade_id))
+
+
+def mark_time_stop(trade_id, deger: int = 1) -> None:
+    """Acik trade'i time-stop adayi olarak isaretler (time_stop_adayi=1)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET time_stop_adayi=? WHERE id=?", (deger, trade_id))
 
 
 def close_trade(trade_id, kapanis_fiyat, kapanis_sebep=None, pnl_yuzde=None,
