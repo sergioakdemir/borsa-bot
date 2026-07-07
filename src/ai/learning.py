@@ -125,7 +125,7 @@ SEKTOR_HISSE = {
     # Savunma
     "ASELS": "Savunma", "OTKAR": "Savunma",
     # Demir-Çelik / Döküm
-    "EREGL": "Demir-Çelik", "KRDMD": "Demir-Çelik", "KORDS": "Demir-Çelik",
+    "EREGL": "Demir-Çelik", "KRDMD": "Demir-Çelik", "KORDS": "Sanayi",
     "CEMAS": "Demir-Çelik",
     # Çimento
     "NUHCM": "Çimento",
