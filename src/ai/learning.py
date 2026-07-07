@@ -141,7 +141,7 @@ SEKTOR_HISSE = {
     "KARSN": "Otomotiv",
     # Perakende / Giyim
     "BIMAS": "Perakende", "MGROS": "Perakende", "SOKM": "Perakende",
-    "CRFSA": "Perakende", "MAVI": "Perakende", "LCWGK": "Perakende",
+    "CRFSA": "Perakende", "MAVI": "Perakende",
     "ADESE": "Perakende", "BMEKS": "Perakende", "MIPAZ": "Perakende",
     # Gıda / İçecek
     "ULKER": "Gıda", "CCOLA": "İçecek", "AEFES": "İçecek",
@@ -164,7 +164,7 @@ SEKTOR_HISSE = {
     "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
     "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
     # Cam / Sanayi
-    "SISE": "Cam", "DNISI": "Sanayi", "UCAK": "Sanayi", "PRKAB": "Sanayi",
+    "SISE": "Cam", "DNISI": "Kimya", "PRKAB": "Sanayi",
     # BYF / Fon
     "GMSTR": "Değerli Metal",
     # Medya / Turizm
