@@ -4535,7 +4535,23 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
         return {"ok": True, "cevap": cevap}
     except Exception as e:
         _dbg("AI HATA", f"{type(e).__name__}: {e}")
-        return {"ok": False, "cevap": f"Hata: {type(e).__name__}"}
+        # API hatalarini BOTASOR_DEBUG'a bagli kalmadan HER ZAMAN journald'a yaz
+        # (aksi halde teshis edilemiyordu) ve kullaniciya anlasilir mesaj don.
+        _mesaj = str(e)
+        print(f"[botasor] AI HATA {type(e).__name__}: {_mesaj[:300]}",
+              file=sys.stderr, flush=True)
+        _dl = _mesaj.lower()
+        if "credit balance" in _dl or "too low" in _dl or "billing" in _dl:
+            cevap = ("Yapay zeka servisi şu an kullanılamıyor (Anthropic API kredi "
+                     "bakiyesi tükenmiş görünüyor). Kredi yüklenince tekrar çalışır.")
+        elif type(e).__name__ in ("AuthenticationError", "PermissionDeniedError"):
+            cevap = ("Yapay zeka servisine erişilemiyor (API anahtarı sorunu). "
+                     "Yönetici bilgilendirildi.")
+        elif type(e).__name__ == "RateLimitError":
+            cevap = "Şu an yoğunluk var, birkaç saniye sonra tekrar dener misin?"
+        else:
+            cevap = f"Şu an yanıt veremiyorum ({type(e).__name__}). Birazdan tekrar dene."
+        return {"ok": False, "cevap": cevap}
 
 
 def get_news(limit: int = 20) -> list[dict]:
