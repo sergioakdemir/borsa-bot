@@ -252,6 +252,16 @@ def run(verbose: bool = True) -> int:
               f"| AL basari esigi: piyasa_farki >= {AL_PIYASA_ESIGI}")
     guncellenen = 0
     for r in rows:
+        # KILL_SWITCH kayitlari: veri eksikligiyle (fiyat yok/bayat) AI cagrilmadan
+        # uretildi. TUT bandiyla degerlendirilip DOGRU/YANLIS istatistigini kirletmesin;
+        # karnede kalir ama degerlendirme disi birakilir.
+        if "KILL" in (r.get("karar") or "").upper():
+            db.set_decision_outcome(r["id"], "DEĞERLENDİRME DIŞI · veri eksikliği")
+            guncellenen += 1
+            if verbose:
+                print(f"  {r['ticker']:7} {r['karar']:11} {r['tarih']} "
+                      f"-> DEĞERLENDİRME DIŞI (veri eksikligi)")
+            continue
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))   # TUT'ta AI tahmini sure
         deg = _price_change(r["ticker"], r["tarih"], kg)
         if deg is None:

@@ -216,6 +216,24 @@ def ticker_news(ticker: str, within_days: int = 7, limit: int = 12) -> list[dict
                 seen.add(key)
                 out.append(_rec(e, feed["ad"]))
 
+    # FALLBACK: mevcut kaynaklardan hic/2'den az haber geldiyse Yahoo hisse RSS'inden
+    # (bagimsiz urllib+xml.etree yolu) tamamla. Tekrar edenler ayiklanir.
+    if len(out) < 2:
+        for y in yahoo_ticker_news(ticker, limit=limit):
+            key = (y.get("baslik") or "").lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "baslik": y["baslik"],
+                "tarih": y.get("tarih"),
+                "kaynak": y.get("kaynak") or "Yahoo Finance",
+                "url": None,
+                "ozet": y.get("ozet"),
+                "tazelik": "YENI",
+                "fiyatlanma": "VERI_YOK",
+            })
+
     return out[:limit]
 
 
@@ -229,6 +247,67 @@ def _rec(e: dict, kaynak: str) -> dict:
         "tazelik": "YENI",
         "fiyatlanma": "VERI_YOK",
     }
+
+
+def _yahoo_fetch(url: str, timeout: int = 10):
+    """RSS metnini dondurur: once curl_cffi (_fetch), olmazsa stdlib urllib.
+    Bagimsiz/dayanikli yol (ticker_news kaynak #1'i cursa da calisir). Hata -> None."""
+    text = _fetch(url, timeout=timeout)
+    if text:
+        return text
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def yahoo_ticker_news(ticker: str, limit: int = 5) -> list[dict]:
+    """Tek ABD hissesi icin Yahoo Finance hisse-bazli RSS haberleri. feedparser
+    varsa onu, yoksa stdlib xml.etree kullanir. Her kayit:
+    {baslik, ozet, tarih, kaynak='Yahoo Finance'}. Erisim/parse hatasinda bos liste."""
+    ticker = (ticker or "").upper().replace(".IS", "")
+    text = _yahoo_fetch(_YAHOO_TICKER.format(sym=ticker), timeout=10)
+    if not text:
+        return []
+    out = []
+    # 1) feedparser varsa onu kullan
+    try:
+        import feedparser
+    except ImportError:
+        feedparser = None
+    if feedparser is not None:
+        try:
+            for e in feedparser.parse(text).entries[:limit]:
+                baslik = (e.get("title") or "").strip()
+                if not baslik:
+                    continue
+                ozet = re.sub(r"<[^>]+>", "", e.get("summary") or "").strip()
+                out.append({"baslik": baslik, "ozet": ozet or None,
+                            "tarih": _parse_dt(e).strftime("%Y-%m-%d %H:%M"),
+                            "kaynak": "Yahoo Finance"})
+            return out[:limit]
+        except Exception:
+            return []
+    # 2) feedparser yoksa stdlib xml.etree ile parse et
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(text)
+        for item in root.iter("item"):
+            baslik = (item.findtext("title") or "").strip()
+            if not baslik:
+                continue
+            ozet = re.sub(r"<[^>]+>", "", item.findtext("description") or "").strip()
+            out.append({"baslik": baslik, "ozet": ozet or None,
+                        "tarih": (item.findtext("pubDate") or "").strip(),
+                        "kaynak": "Yahoo Finance"})
+            if len(out) >= limit:
+                break
+    except Exception:
+        return []
+    return out[:limit]
 
 
 def market_news(within_hours: int = 24, limit: int = 8) -> list[dict]:

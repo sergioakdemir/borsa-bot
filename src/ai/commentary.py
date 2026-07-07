@@ -284,7 +284,11 @@ SYSTEM = (
     "cumle (orn. 'Stop tetiklenirse tamamen cik; hedefe ulasirsa yarisini sat, "
     "kalanı yukselen stop ile tut'). Diger kararlarda bos.\n"
     "Fiyat seviyelerini verideki guncel fiyat (son_kapanis) uzerinden hesapla; "
-    "para birimini dogru kullan (BIST: TL, ABD: $)."
+    "para birimini dogru kullan (BIST: TL, ABD: $).\n"
+    "GECMIS YUKSELISLER: Veride 'gecmis_yukselisler' varsa, bu hissenin yakin "
+    "gecmiste hangi sebeplerle yukseldigini gosterir. Benzer kosullar bugun de "
+    "olusuyorsa (ayni tur haber/makro ortam) bunu AL lehine degerlendir; kosullar "
+    "farkliysa gecmis yukselisi tek basina gerekce yapma."
 )
 
 # SYSTEM her cagride tekrar gonderilir; cache_control ile bir kez yazilip
@@ -1105,6 +1109,16 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         except Exception:
             pass
 
+    # Gecmis yukselisler (yukselis_hafizasi): bu hisse yakin gecmiste hangi sebeplerle
+    # yukseldi? SYSTEM, benzer kosullar olusuyorsa bunu AL lehine degerlendirir.
+    try:
+        from src.ops.yukselis_hafizasi import gecmis_ozet
+        _gy = gecmis_ozet(ticker)
+        if _gy is not None:
+            payload["gecmis_yukselisler"] = _gy
+    except Exception:
+        pass
+
     ctx = {"ticker": ticker, "is_us": is_us, "sig": sig, "news": news,
            "analist": analist, "temel": temel, "hacim_anom": hacim_anom,
            "sektor": sektor}
@@ -1130,7 +1144,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     except Exception:
         aciklama = ""
 
-    # Risk ajani: AL + risk>=10 -> VETO (esik 9'dan 10'a cikarildi: daha az iptal)
+    # Risk ajani: AL + risk>=9 -> VETO (Risk veto esigi 9 — 7 Temmuz 2026'da 10'dan 9'a indirildi)
     vetoed = (v.karar == "AL" and v.risk >= 9)
     if vetoed:
         final_decision = "VETO"
