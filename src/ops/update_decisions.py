@@ -53,28 +53,39 @@ def _kapanis_gun(karar: str, tahmini_sure=None) -> int:
     return KAPANIS_GUN_VARSAYILAN
 
 
-# AL basari esigi: hisse endeksten (BIST -> XU100.IS, ABD -> SPY) EN FAZLA bu kadar
-# puan geri kalabilir. piyasa_farki >= -1.5 ise AL DOGRU sayilir; yani hisse endekse
-# yakin/uzerinde performans gosterdiyse basarili (mutlak yukselis sarti kaldirildi).
-AL_PIYASA_ESIGI = -1.5
+# ALPHA olcumu: AL DOGRU icin hem para kazandirmis (degisim > 0) HEM endeksi gecmis
+# (piyasa_farki >= 0) olmali. 8 Temmuz 2026: esik -1.5'ten 0'a cekildi + mutlak kar
+# sarti eklendi -> endeksi yenip yine de zarar ettiren AL artik YANLIS sayilir.
+AL_PIYASA_ESIGI = 0
+TUT_ALPHA_ESIGI = -3.0   # TUT DOGRU: piyasa_farki varsa >= -3 (endekse yakin yatay)
 
 
 def _verdict(karar: str, degisim: float, piyasa_farki: float = None,
              bist_degisim: float = None) -> bool:
-    """Karar dogru mu? AL'da PIYASA KIYASI belirleyicidir: hisse benchmark'tan
-    (BIST -> XU100.IS, ABD -> SPY) 1.5 puandan fazla geride kalmadiysa (piyasa_farki
-    >= -1.5) AL DOGRU'dur. Benchmark verisi yoksa mutlak yon (fiyat yukseldiyse DOGRU)
-    kullanilir. bist_degisim parametresi geriye donuk uyum icin korunur (kullanilmaz)."""
+    """Karar dogru mu? ALPHA olcumu:
+      AL   : hem kar (degisim>0) HEM alpha (piyasa_farki>=0). piyasa_farki yoksa
+             yalniz mutlak yon (degisim>0).
+      TUT  : piyasa_farki varsa endeksten -3 puandan cok geri kalmadiysa; yoksa
+             yatay bant (|degisim| <= 5).
+      UZAK_DUR/VETO: piyasa_farki varsa endeksi gecmediyse (<=0) dogru; yoksa
+             mutlak yon (degisim<=0).
+      SAT/AZALT: fiyat dustuyse dogru.
+    bist_degisim geriye donuk uyum icin korunur (kullanilmaz)."""
     k = (karar or "").upper()
-    if "VETO" in k or "UZAK" in k:   # VETO / UZAK_DUR: girilmedi -> yukselmediyse dogru
+    if "VETO" in k or "UZAK" in k:
+        if piyasa_farki is not None:
+            return piyasa_farki <= 0
         return degisim <= 0
     if "SAT" in k or "AZALT" in k:   # SAT, GUCLU_SAT, AZALT
         return degisim < 0
-    if "AL" in k:           # AL, AL_TEMKINLI: endeksten 1.5 puandan cok geri kalmadiysa DOGRU
+    if "AL" in k:                    # AL: hem para kazandiracak hem endeksi gececek
         if piyasa_farki is not None:
-            return piyasa_farki >= AL_PIYASA_ESIGI
+            return degisim > 0 and piyasa_farki >= AL_PIYASA_ESIGI
         return degisim > 0             # benchmark verisi yok -> mutlak yon
-    return abs(degisim) <= TUT_BANT   # TUT
+    # TUT
+    if piyasa_farki is not None:
+        return piyasa_farki >= TUT_ALPHA_ESIGI
+    return abs(degisim) <= TUT_BANT
 
 
 def _market_for(ticker: str):
@@ -278,6 +289,10 @@ def run(verbose: bool = True) -> int:
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"
         if piyasa_farki is not None:
             sonuc += f" · piyasa {piyasa_farki:+.1f}p"
+        # AL: endeksi yendi (piyasa_farki>=0) ama mutlak zarar var -> YANLIS + not
+        if ("AL" in (r["karar"] or "").upper() and piyasa_farki is not None
+                and piyasa_farki >= 0 and deg <= 0):
+            sonuc += " · endeksi yendi ama zarar"
         # L2: yanlis cikan kararlar icin kisa Haiku sebep analizi
         yanlis_sebep = None
         if not dogru:

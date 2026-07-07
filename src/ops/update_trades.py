@@ -240,11 +240,34 @@ def run(verbose: bool = True) -> dict:
         # Stop / hedef tetiği -> kapat
         stop = t.get("stop_fiyat")
         hedef = t.get("hedef_fiyat")
+        hedef2 = t.get("hedef2_fiyat")
         sebep = None
-        if stop is not None and native <= stop:
-            sebep = "stop"
-        elif hedef is not None and native >= hedef:
-            sebep = "hedef"
+        if hedef2 is not None and hedef is not None:
+            # YENİ trade (kademeli hedef): hedef1'e ulaşınca KAPATMA -> stop'u girişe
+            # çek (kârı garantile), hedefi hedef2 yap. hedef2'ye ulaşınca tamamen kapat.
+            if native >= hedef and hedef < hedef2:
+                entry_f = t.get("entry_fiyat")
+                # Stop'u en az girişe çek; trailing daha yukarı çektiyse dokunma.
+                if entry_f is not None and (stop is None or stop < entry_f):
+                    db.update_trade_stop(t["id"], entry_f)
+                db.update_trade_hedef(t["id"], hedef2)          # hedef_fiyat = hedef2
+                _trade_bildir(t, f"🎯 İLK HEDEF: {t['ticker']} +%{pct:.1f} — kârın "
+                                 f"yarısını almayı düşün. Stop girişe çekildi, yeni "
+                                 f"hedef {_fiyat_str(hedef2)} {birim}.")
+                if verbose:
+                    print(f"  {t['ticker']:7} İLK HEDEF @ {native:.2f} -> stop=giriş, "
+                          f"hedef={hedef2}")
+                continue                                        # bu bar'da kapanış yok
+            if native >= hedef:                                 # hedef==hedef2 -> ikinci hedef
+                sebep = "hedef2"
+            elif stop is not None and native <= stop:
+                sebep = "stop"
+        else:
+            # ESKİ trade'ler (hedef2_fiyat boş): mevcut davranış korunur.
+            if stop is not None and native <= stop:
+                sebep = "stop"
+            elif hedef is not None and native >= hedef:
+                sebep = "hedef"
         if sebep:
             pnl_y = round(pct, 2)
             hold = _gun_farki(t.get("acilis_tarihi"), bugun)

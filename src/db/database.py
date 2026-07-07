@@ -326,6 +326,10 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE trades ADD COLUMN intraday_low_pct REAL")
     if "time_stop_adayi" not in cols_t:
         c.execute("ALTER TABLE trades ADD COLUMN time_stop_adayi INTEGER DEFAULT 0")
+    if "hedef2_fiyat" not in cols_t:          # kademeli ikinci hedef (deterministik motor)
+        c.execute("ALTER TABLE trades ADD COLUMN hedef2_fiyat REAL")
+    if "yeniden_degerlendir" not in cols_t:   # karar BEKLE'ye dondu -> gozden gecir
+        c.execute("ALTER TABLE trades ADD COLUMN yeniden_degerlendir INTEGER DEFAULT 0")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -1398,20 +1402,21 @@ def close_model_position(pos_id, kapanis_fiyati, kz_tl, kz_yuzde, tarih=None) ->
 # ---- trades (gercek islem defteri: AL kararindan acilan pozisyonlar) ----
 def open_trade(ticker, karar, entry_fiyat, stop_fiyat=None, hedef_fiyat=None,
                position_size=None, para_birimi="TL", rr_oran=None,
-               kullanici_id=0, acilis_tarihi=None) -> int:
+               kullanici_id=0, acilis_tarihi=None, hedef2_fiyat=None) -> int:
     """Yeni bir trade acar (durum='acik'). entry_fiyat o anki fiyat, stop/hedef
-    verdict'ten gelen seviyeler, rr_oran = (hedef-entry)/(entry-stop)."""
+    verdict'ten gelen seviyeler, rr_oran = (hedef-entry)/(entry-stop). hedef2_fiyat
+    doluysa kademeli hedef (deterministik motor) devrededir."""
     init_db()
     acilis_tarihi = acilis_tarihi or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
             """INSERT INTO trades
                  (ticker, kullanici_id, karar, entry_fiyat, stop_fiyat, hedef_fiyat,
-                  position_size, para_birimi, acilis_tarihi, rr_oran, durum)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
+                  hedef2_fiyat, position_size, para_birimi, acilis_tarihi, rr_oran, durum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
             (str(ticker).upper().replace(".IS", ""), kullanici_id, karar, entry_fiyat,
-             stop_fiyat, hedef_fiyat, position_size, (para_birimi or "TL").upper(),
-             acilis_tarihi, rr_oran))
+             stop_fiyat, hedef_fiyat, hedef2_fiyat, position_size,
+             (para_birimi or "TL").upper(), acilis_tarihi, rr_oran))
         return cur.lastrowid
 
 
@@ -1470,6 +1475,20 @@ def mark_time_stop(trade_id, deger: int = 1) -> None:
     init_db()
     with get_conn() as c:
         c.execute("UPDATE trades SET time_stop_adayi=? WHERE id=?", (deger, trade_id))
+
+
+def update_trade_hedef(trade_id, hedef_fiyat) -> None:
+    """Acik trade'in hedef_fiyat seviyesini gunceller (kademeli hedef ilerlemesi)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET hedef_fiyat=? WHERE id=?", (hedef_fiyat, trade_id))
+
+
+def set_yeniden_degerlendir(trade_id, deger: int = 1) -> None:
+    """Acik trade'i 'yeniden degerlendir' olarak isaretler (karar BEKLE'ye dondu)."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET yeniden_degerlendir=? WHERE id=?", (deger, trade_id))
 
 
 def close_trade(trade_id, kapanis_fiyat, kapanis_sebep=None, pnl_yuzde=None,

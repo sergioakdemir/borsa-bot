@@ -613,6 +613,11 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "trend": _trend(donem),
         "bar_sayisi": len(closes),
         "son_bar_tarihi": son_bar.isoformat() if son_bar else None,
+        # Deterministik risk (risk.py) icin son ~60 ham bar; _prepare_payload AI
+        # payload'ina/kayda gitmeden bunu cikarir (bkz. sig.pop("_bars")).
+        "_bars": [{"close": closes[i], "high": highs[i], "low": lows[i],
+                   "volume": vols[i]}
+                  for i in range(max(0, len(closes) - 60), len(closes))],
         "bayat": bayat,
     }
 
@@ -979,6 +984,20 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
                 f"fiyat verisi 24 saatten eski (son veri {sig.get('son_bar_tarihi')})"),
                 None, None)
 
+    # Deterministik risk (risk.py): market_data'nin ham barlariyla hesapla. _bars'i
+    # AI payload'ina/kayda gitmeden sig'ten cikar (prompt + kayit sismesin).
+    risk_det = None
+    try:
+        from src.ai.risk import assess_risk
+        _bars = sig.get("_bars") or []
+        if len(_bars) >= 2:
+            _stock = {"bars": _bars,
+                      "freshness": {"status": "STALE" if sig.get("bayat") else "OK"}}
+            risk_det = assess_risk(_stock, metrics={"bar_sayisi": len(_bars)})
+    except Exception:
+        risk_det = None
+    sig.pop("_bars", None)
+
     news = gather_news(ticker, news_src=news_src, rss_src=rss_src, market=market)
     # Haber -> karar baglantisi: her taze haberi bu hisse acisindan etiketle
     # (olumlu_mu / etki_buyuklugu / etki_yonu). Ucuz Haiku cagrisi; ana modele girer.
@@ -1121,7 +1140,7 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
 
     ctx = {"ticker": ticker, "is_us": is_us, "sig": sig, "news": news,
            "analist": analist, "temel": temel, "hacim_anom": hacim_anom,
-           "sektor": sektor}
+           "sektor": sektor, "risk_det": risk_det}
     return None, payload, ctx
 
 
@@ -1135,6 +1154,8 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     temel = ctx["temel"]
     hacim_anom = ctx["hacim_anom"]
     sektor = ctx["sektor"]
+    risk_det = ctx.get("risk_det")
+    risk_det_skor = getattr(risk_det, "score", None)
 
     # Enstruman aciklamasi (instruments tablosu) -> AI baglamina girer. SPCX gibi
     # karistirilan semboller icin "ne oldugu" netlessin diye kayda eklenir.
@@ -1144,11 +1165,20 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     except Exception:
         aciklama = ""
 
-    # Risk ajani: AL + risk>=9 -> VETO (Risk veto esigi 9 — 7 Temmuz 2026'da 10'dan 9'a indirildi)
-    vetoed = (v.karar == "AL" and v.risk >= 9)
+    # CIFT RISK VETOSU (yalniz AL): AI riski >=9 VEYA deterministik risk (risk.py) >=9
+    # ise VETO. Mesajda vetoyu hangi kaynagin tetikledigi belirtilir.
+    ai_veto = (v.karar == "AL" and v.risk >= 9)
+    det_veto = (v.karar == "AL" and risk_det_skor is not None and risk_det_skor >= 9)
+    vetoed = ai_veto or det_veto
     if vetoed:
         final_decision = "VETO"
-        final_label = f"VETO (risk {v.risk}/10) -> islem yok"
+        if ai_veto and det_veto:
+            _kaynak = f"AI risk {v.risk}/10 + deterministik risk {risk_det_skor}/10"
+        elif ai_veto:
+            _kaynak = f"AI risk {v.risk}/10"
+        else:
+            _kaynak = f"deterministik risk {risk_det_skor}/10"
+        final_label = f"VETO ({_kaynak}) -> islem yok"
     else:
         # AI kararina guven: TUT dediyse TUT kalir. AL esigi (puan 7+) zaten prompt'ta
         # ('AL CESARETI'); kararin uzerine kod ile yazmiyoruz.
@@ -1217,6 +1247,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "karar": v.karar,
         "puan": v.puan,
         "risk_ai": v.risk,
+        "risk_deterministik": risk_det_skor,
         "eminlik": v.eminlik,
         "gerekce": v.gerekce,
         "sade_yorum": getattr(v, "sade_yorum", "") or "",
@@ -1281,6 +1312,27 @@ def analyze_stock(ticker: str, news_src=None, rss_src=None, client=None,
 # ---------------------------------------------------------------------------
 # Zinciri calistir + kaydet + decisions tablosu
 # ---------------------------------------------------------------------------
+def _trade_telegram(mesaj: str, kullanici_id=0) -> None:
+    """Trade olayini Telegram'a gonderir (sahibi varsa ona, yoksa yoneticilere).
+    Sessiz: Telegram yoksa/hata olursa hicbir sey yapmaz."""
+    try:
+        from src.notify import telegram
+        from src.db import database as db
+        if not telegram.is_configured():
+            return
+        chat_id = None
+        if kullanici_id:
+            u = db.get_user_by_id(kullanici_id)
+            if u and u.get("telegram_id"):
+                chat_id = u["telegram_id"]
+        if chat_id:
+            telegram.send_message(mesaj, chat_id=chat_id)
+        else:
+            telegram.notify_admins(mesaj, prefix="")
+    except Exception:
+        pass
+
+
 def _record_trades(results, verbose: bool = False, tarih=None):
     """Karar sonuclarini gercek islem defterine (trades) yazar.
 
@@ -1313,16 +1365,30 @@ def _record_trades(results, verbose: bool = False, tarih=None):
             if karar == "AL":
                 if acik or not fiyat:
                     continue
-                stop = parse_first_price(r.get("stop_loss"))
-                hedef = parse_first_price(r.get("hedef_fiyat"))
+                # Deterministik stop / kademeli hedef (stop_hedef motoru). Veri yoksa
+                # AI'nin metinsel stop_loss/hedef_fiyat alanlarina geri dus.
+                from src.ai import stop_hedef
+                sh = stop_hedef.hesapla(sig, r.get("risk_ai"))
+                if sh:
+                    stop, hedef, hedef2 = sh["stop"], sh["hedef1"], sh["hedef2"]
+                else:
+                    stop = parse_first_price(r.get("stop_loss"))
+                    hedef = parse_first_price(r.get("hedef_fiyat"))
+                    hedef2 = None
                 rr = None
                 if stop is not None and hedef is not None and (fiyat - stop) != 0:
                     rr = round((hedef - fiyat) / (fiyat - stop), 2)
                 db.open_trade(ticker, karar, fiyat, stop_fiyat=stop, hedef_fiyat=hedef,
-                              para_birimi=para_birimi, rr_oran=rr, acilis_tarihi=bugun)
+                              hedef2_fiyat=hedef2, para_birimi=para_birimi, rr_oran=rr,
+                              acilis_tarihi=bugun)
                 acilan += 1
                 if verbose:
-                    print(f"  [trade] AL  {ticker} @ {fiyat} stop={stop} hedef={hedef} RR={rr}")
+                    if sh:
+                        print(f"  [trade] AL {ticker} @ {fiyat} stop/hedef: deterministik "
+                              f"(vol %{sig.get('volatilite_%')} -> stop -%{sh['stop_pct']}, "
+                              f"hedef1 +%{sh['hedef1_pct']}) hedef2 +%{sh['hedef2_pct']} RR={rr}")
+                    else:
+                        print(f"  [trade] AL {ticker} @ {fiyat} stop={stop} hedef={hedef} RR={rr}")
             elif karar in ("AZALT", "UZAK_DUR", "SAT", "GUCLU_SAT"):
                 if not acik or not fiyat:
                     continue
@@ -1334,6 +1400,27 @@ def _record_trades(results, verbose: bool = False, tarih=None):
                 kapanan += 1
                 if verbose:
                     print(f"  [trade] {karar} {ticker} @ {fiyat} (giris {entry}) -> %{pnl_y}")
+            elif karar == "BEKLE" and acik:
+                # BEKLE + acik pozisyon: KAPATMA. 'yeniden degerlendir' isaretle; stop
+                # entry'nin %5'ten fazla altindaysa entry x0.97'ye sikilastir.
+                db.set_yeniden_degerlendir(acik["id"], 1)
+                entry = acik.get("entry_fiyat") or 0.0
+                cur_stop = acik.get("stop_fiyat")
+                sikilasti = False
+                if entry and cur_stop is not None and cur_stop < entry * 0.95:
+                    yeni_stop = round(entry * 0.97, 2)
+                    if yeni_stop > cur_stop:
+                        db.update_trade_stop(acik["id"], yeni_stop)
+                        sikilasti = True
+                if sikilasti:
+                    _trade_telegram(f"🟡 {ticker}: karar BEKLE'ye döndü, açık pozisyonun "
+                                    f"stopu sıkılaştırıldı.", acik.get("kullanici_id"))
+                else:
+                    _trade_telegram(f"🟡 {ticker}: karar BEKLE'ye döndü, açık pozisyonu "
+                                    f"gözden geçir.", acik.get("kullanici_id"))
+                if verbose:
+                    print(f"  [trade] BEKLE {ticker}: yeniden_degerlendir=1"
+                          f"{' + stop sikilastirildi' if sikilasti else ''}")
         except Exception as e:
             if verbose:
                 print(f"  [{ticker}] trade kaydi yazilamadi: {type(e).__name__}")
