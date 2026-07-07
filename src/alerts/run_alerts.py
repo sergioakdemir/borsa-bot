@@ -708,6 +708,28 @@ def _mcp_kap_ekle(ticker, items, limit=10):
 _KAP_YORUM_PATH = Path(__file__).resolve().parents[2] / "data" / "kap_yorumlar.json"
 
 
+def _sirket_tanimi(ticker) -> str:
+    """AI promptlarina konacak sirket kimligi: '{TICKER} — {sektor} sektoru ({aciklama})'.
+    instruments tablosundaki GERCEK sektor/aciklama alanlarindan uretilir; AI'nin
+    sektoru uydurmasini onler (or. ASELS'e 'elektrik dagitim' dedirtmez). Veri yoksa
+    sade ticker doner."""
+    tkr = (ticker or "").upper().replace(".IS", "")
+    try:
+        from src.db import database as db
+        row = db.get_instrument(tkr) or {}
+    except Exception:
+        row = {}
+    sektor = (row.get("sektor") or "").strip()
+    aciklama = (row.get("aciklama") or "").strip()
+    if sektor and aciklama:
+        return f"{tkr} — {sektor} sektörü ({aciklama})"
+    if aciklama:
+        return f"{tkr} — {aciklama}"
+    if sektor:
+        return f"{tkr} — {sektor} sektörü"
+    return tkr
+
+
 def _kap_yorum(ticker, haber):
     """Bu KAP bildirimi bu hisse icin olumlu mu olumsuz mu? 1-2 cumle AI yorumu.
     Anahtar yoksa/hata olursa None (sessiz)."""
@@ -722,10 +744,12 @@ def _kap_yorum(ticker, haber):
             system=("Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. "
                     "Direkt ve net, gereksiz yumusatmazsin. Verilen KAP bildiriminin "
                     "bu hisse icin OLUMLU mu OLUMSUZ mu yoksa NOTR mu oldugunu 1-2 kisa "
-                    "cumlede degerlendir; etkinin yonunu ve nedenini soyle. Sade Turkce, "
-                    "jargon yok, markdown yok. Kesin al/sat tavsiyesi verme, veri uydurma."),
+                    "cumlede degerlendir; etkinin yonunu ve nedenini soyle. Hissenin "
+                    "GERCEK sektorunu/faaliyet alanini kullan (promptta verildi); sektor "
+                    "veya faaliyet alani UYDURMA. Sade Turkce, jargon yok, markdown yok. "
+                    "Kesin al/sat tavsiyesi verme, veri uydurma."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {ticker}\nKAP bildirimi: {baslik}\n"
+                       f"Hisse: {_sirket_tanimi(ticker)}\nKAP bildirimi: {baslik}\n"
                        "Bu bildirim bu hisse icin ne anlama geliyor?"}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
@@ -760,7 +784,7 @@ def _kap_onemli_mi(ticker, baslik) -> bool:
                     "degisikligi, sorusturma/ceza/dava, uretim-kapasite, hedef/beklenti "
                     "revizyonu. SADECE tek kelime cevap ver: EVET veya HAYIR."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {ticker}\nKAP bildirimi: {baslik}\n"
+                       f"Hisse: {_sirket_tanimi(ticker)}\nKAP bildirimi: {baslik}\n"
                        "Bu bildirim yatirim kararini etkiler mi? EVET/HAYIR."}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
@@ -809,10 +833,11 @@ def _hareket_sebebi(ticker, change, haberler, now=None):
                     "gun ici fiyat hareketinin OLASI nedenini TEK kisa cumlede acikla. "
                     "Asagida bugunku KAP haberleri varsa hareketi DOGRUDAN onlarla "
                     "iliskilendir; haber yoksa 'belirgin KAP haberi yok, muhtemelen "
-                    "piyasa/sektor kaynakli' de. Veri veya haber UYDURMA, kesin neden "
-                    "iddia etme, sade Turkce, markdown yok, tek cumle."),
+                    "piyasa/sektor kaynakli' de. Hissenin GERCEK sektorunu/faaliyet "
+                    "alanini kullan (promptta verildi); sektor uydurma. Veri veya haber "
+                    "UYDURMA, kesin neden iddia etme, sade Turkce, markdown yok, tek cumle."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {ticker}\nBugunku hareket: %{change:+} ({yon})\n"
+                       f"Hisse: {_sirket_tanimi(ticker)}\nBugunku hareket: %{change:+} ({yon})\n"
                        f"Bugunku KAP haberleri:\n{haber_txt}\n"
                        "Bu hareket neden olmus olabilir? Tek cumle."}],
         )
@@ -1091,26 +1116,52 @@ def _haber_konulari(text: str) -> list:
 
 
 def _haber_etki_notu(hisse, baslik, konu):
-    """Bu haberin hisseye olasi gun ici/ertesi gun etkisi (1 kisa cumle). Haiku."""
+    """Bu haberin hisseye olasi etkisini YAPILI dondurur:
+    {cumle, yon(olumlu/olumsuz/notr), etki(yuksek/orta/dusuk/etkisiz), tema}.
+    Anahtar yok / hata / JSON parse basarisizsa None. Haiku."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
         resp = _ai_create(
-            model="claude-haiku-4-5", max_tokens=80,
+            model="claude-haiku-4-5", max_tokens=160,
             system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Verilen "
-                    "haberin bu hisseye OLASI etkisini TEK kisa cumlede soyle (or. "
-                    "'yarin acilista yukari baski olabilir' / 'kisa vadede notr'). "
-                    "Kesin al/sat tavsiyesi verme, veri/rakam uydurma, sade Turkce, "
-                    "markdown yok, tek cumle."),
+                    "hisse ve haber icin SADECE su JSON'u dondur (baska metin yok):\n"
+                    '{"cumle":"<haberin bu hisseye olasi etkisi, tek kisa cumle>",'
+                    '"yon":"olumlu|olumsuz|notr",'
+                    '"etki":"yuksek|orta|dusuk|etkisiz",'
+                    '"tema":"<haberin ana temasi tek kelime snake_case, or. faiz_beklentisi>"}\n'
+                    "Hissenin GERCEK sektorunu/faaliyet alanini kullan (promptta verildi); "
+                    "sektor uydurma. Kesin al/sat tavsiyesi verme, veri/rakam uydurma, "
+                    "sade Turkce, markdown/backtick yok, SADECE gecerli JSON."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {hisse}\nKonu: {konu}\nHaber: {baslik}\n"
-                       "Bu haber bu hisse icin ne anlama gelir? Tek cumle."}],
+                       f"Hisse: {_sirket_tanimi(hisse)}\nKonu: {konu}\nHaber: {baslik}"}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
                     if getattr(b, "type", "") == "text").strip()
-        return t or None
+        import json, re
+        m = re.search(r"\{.*\}", t, re.S)
+        if not m:
+            return None
+        d = json.loads(m.group(0))
+        tema = re.sub(r"[^a-z0-9_]", "",
+                      (d.get("tema") or "").strip().lower().replace(" ", "_")) or "genel"
+        return {
+            "cumle": (d.get("cumle") or "").strip() or None,
+            "yon": (d.get("yon") or "notr").strip().lower(),
+            "etki": (d.get("etki") or "etkisiz").strip().lower(),
+            "tema": tema,
+        }
     except Exception:
         return None
+
+
+def _haber_net_yonlu(etki) -> bool:
+    """Haber net yonlu mu? Yalniz (olumlu|olumsuz) yon + (orta|yuksek) etki bildirilir.
+    notr/etkisiz/dusuk -> False (etkisiz haber; Telegram'a gitmez)."""
+    if not etki:
+        return False
+    return (etki.get("yon") in ("olumlu", "olumsuz")
+            and etki.get("etki") in ("orta", "yuksek"))
 
 
 def _haber_hash(baslik) -> str:
@@ -1230,7 +1281,8 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             if tok in db.alert_levels_today(anahtar, today):
                 continue
             _gece_haber_ekle(etkilenen, info["baslik"], info["link"],
-                             info["konu"], _etki(h, info), info["tarih"])
+                             info["konu"], (_etki(h, info) or {}).get("cumle"),
+                             info["tarih"])
             db.record_alert(anahtar, today, tok, 0)
 
     if not telegram.is_configured():
@@ -1259,14 +1311,30 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             tok = f"SEKTORHB:{uid}:{h}"
             if tok in db.alert_levels_today(etkilenen[0], today):
                 continue
+            etki = _etki(h, info)
+            # Degisiklik 4: yalniz net yonlu (olumlu/olumsuz + orta/yuksek etki) haber
+            # gonder; notr/etkisiz/dusuk etkili haberi bildirme.
+            if not _haber_net_yonlu(etki):
+                continue
+            # Degisiklik 2: borsa kapaliyken sektor haberi Telegram'a GITMEZ. Istisna:
+            # portfoydeki hisseyi etkileyen onemli haber. (Haber zaten gece havuzunda,
+            # sabah brifingi toplar.)
+            if gece and not (set(etkilenen) & pf_uid):
+                continue
+            # Degisiklik 3: ayni gun ayni tema+sektor grubu tekrar gonderilmesin
+            # (or. 'faiz_beklentisi:Bankacılık' gunde bir kez).
+            tema_anahtar = f"_TEMA_{uid}"
+            tema_key = f"{etki['tema']}:{info['konu']}"
+            if tema_key in db.alert_levels_today(tema_anahtar, today):
+                continue
             db.record_alert(etkilenen[0], today, tok, 0)
+            db.record_alert(tema_anahtar, today, tema_key, 0)
             baslik = info["baslik"]
             if info.get("link"):
                 baslik = f'<a href="{info["link"]}">{baslik}</a>'
             blok = f"📰 <b>{', '.join(etkilenen)}</b> için önemli haber: {baslik}"
-            etki = _etki(h, info)
-            if etki:
-                blok += f"\n{etki}"
+            if etki.get("cumle"):
+                blok += f"\n{etki['cumle']}"
             bloklar.append(blok)
             if len(bloklar) >= 8:                           # mesaji sismekten koru
                 break
