@@ -869,22 +869,26 @@ def risk_butcesi_tl(risk_toleransi=None) -> float:
     return RISK_TL_HARITA.get((risk_toleransi or "").strip().lower(), VARSAYILAN_RISK_TL)
 
 
-def pozisyon_lot(giris, stop, risk_tl=VARSAYILAN_RISK_TL) -> dict | None:
+def pozisyon_lot(giris, stop, risk_tl=VARSAYILAN_RISK_TL, kur=1.0) -> dict | None:
     """Sabit risk butcesinden lot buyuklugu:
-        lot = risk_tl / (giris * stop_yuzde/100) = risk_tl / (giris - stop)
-    giris: giris fiyati (numerik). stop: stop-loss fiyati (numerik, giris altinda).
-    stop verilmemis/gecersizse varsayilan %8 stop kullanilir.
-    Doner: {risk_tl, stop_yuzde, lot, giris, stop, varsayilan_stop} veya None."""
+        lot = risk_tl / (hisse_basi_risk_TL) = risk_tl / ((giris - stop) * kur)
+    giris/stop: hisse para biriminde (BIST: TL, ABD: USD). kur: hisse para biriminin
+    TL karsiligi (BIST=1.0; ABD=USDTRY). Boylece ABD hissesinde USD fiyat/stop TL riske
+    dogru cevrilir (aksi halde lot ~USDTRY kati sisiyordu; or. NVDA 45 lot hatasi).
+    stop verilmemis/gecersizse varsayilan %8 stop. Doner: {risk_tl, stop_yuzde, lot,
+    giris, stop, varsayilan_stop} veya None."""
     if not (isinstance(giris, (int, float)) and giris > 0):
         return None
+    if not (isinstance(kur, (int, float)) and kur > 0):
+        kur = 1.0
     varsayilan_stop = False
     if not (isinstance(stop, (int, float)) and 0 < stop < giris):
         stop = round(giris * 0.92, 2)          # varsayilan %8 stop
         varsayilan_stop = True
-    hisse_basi_risk = giris - stop
+    hisse_basi_risk = giris - stop             # hisse para biriminde
     if hisse_basi_risk <= 0:
         return None
-    lot = int(risk_tl / hisse_basi_risk)
+    lot = int(risk_tl / (hisse_basi_risk * kur))   # riski TL'ye cevirip lot bul
     if lot < 1:
         return None
     return {
@@ -892,6 +896,33 @@ def pozisyon_lot(giris, stop, risk_tl=VARSAYILAN_RISK_TL) -> dict | None:
         "lot": lot, "giris": round(giris, 2), "stop": round(stop, 2),
         "varsayilan_stop": varsayilan_stop,
     }
+
+
+# USD/TRY kuru (surec ici 30 dk cache): ABD hissesi lot hesabinda USD riski TL'ye cevirir
+_KUR_CACHE = {"ts": 0.0, "usdtry": None}
+
+
+def _usdtry_kur():
+    """Guncel USD/TRY kuru (yfinance USDTRY=X son kapanis; surec ici 30 dk onbellek).
+    ABD hissesi lot hesabinda USD hisse-basi riskini TL'ye cevirmek icin. Alinamazsa
+    None (cagiran ABD lotunu yanlis gostermek yerine atlar)."""
+    import time as _t
+    now = _t.time()
+    if _KUR_CACHE["usdtry"] is not None and now - _KUR_CACHE["ts"] < 1800:
+        return _KUR_CACHE["usdtry"]
+    kur = None
+    try:
+        from src.data.factory import get_data_source
+        start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
+        df = get_data_source().get_history("USDTRY=X", start=start)
+        if df is not None and not df.empty:
+            kur = float(df["Close"].iloc[-1])
+    except Exception:
+        kur = None
+    if kur and kur > 0:
+        _KUR_CACHE.update(ts=now, usdtry=kur)
+        return kur
+    return None
 
 
 # EV istatistikleri (surec ici 5 dk cache; her hisse icin DB'yi yeniden taramamak icin)
@@ -1242,6 +1273,10 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     position_size_oneri = None
     expected_value = None
     position_size_tl = None
+    # Gosterilecek stop/hedef metni: varsayilan AI alanlari; ABD AL'da asagida
+    # deterministik motor (stop_hedef.hesapla) ciktisiyla degistirilir.
+    stop_loss_txt = (getattr(v, "stop_loss", "") or "").strip()
+    hedef_fiyat_txt = (getattr(v, "hedef_fiyat", "") or "").strip()
     if final_decision == "AL":
         try:
             from src.ai import entry_quality as eq
@@ -1264,8 +1299,24 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         ev_deger = (expected_value or {}).get("ev")
         # Pozisyon buyuklugu onerisi: eminlik + giris kalitesi + EV kademesi
         position_size_oneri = _pozisyon_buyuklugu(v.eminlik, kalite_skoru, ev_deger)
-        # Sabit risk butcesi lot (sistem geneli: varsayilan 1000 TL/islem)
-        position_size_tl = pozisyon_lot(guncel, stop_num)
+        # Deterministik stop/hedef (motor). ABD kartlarinda gosterilen stop/hedef bunu
+        # kullanir (AI metni motor tavanini %5 asabiliyordu; or. NVDA stop %10.8) ve ABD
+        # lotu USD->TL kur ile buradan hesaplanir.
+        try:
+            from src.ai import stop_hedef as _sh_mod
+            sh = _sh_mod.hesapla(sig, v.risk)
+        except Exception:
+            sh = None
+        if is_us:
+            kur = _usdtry_kur()                      # USD hisse-basi riskini TL'ye cevir
+            lot_stop = sh["stop"] if sh else stop_num
+            position_size_tl = (pozisyon_lot(guncel, lot_stop, kur=kur) if kur else None)
+            if sh:                                   # gosterilen stop/hedef = deterministik
+                stop_loss_txt = f"{sh['stop']:g} $ altına inerse çık (-%{sh['stop_pct']:g})"
+                hedef_fiyat_txt = (f"{sh['hedef1']:g} $'a ulaşırsa değerlendir "
+                                   f"(+%{sh['hedef1_pct']:g})")
+        else:
+            position_size_tl = pozisyon_lot(guncel, stop_num)   # BIST: TL, kur=1
 
     # --- Karar tipine gore aksiyon + stop-loss (deterministik) ---
     son_kapanis = sig.get("son_kapanis")
@@ -1311,8 +1362,9 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "tekrar_bak_kosulu": tekrar_bak_kosulu or None,
         # --- Karar motoru: AI'nin metinsel giris/stop/hedef/tetikleyici alanlari ---
         "giris_seviyesi": (getattr(v, "giris_seviyesi", "") or "").strip(),
-        "stop_loss": (getattr(v, "stop_loss", "") or "").strip(),
-        "hedef_fiyat": (getattr(v, "hedef_fiyat", "") or "").strip(),
+        # stop/hedef: ABD AL'da deterministik motor metni, aksi halde AI metni (bkz. yukari)
+        "stop_loss": stop_loss_txt,
+        "hedef_fiyat": hedef_fiyat_txt,
         "tetikleyici_kosul": (getattr(v, "tetikleyici_kosul", "") or "").strip(),
         # Cikis stratejisi (AL/TUT): stop/hedef/tetikleyici olusunca ne yapilmali
         "cikis_stratejisi": (getattr(v, "cikis_stratejisi", "") or "").strip(),

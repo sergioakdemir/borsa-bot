@@ -539,12 +539,13 @@ def check_news_flip(now=None) -> int:
         if key in db.alert_levels_today(tkr, today):
             continue
         yorum = _kap_yorum(tkr, haber)
-        if not yorum or "OLUMSUZ" not in yorum.upper():
-            continue                          # yalnız açıkça olumsuz KAP'ta uyar
+        if not yorum or yorum.get("yon") != "olumsuz":
+            continue                          # yalnız açıkça OLUMSUZ KAP'ta uyar (notr/olumlu atla)
         db.record_alert(tkr, today, key, 0)
         baslik = (haber.get("baslik") or "").strip()[:120]
+        _cumle = yorum.get("cumle") or "Negatif KAP bildirimi."
         if _notify_alarm(uid, f"📰 <b>{tkr}</b> için haber değişti — negatif KAP:\n"
-                              f"“{baslik}”\n{yorum}\n"
+                              f"“{baslik}”\n{_cumle}\n"
                               f"Hedefi/pozisyonu gözden geçir."):
             tetik += 1
             print(f"[{now:%Y-%m-%d %H:%M}] [news-flip] {tkr} -> kullanici {uid}")
@@ -739,8 +740,13 @@ def _sirket_tanimi(ticker) -> str:
 
 
 def _kap_yorum(ticker, haber):
-    """Bu KAP bildirimi bu hisse icin olumlu mu olumsuz mu? 1-2 cumle AI yorumu.
-    Anahtar yoksa/hata olursa None (sessiz)."""
+    """Bu KAP bildiriminin bu hisse icin YONUNU + kisa yorumunu YAPILI dondurur:
+    {"cumle": <1-2 cumle>, "yon": "olumlu"|"olumsuz"|"notr"}. Anahtar yoksa/hata/parse
+    basarisizsa None.
+
+    yon='notr': rutin/proseudurel bildirim ya da etkisi net degerlendirilemez. Cagiran
+    NOTR KAP'lari Telegram'a GONDERMEZ (haber havuzunda kalir); yalniz net olumlu/olumsuz
+    bildirilir."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     baslik = (haber.get("baslik") or "").strip()
@@ -748,21 +754,31 @@ def _kap_yorum(ticker, haber):
         return None
     try:
         resp = _ai_create(
-            model="claude-haiku-4-5", max_tokens=120,
+            model="claude-haiku-4-5", max_tokens=160,
             system=("Sen Max'sin: 40 yasinda, 25 yillik tecrubeli bir Turk borsa uzmani. "
-                    "Direkt ve net, gereksiz yumusatmazsin. Verilen KAP bildiriminin "
-                    "bu hisse icin OLUMLU mu OLUMSUZ mu yoksa NOTR mu oldugunu 1-2 kisa "
-                    "cumlede degerlendir; etkinin yonunu ve nedenini soyle. Hissenin "
-                    "GERCEK sektorunu/faaliyet alanini kullan (promptta verildi); sektor "
-                    "veya faaliyet alani UYDURMA. Sade Turkce, jargon yok, markdown yok. "
-                    "Kesin al/sat tavsiyesi verme, veri uydurma."),
+                    "Direkt ve net. Verilen KAP bildiriminin bu hisse icin yonunu belirle "
+                    "ve SADECE su JSON'u dondur (baska metin yok):\n"
+                    '{"yon":"olumlu|olumsuz|notr","cumle":"<1-2 kisa cumle degerlendirme>"}\n'
+                    "yon=notr: rutin/proseudurel bildirim VEYA etkisi net degerlendirilemez "
+                    "(yatirim yonu belirsiz). yon=olumlu/olumsuz: net degerde bir etki var. "
+                    "Hissenin GERCEK sektorunu/faaliyet alanini kullan (promptta verildi); "
+                    "sektor veya faaliyet alani UYDURMA. Sade Turkce, jargon/markdown yok, "
+                    "kesin al/sat tavsiyesi verme, veri uydurma, SADECE gecerli JSON."),
             messages=[{"role": "user", "content":
                        f"Hisse: {_sirket_tanimi(ticker)}\nKAP bildirimi: {baslik}\n"
                        "Bu bildirim bu hisse icin ne anlama geliyor?"}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
                     if getattr(b, "type", "") == "text").strip()
-        return t or None
+        import json, re
+        m = re.search(r"\{.*\}", t, re.S)
+        if not m:
+            return None
+        d = json.loads(m.group(0))
+        yon = (d.get("yon") or "notr").strip().lower()
+        if yon not in ("olumlu", "olumsuz", "notr"):
+            yon = "notr"
+        return {"cumle": (d.get("cumle") or "").strip() or None, "yon": yon}
     except Exception:
         return None
 
@@ -961,10 +977,19 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
                       f"gonderilmedi: {(it.title or '')[:70]}")
                 continue
             haber = {"baslik": it.title, "url": it.url}
-            yorum = _kap_yorum(ticker, haber)          # AI: olumlu/olumsuz/notr yorum
-            _kaydet_kap_yorum(ticker, haber, yorum, today)
+            yorum = _kap_yorum(ticker, haber)          # AI: {cumle, yon} veya None
+            # NÖTR KAP FİLTRESİ: bot analizi 'notr' (proseudurel/etkisi belirsiz) ise
+            # Telegram'a GÖNDERME; haber havuzunda kalır, sabah brifingi isterse özetler.
+            # Yalnız net olumlu/olumsuz bildirilir. (yorum None -> AI yok/başarısız:
+            # fail-open, gönder — önem filtresinden zaten geçti.)
+            if yorum and yorum.get("yon") == "notr":
+                print(f"[{now:%Y-%m-%d %H:%M}] [KAP-notr] {ticker} nötr yorum, "
+                      f"gönderilmedi: {(it.title or '')[:70]}")
+                continue
+            cumle = (yorum or {}).get("cumle")
+            _kaydet_kap_yorum(ticker, haber, cumle, today)
             hits.append({"ticker": ticker, "change": info["change"],
-                         "item": it, "yorum": yorum})
+                         "item": it, "yorum": cumle})
 
     # Taze KAP başlıkları -> şartlı senaryo kontrolü (haber tetikleyici)
     _senaryo_kontrol_ve_bildir(now, basliklar=[h["item"].title or "" for h in hits])
@@ -1160,16 +1185,21 @@ def _haber_etki_notu(hisse, baslik, konu):
         resp = _ai_create(
             model="claude-haiku-4-5", max_tokens=160,
             system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Verilen "
-                    "hisse ve haber icin SADECE su JSON'u dondur (baska metin yok):\n"
-                    '{"cumle":"<haberin bu hisseye olasi etkisi, tek kisa cumle>",'
+                    "sektor baglami ve haber icin SADECE su JSON'u dondur (baska metin yok):\n"
+                    '{"cumle":"<haberin bu SEKTORE/temaya olasi etkisi, tek kisa cumle>",'
                     '"yon":"olumlu|olumsuz|notr",'
                     '"etki":"yuksek|orta|dusuk|etkisiz",'
                     '"tema":"<haberin ana temasi tek kelime snake_case, or. faiz_beklentisi>"}\n'
-                    "Hissenin GERCEK sektorunu/faaliyet alanini kullan (promptta verildi); "
-                    "sektor uydurma. Kesin al/sat tavsiyesi verme, veri/rakam uydurma, "
-                    "sade Turkce, markdown/backtick yok, SADECE gecerli JSON."),
+                    "ONEMLI: 'cumle' bir SEKTOR/tema yorumudur ve ayni haber birden cok "
+                    "sirketi ilgilendirebilir; bu yuzden cumle'de HICBIR sirket/hisse ADI "
+                    "GECIRME (or. 'Petkim', 'Tupras', 'THY' yazma) — etkiyi sektor/faaliyet "
+                    "duzeyinde anlat (or. 'rafineri marjlarini baski altina alabilir'). "
+                    "Verilen GERCEK sektoru kullan, sektor uydurma. Kesin al/sat tavsiyesi "
+                    "verme, veri/rakam uydurma, sade Turkce, markdown/backtick yok, "
+                    "SADECE gecerli JSON."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {_sirket_tanimi(hisse)}\nKonu: {konu}\nHaber: {baslik}"}],
+                       f"Sektör bağlamı: {_sirket_tanimi(hisse)}\nKonu: {konu}\n"
+                       f"Haber: {baslik}"}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
                     if getattr(b, "type", "") == "text").strip()
@@ -1362,13 +1392,30 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             # sabah brifingi toplar.)
             if gece and not (set(etkilenen) & pf_uid):
                 continue
-            # Degisiklik 3: ayni gun ayni tema+sektor grubu tekrar gonderilmesin
-            # (or. 'faiz_beklentisi:Bankacılık' gunde bir kez).
+            # PORTFÖY İSTİSNASI DEDUP (kapalı piyasa): portföy hissesi gece istisnadan
+            # geçse bile susturma/tema kuralına tabidir. Kapalı piyasada bir portföy
+            # hissesi için gece EN FAZLA 1 mesaj gönderilir (ilk geliş).
+            gece_pf_stock = None
+            if gece:
+                _pf_hit = [t for t in etkilenen if t in pf_uid]
+                if _pf_hit:
+                    gece_pf_stock = _pf_hit[0]
+                    if (f"SEKTORHB:GECE_PF:{uid}:{gece_pf_stock}"
+                            in db.alert_levels_today(gece_pf_stock, today)):
+                        continue        # bu portföy hissesi için gece zaten mesaj gitti
+            # TEMA-TEKRAR ENGELİ: aynı gün aynı TEMA (stabil 'konu') tekrar gönderilmez.
+            # NOT: önceden değişken AI 'tema' alanı kullanılıyordu (tema:konu) -> aynı
+            # konudaki farklı haberler farklı tema üretip dedup'ı atlıyordu (gece petrol
+            # akını, 4 mesaj). Stabil info['konu'] ile konu başına günde 1 gönderim;
+            # portföy istisnası da buna tabi.
             tema_anahtar = f"_TEMA_{uid}"
-            tema_key = f"{etki['tema']}:{info['konu']}"
+            tema_key = info["konu"]
             if tema_key in db.alert_levels_today(tema_anahtar, today):
                 continue
-            db.record_alert(tema_anahtar, today, tema_key, 0)   # tema dedup: yalniz gonderimde
+            db.record_alert(tema_anahtar, today, tema_key, 0)   # tema (konu) dedup
+            if gece_pf_stock:                                   # gece portföy tek-mesaj kaydı
+                db.record_alert(gece_pf_stock, today,
+                                f"SEKTORHB:GECE_PF:{uid}:{gece_pf_stock}", 0)
             baslik = info["baslik"]
             if info.get("link"):
                 baslik = f'<a href="{info["link"]}">{baslik}</a>'
@@ -1467,10 +1514,17 @@ def main():
                     print(f"[{now:%Y-%m-%d %H:%M}] [KAP-filtre] {ticker} rutin/notr "
                           f"bildirim gonderilmedi: {(haber.get('baslik') or '')[:70]}")
                 else:
-                    yorum = _kap_yorum(ticker, haber)      # AI: olumlu/olumsuz yorum
-                    _kaydet_kap_yorum(ticker, haber, yorum, today)
-                    news_alerts.append({"ticker": ticker, "change": info["change"],
-                                        "haber": haber, "yorum": yorum})
+                    yorum = _kap_yorum(ticker, haber)      # AI: {cumle, yon} veya None
+                    # NÖTR KAP FİLTRESİ: bot analizi 'notr' ise Telegram'a gönderme
+                    # (haber havuzunda kalır); yalnız net olumlu/olumsuz bildirilir.
+                    if yorum and yorum.get("yon") == "notr":
+                        print(f"[{now:%Y-%m-%d %H:%M}] [KAP-notr] {ticker} nötr yorum, "
+                              f"gönderilmedi: {(haber.get('baslik') or '')[:70]}")
+                    else:
+                        cumle = (yorum or {}).get("cumle")
+                        _kaydet_kap_yorum(ticker, haber, cumle, today)
+                        news_alerts.append({"ticker": ticker, "change": info["change"],
+                                            "haber": haber, "yorum": cumle})
 
         # HACIM anomalisi: COK YUKSEK (5g ort. 3x+) -> uyari (gunde bir kez)
         try:

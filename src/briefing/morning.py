@@ -602,7 +602,9 @@ def _firsat_siralamasi(valid, portfolio=None):
     from src.notify import filtre
     out = []
     for r in valid:
-        if (r.get("final_decision") or "").upper() != "AL" or r.get("_ev") is None:
+        if (r.get("final_decision") or "").upper() != "AL":
+            continue
+        if r.get("_ev") is None or r["_ev"] <= 0:   # EV negatif/sıfır -> fırsat değil (sunma)
             continue
         if not filtre.should_notify(r.get("ticker"), None, "karar", portfoy=portfolio,
                                     karar="AL", puan=r.get("score")):
@@ -899,10 +901,16 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
     firsatlar = _firsat_siralamasi(valid, portfolio)
     if firsatlar:
         lines += _firsat_satirlari(firsatlar)
+    else:
+        # Pozitif EV'li aday yoksa: negatif EV'li hisseyi "en iyi fırsat" diye sunma.
+        lines += ["", "<b>🎯 BUGÜNÜN EN İYİ FIRSATLARI</b>",
+                  "Bugün pozitif beklenen değerli fırsat yok."]
 
     # FIRSATLAR (max 5) — portföy dışı AL sinyalleri; puan yerine EV'ye göre sırala
     # (EV yoksa puana düş — geriye uyumluluk). Yalnızca puan>=8 olanlar (bildirim kuralı).
+    # EV NEGATİF olan hisse fırsat olarak SUNULMAZ (EV<0 -> listeden çıkar).
     firsat = [r for r in valid if not _in_pf(r) and r.get("final_decision") == "AL"
+              and not (r.get("_ev") is not None and r["_ev"] < 0)
               and filtre.should_notify(r.get("ticker"), None, "karar", portfoy=portfolio,
                                        karar="AL", puan=r.get("score"))]
     firsat.sort(key=lambda r: (r.get("_ev") if r.get("_ev") is not None
