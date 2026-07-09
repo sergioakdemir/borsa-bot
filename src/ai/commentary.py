@@ -1138,6 +1138,12 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
                        "gelir_buyume_%", "favok_marji_%")
     if temel.get("available"):
         saglik = {k: temel[k] for k in _saglik_alanlar if temel.get(k) is not None}
+        # Makulluk: F/K > 200 veya < 0 (zarar/yfinance cop degeri) AI'ya cipa
+        # olarak verilmez; anlamli oran yok notu yazilir.
+        _fk = saglik.get("fk")
+        if _fk is not None and (_fk > 200 or _fk < 0):
+            saglik.pop("fk", None)
+            saglik["fk_not"] = "anlamlı F/K yok (zarar/anomali)"
         payload["sirket_sagligi"] = saglik if saglik else "bilanço verisi eksik"
     else:
         payload["sirket_sagligi"] = "bilanço verisi eksik"
@@ -1252,6 +1258,15 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     sektor = ctx["sektor"]
     risk_det = ctx.get("risk_det")
     risk_det_skor = getattr(risk_det, "score", None)
+    # FAIL-SAFE (6c): deterministik risk hesaplanamadiysa kayda durum yaz + gunluk
+    # sayaci artir; health_monitor bunu gunluk ozet olarak admin'e bildirir.
+    risk_det_durum = "OK" if risk_det is not None else "HESAPLANAMADI"
+    if risk_det is None:
+        try:
+            from src.db import database as _db_rd
+            _db_rd.gunluk_sayac_arttir("risk_det_fail")
+        except Exception:
+            pass
 
     # Enstruman aciklamasi (instruments tablosu) -> AI baglamina girer. SPCX gibi
     # karistirilan semboller icin "ne oldugu" netlessin diye kayda eklenir.
@@ -1326,6 +1341,14 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
             sh = _sh_mod.hesapla(sig, v.risk)
         except Exception:
             sh = None
+        if sh is None and guncel:
+            # FAIL-SAFE (6b): motor stop/hedef uretemedi -> AI metnine dusmek yerine
+            # varsayilan vol %4 kurali (stop -%4, hedef +%8 ~ RR 2:1) + admin log.
+            sh = {"stop": round(guncel * 0.96, 2), "stop_pct": 4.0,
+                  "hedef1": round(guncel * 1.08, 2), "hedef1_pct": 8.0,
+                  "_fallback": True}
+            print(f"  [fail-safe] {ticker}: stop_hedef motoru üretemedi -> "
+                  f"varsayılan vol %4 (stop {sh['stop']}, hedef {sh['hedef1']})")
         if is_us:
             kur = _usdtry_kur()                      # USD hisse-basi riskini TL'ye cevir
             lot_stop = sh["stop"] if sh else stop_num
@@ -1364,6 +1387,7 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         "puan": v.puan,
         "risk_ai": v.risk,
         "risk_deterministik": risk_det_skor,
+        "risk_det_durum": risk_det_durum,
         "eminlik": v.eminlik,
         "gerekce": v.gerekce,
         "sade_yorum": getattr(v, "sade_yorum", "") or "",
@@ -1673,6 +1697,11 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
             continue
         eq_skor = (r.get("entry_quality") or {}).get("skor")
         if eq_skor is None:
+            # FAIL-SAFE (6a): giris kalitesi hesaplanamadi -> filtreyi atlayip AL'i
+            # geciralamak yerine guvenli tarafta BEKLE'ye cek.
+            _al_to_bekle(
+                r, "Giriş kalitesi hesaplanamadı — güvenli tarafta BEKLE",
+                verbose=verbose)
             continue
         if eq_skor < 60:
             _al_to_bekle(

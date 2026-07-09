@@ -63,4 +63,9 @@ def run(verbose: bool = True) -> int:
 
 if __name__ == "__main__":
     run()
+    try:
+        from src.db import database as _db
+        _db.kalp_at("update_portfoy_snapshot")
+    except Exception:
+        pass
     sys.exit(0)

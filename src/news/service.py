@@ -24,6 +24,13 @@ def get_news_source(verbose: bool = True):
     except NewsSourceUnavailable as e:
         if verbose:
             print(f"  [haber] KAP erisilemedi -> ORNEK kaynak. ({str(e)[:55]})")
+        # Gunluk bayrak: KAP down -> sahte kaynak devrede. health_monitor bu bayragi
+        # okuyup gunde 1 kez admin'e uyarir (BIST haber akisi kesik).
+        try:
+            from src.db import database as _db
+            _db.set_setting(f"kap_ornek:{datetime.now(_TZ).date().isoformat()}", "1")
+        except Exception:
+            pass
         return SampleNewsSource(), True
 
 

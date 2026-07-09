@@ -318,3 +318,8 @@ def run(verbose: bool = True) -> dict:
 
 if __name__ == "__main__":
     run()
+    try:
+        from src.db import database as _db
+        _db.kalp_at("update_trades")
+    except Exception:
+        pass

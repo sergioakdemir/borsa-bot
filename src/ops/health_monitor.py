@@ -148,6 +148,65 @@ def _kontrol_ai_hata():
     return None
 
 
+def _kontrol_kap():
+    """KAP bugun erisilemez olup ORNEK (sahte) kaynaga dusuldu mu? service.py
+    fallback'te 'kap_ornek:<gun>' bayragini yazar; burada okunur -> gunde 1 uyari."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        if str(db.get_setting(f"kap_ornek:{bugun}", "0")) == "1":
+            return ("kap_ornek",
+                    "KAP erişilemiyor, sahte kaynak devrede — BIST haber akışı kesik.")
+    except Exception:
+        return None
+    return None
+
+
+# Gece isleri: (heartbeat adi, izin verilen azami yas saat). Cron gece ~23:30-23:50
+# calisir; 30s esik hafta ici gecikme/dst payi birakir.
+HEARTBEAT_ISLERI = [
+    ("update_trades", 30),
+    ("update_decisions", 30),
+    ("update_haber_etki", 30),
+    ("update_model_portfoy", 30),
+    ("update_portfoy_snapshot", 30),
+]
+
+
+def _kontrol_heartbeat():
+    """Gece bakim islerinden biri sessizce olduyse (son basarili damga esik saatten
+    eskiyse ya da hic yoksa) admin'e uyar. Tum gecikenler tek mesajda toplanir."""
+    try:
+        from src.db import database as db
+    except Exception:
+        return None
+    gecikenler = []
+    for is_adi, esik in HEARTBEAT_ISLERI:
+        yas = db.kalp_yasi_saat(is_adi)
+        if yas is None:
+            gecikenler.append(f"{is_adi} (hiç çalışmadı)")
+        elif yas > esik:
+            gecikenler.append(f"{is_adi} ({yas:.0f}s önce)")
+    if gecikenler:
+        return ("heartbeat_gec",
+                "Gece işleri gecikti/durdu — " + ", ".join(gecikenler) + ".")
+    return None
+
+
+def _kontrol_risk_det():
+    """Bugun deterministik risk kac hissede hesaplanamadi? commentary.py sayaci
+    ('risk_det_fail:<gun>') artirir; >0 ise gunluk ozet olarak admin'e bildir."""
+    try:
+        from src.db import database as db
+        n = db.gunluk_sayac("risk_det_fail")
+    except Exception:
+        return None
+    if n > 0:
+        return ("risk_det_fail",
+                f"Bugün {n} hissede deterministik risk hesaplanamadı (risk_det: HESAPLANAMADI).")
+    return None
+
+
 # --- spam onleme: gunde 1 kez ---
 
 def _state_yukle() -> dict:
@@ -190,7 +249,8 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
-    core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata)
+    core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata,
+            _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det)
     market = (lambda: _kontrol_cache_tazelik(now), _kontrol_abd)
     if mode == "core":
         kontroller = core

@@ -113,7 +113,7 @@ SEKTOR_HISSE = {
     # Bankacılık / Finans
     "GARAN": "Bankacılık", "AKBNK": "Bankacılık", "ISCTR": "Bankacılık",
     "YKBNK": "Bankacılık", "HALKB": "Bankacılık", "VAKBN": "Bankacılık",
-    "QNBFIN": "Bankacılık", "SKBNK": "Bankacılık", "TSKB": "Bankacılık",
+    "QNBTR": "Bankacılık", "SKBNK": "Bankacılık", "TSKB": "Bankacılık",
     "GLBMD": "Finans",
     # Havacılık / Yer hizmetleri
     "THYAO": "Havacılık", "PGSUS": "Havacılık", "TAVHL": "Havacılık",
@@ -162,7 +162,7 @@ SEKTOR_HISSE = {
     "HEKTS": "Kimya", "GUBRF": "Kimya", "AKSA": "Kimya", "SASA": "Kimya",
     # Dayanıklı Tüketim
     "ARCLK": "Dayanıklı Tüketim", "VESBE": "Dayanıklı Tüketim",
-    "VESTEL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
+    "VESTL": "Dayanıklı Tüketim", "SILVR": "Dayanıklı Tüketim",
     # Cam / Sanayi
     "SISE": "Cam", "DNISI": "Kimya", "PRKAB": "Sanayi",
     # BYF / Fon

@@ -398,3 +398,8 @@ if __name__ == "__main__":
         backfill_piyasa_farki()
     else:
         run()
+        try:
+            from src.db import database as _db
+            _db.kalp_at("update_decisions")
+        except Exception:
+            pass

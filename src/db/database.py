@@ -383,15 +383,15 @@ _BIST_TICKERS = [
     "SAHOL", "HALKB", "VAKBN", "ISCTR", "TAVHL", "PGSUS", "MGROS", "ULKER",
     "CCOLA", "DOHOL", "ENKAI", "KORDS", "TTKOM",
     # Watchlist genisletme (100 hisse hedefi) — BIST tarama evreni.
-    "KOZAL", "KOZAA", "KRDMD", "VESBE", "VESTEL", "TTRAK", "OTKAR", "DOAS",
-    "LOGO", "NETAS", "ALARK", "QNBFIN", "SKBNK", "TRGYO", "MPARK", "MAVI",
+    "KRDMD", "VESBE", "VESTL", "TTRAK", "OTKAR", "DOAS",
+    "LOGO", "NETAS", "ALARK", "QNBTR", "SKBNK", "TRGYO", "MPARK", "MAVI",
     "CRFSA", "SOKM", "TURSG", "ANSGR", "AKSEN", "ZOREN", "ENJSA",
     "CLEBI", "HEKTS", "ECZYT", "SELEC", "ISGYO", "ALGYO", "SNGYO", "ADESE",
-    "METRO", "DEVA", "ECILC", "AEFES", "NTTUR", "BRYAT", "AGHOL", "KFEIN",
-    "GESAN", "BMEKS", "BFREN", "EGEEN", "HURGZ", "IHLGM", "SILVR", "RAYSG",
+    "METRO", "DEVA", "ECILC", "AEFES", "BRYAT", "AGHOL", "KFEIN",
+    "GESAN", "BFREN", "EGEEN", "HURGZ", "IHLGM", "SILVR", "RAYSG",
     "DNISI", "GLBMD", "CEMAS", "TSKB", "ODAS", "EUPWR", "KONTR",
     "KAREL", "NUHCM", "PRKAB", "MERIT",
-    "YKGYO", "HLGYO", "PEGYO", "GSDHO", "KARSN", "MIPAZ", "RTALB", "GUBRF",
+    "HLGYO", "GSDHO", "KARSN", "RTALB", "GUBRF",
     "AKSA", "SASA", "TKFEN",
 ]
 
@@ -430,7 +430,6 @@ _INSTRUMENT_ACIKLAMA = {
     "ASTOR": "Astor Enerji — transformatör ve elektrik ekipmanları üreticisi.",
     "BFREN": "Bosch Fren Sistemleri — ticari araçlar için fren sistemleri üreticisi (Bosch grubu).",
     "BIMAS": "BİM — Türkiye'nin en büyük indirimli (hard-discount) market zinciri.",
-    "BMEKS": "Bimeks — teknoloji/elektronik ürünleri perakende zinciri (mali açıdan sorunlu geçmişi olan şirket).",
     "BRYAT": "Borusan Yatırım — Borusan Grubu'nun halka açık yatırım ve holding şirketi.",
     "CCOLA": "Coca-Cola İçecek — Coca-Cola markalarının Türkiye ve bölge ülkelerindeki üreticisi/şişeleyicisi.",
     "CEMAS": "Çemaş Döküm — çelik döküm ve demir-çelik ürünleri üreticisi.",
@@ -466,26 +465,21 @@ _INSTRUMENT_ACIKLAMA = {
     "KFEIN": "Kafein Yazılım — yazılım geliştirme ve bilişim danışmanlık şirketi.",
     "KONTR": "Kontrolmatik — enerji, otomasyon ve batarya teknolojileri şirketi.",
     "KORDS": "Kordsa — lastik güçlendirme (kord bezi) ve kompozit teknolojileri üreticisi (Sabancı Holding).",
-    "KOZAA": "Koza Anadolu Metal Madencilik — madencilik ve iştirak yatırımları şirketi.",
-    "KOZAL": "Koza Altın — altın madenciliği ve üretimi şirketi.",
     "KRDMD": "Kardemir — Karabük merkezli demir-çelik üreticisi; uzun ürün ve ray ağırlıklı.",
     "LOGO": "Logo Yazılım — kurumsal yazılım (ERP, muhasebe, bordro) üreticisi.",
     "MAVI": "Mavi Giyim — denim ağırlıklı hazır giyim markası ve perakendecisi.",
     "MERIT": "Merit Turizm — Kuzey Kıbrıs ve yurt dışında otel-kumarhane işletmeciliği (Net Holding).",
     "METRO": "Metro Holding — ulaşım, turizm ve enerji iştirakleri olan holding.",
     "MGROS": "Migros Ticaret — Türkiye'nin büyük süpermarket zincirlerinden biri.",
-    "MIPAZ": "Milpa — İhlas Holding'e bağlı ticari ve sınai ürünler pazarlama şirketi.",
     "MPARK": "MLP Sağlık (Medical Park) — özel hastane zinciri işletmecisi (Medical Park, Liv Hospital).",
     "NETAS": "Netaş — telekomünikasyon ve bilişim sistemleri entegratörü.",
-    "NTTUR": "Net Turizm — otel ve kumarhane işletmeciliği alanında turizm şirketi (Net Holding).",
     "NUHCM": "Nuh Çimento — çimento ve hazır beton üreticisi.",
     "ODAS": "Odaş Elektrik — elektrik üretimi, doğalgaz ve madencilik alanlarında enerji şirketi.",
     "OTKAR": "Otokar — Koç Holding'e bağlı otobüs, ticari araç ve askeri/savunma aracı üreticisi.",
-    "PEGYO": "Pera GYO — gayrimenkul yatırım ortaklığı.",
     "PETKM": "Petkim — Türkiye'nin en büyük petrokimya üreticisi (SOCAR grubu).",
     "PGSUS": "Pegasus — düşük maliyetli (low-cost) havayolu şirketi.",
     "PRKAB": "Türk Prysmian Kablo — enerji ve telekomünikasyon kabloları üreticisi.",
-    "QNBFIN": "QNB Finansbank — QNB grubuna bağlı özel mevduat bankası.",
+    "QNBTR": "QNB Bank (eski QNB Finansbank) — QNB grubuna bağlı özel mevduat bankası.",
     "RAYSG": "Ray Sigorta — elementer sigortacılık şirketi.",
     "RTALB": "RTA Laboratuvarları — biyoteknoloji, moleküler tanı kitleri ve laboratuvar ürünleri şirketi.",
     "SAHOL": "Sabancı Holding — Türkiye'nin en büyük holdinglerinden (banka, enerji, sanayi, perakende iştirakleri).",
@@ -509,9 +503,8 @@ _INSTRUMENT_ACIKLAMA = {
     "ULKER": "Ülker Bisküvi — bisküvi, çikolata ve şekerleme üreticisi (Yıldız Holding).",
     "VAKBN": "VakıfBank — kamu sermayeli büyük mevduat bankası.",
     "VESBE": "Vestel Beyaz Eşya — beyaz eşya üreticisi (Zorlu/Vestel grubu).",
-    "VESTEL": "Vestel Elektronik — televizyon, elektronik ve beyaz eşya üreticisi (Zorlu Holding).",
+    "VESTL": "Vestel Elektronik — televizyon, elektronik ve beyaz eşya üreticisi (Zorlu Holding).",
     "YKBNK": "Yapı ve Kredi Bankası — Koç Holding'e bağlı büyük özel mevduat bankası.",
-    "YKGYO": "Yapı Kredi Koray GYO — gayrimenkul yatırım ortaklığı.",
     "ZOREN": "Zorlu Enerji — elektrik üretimi (yenilenebilir, jeotermal, doğalgaz) ve dağıtım şirketi.",
     # GMSTR fon kaydı tabloda 'GMSTR.F' sonekiyle tutulur; UPDATE bu anahtarla eşleşir.
     "GMSTR.F": "QNB Portföy Gümüş BYF — Borsa İstanbul'da işlem gören gümüş borsa "
@@ -531,6 +524,21 @@ def _instrument_seed() -> list[tuple]:
     # yfinance'te guvenilmez -> canli grafik bigpara/MCP'den gelir (bkz. app.py).
     rows.append(("GMSTR.F", "BIST", "TRY", "BIST", "yfinance", "custom"))
     return rows
+
+
+# ABD enstrumanlarinin sektoru (SEKTOR_HISSE BIST'e ozel; US ayri tutulur ki
+# BIST sektor-tavani mantigini etkilemesin). seed_instruments her calismada yazar.
+_US_SEKTOR = {
+    "NVDA": "Yarı İletken", "AMD": "Yarı İletken", "TSM": "Yarı İletken",
+    "ASML": "Yarı İletken", "MU": "Yarı İletken",
+    "IONQ": "Kuantum", "RGTI": "Kuantum",
+    "RKLB": "Uzay", "SPCX": "Uzay",
+    "CNCK": "Kripto",
+    "QQQ": "ETF", "VOO": "ETF",
+    "BFLY": "Sağlık Teknolojisi",
+    "ACHR": "Havacılık",
+    "OSS": "Donanım",
+}
 
 
 def seed_instruments() -> None:
@@ -560,6 +568,10 @@ def seed_instruments() -> None:
         if sektor_satir:
             c.executemany(
                 "UPDATE instruments SET sektor=? WHERE ticker=?", sektor_satir)
+        # ABD enstrumanlarinin sektoru (yari iletken/kuantum/uzay/ETF...).
+        c.executemany(
+            "UPDATE instruments SET sektor=? WHERE ticker=?",
+            [(s, t) for t, s in _US_SEKTOR.items()])
 
 
 def _norm_ticker(ticker: str) -> str:
@@ -1626,5 +1638,48 @@ def ai_hata_sayisi(tarih=None) -> int:
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     try:
         return int(get_setting(f"ai_hata:{tarih}", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def kalp_at(is_adi, zaman=None) -> str:
+    """Gece isi BASARIYLA bittikten sonra 'heartbeat:<is>' ayarina zaman damgasi
+    yazar (Europe/Istanbul). health_monitor bu damgayi okuyup 24s+ eskiyse admin'e
+    uyarir (sessiz olum tespiti)."""
+    z = zaman or datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    set_setting(f"heartbeat:{is_adi}", z)
+    return z
+
+
+def kalp_yasi_saat(is_adi):
+    """'<is>' isinin son basarili calismasindan bu yana gecen saat (float) veya
+    hic damga yoksa None."""
+    v = get_setting(f"heartbeat:{is_adi}")
+    if not v:
+        return None
+    try:
+        t = datetime.strptime(str(v), "%Y-%m-%d %H:%M:%S").replace(tzinfo=_TZ)
+        return (datetime.now(_TZ) - t).total_seconds() / 3600.0
+    except (TypeError, ValueError):
+        return None
+
+
+def gunluk_sayac_arttir(ad, tarih=None) -> int:
+    """Gunluk sayaci ('<ad>:YYYY-MM-DD') 1 artirir, yeni degeri doner (ayar tablosu)."""
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    key = f"{ad}:{tarih}"
+    try:
+        n = int(get_setting(key, 0) or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    set_setting(key, n)
+    return n
+
+
+def gunluk_sayac(ad, tarih=None) -> int:
+    """Gunluk sayacin ('<ad>:YYYY-MM-DD') degerini doner (yoksa 0)."""
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    try:
+        return int(get_setting(f"{ad}:{tarih}", 0) or 0)
     except (TypeError, ValueError):
         return 0
