@@ -829,6 +829,15 @@ def build_message(results, sel, now, overview=None, portfolio=None, kullanici_ad
         if bozuk_satiri:
             lines.append("")
             lines.append(bozuk_satiri)
+        # STRATEJİ SÜRÜMÜ KARNESİ: açık pozisyonlar yeni sistem (v2) / eski yük (v1)
+        try:
+            from src.ai.performance import versiyon_ozet_satiri
+            _vsatir = versiyon_ozet_satiri()
+            if _vsatir:
+                lines.append("")
+                lines.append("📊 <b>Strateji karnesi:</b> " + _esc(_vsatir))
+        except Exception:
+            pass
 
     if not valid:
         lines.append("")

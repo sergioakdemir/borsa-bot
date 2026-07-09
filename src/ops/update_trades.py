@@ -201,6 +201,9 @@ def run(verbose: bool = True) -> dict:
         yeni_il = round(gun_dusuk_pct if eski_il is None
                         else min(eski_il, gun_dusuk_pct), 2)
         db.update_trade_intraday(t["id"], yeni_ih, yeni_il)
+        # Acik pozisyonun guncel K/Z'sini (anlik getiri) kalici yaz -> brifing/karne
+        # raporlari canli fiyat cekmeden okur. Kapanista close_trade nihai degeri ezer.
+        db.update_trade_pnl(t["id"], round(pct, 2))
         guncellenen += 1
 
         is_al = (t.get("karar") or "").upper().startswith("AL")
@@ -225,17 +228,28 @@ def run(verbose: bool = True) -> dict:
                 if verbose:
                     print(f"  {t['ticker']:7} TRAILING stop {cur_stop} -> {yeni_stop}")
 
-        # TIME STOP (AL): 5 işlem günü geçmiş, kâr <%1 ve şu an zararda -> aday işaretle
-        # (yalnız ilk kez; time_stop_adayi=1 ise tekrar bildirim yok).
-        if is_al and not t.get("time_stop_adayi"):
+        # TIME STOP (AL): 5+ işlem günü geçmiş, en iyi kâr <%1 ve şu an zararda ->
+        # pozisyonu KAPAT ve sermayeyi serbest bırak. Kural sağlandığı HER koşuda çalışır;
+        # daha önce time_stop_adayi=1 işaretlenmiş pozisyonlar (PGSUS/GARAN/TTKOM gibi) bir
+        # sonraki koşuda burada kapanır. Stop/hedef tetiğinden ÖNCE değerlendirilir; kapanınca
+        # bu bar için başka tetik aranmaz (continue).
+        if is_al:
             gecen = _islem_gunu(t.get("acilis_tarihi"), bugun)
             if gecen is not None and gecen >= 5 and yeni_mp < 1.0 and pct < 0:
-                db.mark_time_stop(t["id"], 1)
-                _trade_bildir(t, f"⏰ TIME STOP ADAYI: {t['ticker']} 5 gündür "
-                                 f"kıpırdamıyor. Pozisyonu değerlendir.")
+                if not t.get("time_stop_adayi"):
+                    db.mark_time_stop(t["id"], 1)     # kayda geç (kapanış öncesi işaret)
+                pnl_y = round(pct, 2)
+                hold = _gun_farki(t.get("acilis_tarihi"), bugun)
+                db.close_trade(t["id"], native, kapanis_sebep="time_stop",
+                               pnl_yuzde=pnl_y, holding_days=hold, tarih=bugun)
+                _trade_bildir(t, f"⏰ TIME STOP: {t['ticker']} {gecen} gündür kâra "
+                                 f"giremedi, -%{abs(pnl_y):.1f} zararla kapatıldı. "
+                                 f"Sermaye serbest kaldı.")
+                kapanan += 1
                 if verbose:
-                    print(f"  {t['ticker']:7} TIME-STOP adayı ({gecen} işlem günü, "
-                          f"maxP %{yeni_mp}, güncel %{round(pct, 2)})")
+                    print(f"  {t['ticker']:7} TIME-STOP KAPANDI @ {native:.2f} -> %{pnl_y} "
+                          f"({gecen} işlem günü, maxP %{yeni_mp})")
+                continue
 
         # Stop / hedef tetiği -> kapat
         stop = t.get("stop_fiyat")

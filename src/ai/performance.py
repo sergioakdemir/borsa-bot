@@ -23,6 +23,8 @@ def get_performance_metrics(kullanici_id=None) -> dict:
     pnls = [t["pnl_yuzde"] for t in trades
             if t.get("pnl_yuzde") is not None]
 
+    acik_versiyon = acik_versiyon_ozet(kullanici_id)   # açık kitap v1/v2 kırılımı
+
     bos = {
         "islem_sayisi": len(trades),
         "kapali_sayisi": len(pnls),
@@ -34,6 +36,7 @@ def get_performance_metrics(kullanici_id=None) -> dict:
         "profit_factor": None,
         "expectancy": None,
         "max_drawdown": None,
+        "acik_versiyon": acik_versiyon,
         "yeterli_veri": False,
     }
     if not pnls:
@@ -82,10 +85,51 @@ def get_performance_metrics(kullanici_id=None) -> dict:
         "profit_factor": profit_factor,
         "expectancy": expectancy,
         "max_drawdown": max_drawdown,
+        "acik_versiyon": acik_versiyon,
         "yeterli_veri": True,
     }
+
+
+def acik_versiyon_ozet(kullanici_id=None) -> dict:
+    """AÇIK pozisyonları strateji sürümüne göre (v2/v1) kırar.
+
+    Her sürüm için: açık pozisyon sayısı ve ortalama güncel K/Z (pnl_yuzde). Açık
+    pozisyonların pnl_yuzde'si her gece update_trades tarafından güncel getiriyle
+    yazılır; None olan pozisyon ortalamaya katılmaz ama sayıya girer.
+
+    Döner: {"v2": {"sayi": X, "ort": Y|None}, "v1": {"sayi": Z, "ort": W|None}}.
+    'v2' = 7 Temmuz 2026 paketiyle açılan yeni sistem; 'v1' = önceki (eski yük).
+    """
+    from src.db import database as db
+
+    trades = db.list_trades(durum="acik", kullanici_id=kullanici_id)
+    ozet = {}
+    for v in ("v2", "v1"):
+        grup = [t for t in trades if (t.get("strategy_version") or "v1") == v]
+        pnls = [t["pnl_yuzde"] for t in grup
+                if isinstance(t.get("pnl_yuzde"), (int, float))]
+        ort = round(sum(pnls) / len(pnls), 2) if pnls else None
+        ozet[v] = {"sayi": len(grup), "ort": ort}
+    return ozet
+
+
+def versiyon_ozet_satiri(kullanici_id=None) -> str | None:
+    """acik_versiyon_ozet'ten tek satırlık karşılaştırma metni üretir (brifing/karne):
+    'Yeni sistem (v2): X pozisyon, ort %Y | Eski yük (v1): Z pozisyon, ort %W'.
+    Hiç açık pozisyon yoksa None."""
+    ozet = acik_versiyon_ozet(kullanici_id)
+    v2, v1 = ozet["v2"], ozet["v1"]
+    if not v2["sayi"] and not v1["sayi"]:
+        return None
+
+    def _p(g):
+        ort_s = f"ort %{g['ort']:+.1f}" if g["ort"] is not None else "ort —"
+        return f"{g['sayi']} pozisyon, {ort_s}"
+
+    return f"Yeni sistem (v2): {_p(v2)} | Eski yük (v1): {_p(v1)}"
 
 
 if __name__ == "__main__":
     import json
     print(json.dumps(get_performance_metrics(), ensure_ascii=False, indent=2))
+    print(json.dumps(acik_versiyon_ozet(), ensure_ascii=False, indent=2))

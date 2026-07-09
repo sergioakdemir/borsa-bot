@@ -34,6 +34,12 @@ OUT_PATH = ROOT / "data" / "ai_commentary.json"
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1000
+
+# Strateji surumu: bu sabit, uretilen her yeni karar ve trade'e etiketlenir. 7 Temmuz
+# 2026 buyuk paketiyle (deterministik stop/hedef, cift risk vetosu, BEKLE pozisyon
+# yonetimi, sektor tavani) 'v2'ye gecildi. Migration'dan once yazilan tum kayitlar 'v1'.
+# Performans karsilastirmasi (brifing/karne) bu etikete gore v1/v2 ayrimi yapar.
+STRATEGY_VERSION = "v2"
 HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
 # Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
 _BATCH_FIYAT_INPUT = 1.50 / 1_000_000
@@ -1380,7 +1386,7 @@ def _record_trades(results, verbose: bool = False, tarih=None):
                     rr = round((hedef - fiyat) / (fiyat - stop), 2)
                 db.open_trade(ticker, karar, fiyat, stop_fiyat=stop, hedef_fiyat=hedef,
                               hedef2_fiyat=hedef2, para_birimi=para_birimi, rr_oran=rr,
-                              acilis_tarihi=bugun)
+                              acilis_tarihi=bugun, strategy_version=STRATEGY_VERSION)
                 acilan += 1
                 if verbose:
                     if sh:
@@ -1625,13 +1631,15 @@ def _persist(results, save: bool, verbose: bool):
             if r.get("kill_switch"):
                 db.record_decision(
                     ticker=r["ticker"], karar="KILL_SWITCH", puan=None, risk=None,
-                    eminlik=None, gerekce=r.get("mesaj"), tarih=today)
+                    eminlik=None, gerekce=r.get("mesaj"), tarih=today,
+                    strategy_version=STRATEGY_VERSION)
             elif not r.get("skipped"):
                 db.record_decision(
                     ticker=r["ticker"], karar=r["final_decision"],
                     puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
                     eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today,
-                    tahmini_sure=(r.get("tahmini_sure") or None))
+                    tahmini_sure=(r.get("tahmini_sure") or None),
+                    strategy_version=STRATEGY_VERSION)
         except Exception as e:
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")

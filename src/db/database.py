@@ -307,6 +307,9 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE decisions ADD COLUMN piyasa_farki REAL")
     if "kullanici_id" not in cols_d:        # karar kimin icin: 0=sistem geneli (brifing)
         c.execute("ALTER TABLE decisions ADD COLUMN kullanici_id INTEGER DEFAULT 0")
+    if "strategy_version" not in cols_d:    # strateji surumu: mevcut kayitlar 'v1',
+        # 7 Temmuz 2026 buyuk paketi sonrasi acilanlar 'v2' (bkz. commentary.STRATEGY_VERSION)
+        c.execute("ALTER TABLE decisions ADD COLUMN strategy_version TEXT DEFAULT 'v1'")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -330,6 +333,9 @@ def _migrate(c) -> None:
         c.execute("ALTER TABLE trades ADD COLUMN hedef2_fiyat REAL")
     if "yeniden_degerlendir" not in cols_t:   # karar BEKLE'ye dondu -> gozden gecir
         c.execute("ALTER TABLE trades ADD COLUMN yeniden_degerlendir INTEGER DEFAULT 0")
+    if "strategy_version" not in cols_t:      # strateji surumu: mevcut trade'ler 'v1',
+        # 7 Temmuz 2026 paketi sonrasi acilanlar 'v2' (bkz. commentary.STRATEGY_VERSION)
+        c.execute("ALTER TABLE trades ADD COLUMN strategy_version TEXT DEFAULT 'v1'")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -963,10 +969,12 @@ def list_portfoy_snapshots(kullanici_id, limit: int = 90) -> list[dict]:
 # ---- karar gunlugu (decisions) ----
 def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
                     gerekce=None, tarih=None, sonuc=None, tahmini_sure=None,
-                    kullanici_id=0) -> int:
+                    kullanici_id=0, strategy_version="v2") -> int:
     """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None).
     tahmini_sure: TUT kararinda AI'nin tahmin ettigi tutma penceresi (islem gunu).
-    kullanici_id: karar kimin icin uretildi (0=sistem geneli/brifing; ileride kisiye ozel)."""
+    kullanici_id: karar kimin icin uretildi (0=sistem geneli/brifing; ileride kisiye ozel).
+    strategy_version: karari ureten strateji surumu (yeni kayitlar 'v2'; eski kayitlar
+    migration'da 'v1' olarak etiketlendi)."""
     init_db()
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
@@ -976,10 +984,10 @@ def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
             # mukerrer olusmaz. NOT: sonuc/ilk_gun_degisim gibi alanlar yeniden
             # NULL'lanir; karar gunu (sonuc dolmadan once) yeniden uretildigi icin sorun degil.
             """INSERT OR REPLACE INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
-                                      tarih, sonuc, tahmini_sure, kullanici_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      tarih, sonuc, tahmini_sure, kullanici_id, strategy_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
-             eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id))
+             eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id, strategy_version))
         return cur.lastrowid
 
 
@@ -1402,21 +1410,24 @@ def close_model_position(pos_id, kapanis_fiyati, kz_tl, kz_yuzde, tarih=None) ->
 # ---- trades (gercek islem defteri: AL kararindan acilan pozisyonlar) ----
 def open_trade(ticker, karar, entry_fiyat, stop_fiyat=None, hedef_fiyat=None,
                position_size=None, para_birimi="TL", rr_oran=None,
-               kullanici_id=0, acilis_tarihi=None, hedef2_fiyat=None) -> int:
+               kullanici_id=0, acilis_tarihi=None, hedef2_fiyat=None,
+               strategy_version="v2") -> int:
     """Yeni bir trade acar (durum='acik'). entry_fiyat o anki fiyat, stop/hedef
     verdict'ten gelen seviyeler, rr_oran = (hedef-entry)/(entry-stop). hedef2_fiyat
-    doluysa kademeli hedef (deterministik motor) devrededir."""
+    doluysa kademeli hedef (deterministik motor) devrededir. strategy_version: trade'i
+    acan strateji surumu (yeni trade'ler 'v2'; eski trade'ler migration'da 'v1')."""
     init_db()
     acilis_tarihi = acilis_tarihi or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         cur = c.execute(
             """INSERT INTO trades
                  (ticker, kullanici_id, karar, entry_fiyat, stop_fiyat, hedef_fiyat,
-                  hedef2_fiyat, position_size, para_birimi, acilis_tarihi, rr_oran, durum)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
+                  hedef2_fiyat, position_size, para_birimi, acilis_tarihi, rr_oran,
+                  strategy_version, durum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
             (str(ticker).upper().replace(".IS", ""), kullanici_id, karar, entry_fiyat,
              stop_fiyat, hedef_fiyat, hedef2_fiyat, position_size,
-             (para_birimi or "TL").upper(), acilis_tarihi, rr_oran))
+             (para_birimi or "TL").upper(), acilis_tarihi, rr_oran, strategy_version))
         return cur.lastrowid
 
 
@@ -1461,6 +1472,17 @@ def update_trade_intraday(trade_id, intraday_high_pct, intraday_low_pct) -> None
     with get_conn() as c:
         c.execute("UPDATE trades SET intraday_high_pct=?, intraday_low_pct=? WHERE id=?",
                   (intraday_high_pct, intraday_low_pct, trade_id))
+
+
+def update_trade_pnl(trade_id, pnl_yuzde) -> None:
+    """ACIK trade'in anlik getirisini (guncel K/Z %) kaydeder. Her gece update_trades
+    kosusunda guncellenir; boylece brifing/karne raporlari acik pozisyonlarin guncel
+    K/Z'sini canli fiyat cekmeden DB'den okuyabilir. Kapanista close_trade nihai degeri
+    yazar. Performans metrikleri yalniz durum='kapali' okudugu icin bu deger onlari
+    etkilemez."""
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE trades SET pnl_yuzde=? WHERE id=?", (pnl_yuzde, trade_id))
 
 
 def update_trade_stop(trade_id, stop_fiyat) -> None:
