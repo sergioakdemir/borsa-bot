@@ -207,6 +207,32 @@ def _kontrol_risk_det():
     return None
 
 
+def _kontrol_mcp():
+    """Borsa MCP ayakta mi? GUNDE 1 KEZ basit bir fiyat cagrisi (THYAO) yapar;
+    None donerse fiyat/KAP fallback'leri devrede demektir -> admin uyarisi.
+    MCP cagrisi pahalidir (~birkac sn) -> 'mcp_check:<gun>' ile gunde bir kez
+    calisir (30dk'lik core kosularinda tekrar cagirmaz); uyari da run() spam-state
+    ile gunde 1 kez gider. (XU100 yerine THYAO: get_price equity'de guvenilir
+    canlilik sinyali; endeks destegi MCP cokukken dogrulanamaz.)"""
+    try:
+        from src.db import database as db
+    except Exception:
+        return None
+    bugun = datetime.now(_TZ).date().isoformat()
+    if db.get_setting(f"mcp_check:{bugun}"):
+        return None                          # bugun zaten denendi
+    db.set_setting(f"mcp_check:{bugun}", "1")
+    try:
+        from src.news import borsa_mcp
+        px = borsa_mcp.get_price("THYAO")
+    except Exception:
+        px = None
+    if not px:
+        return ("mcp_yanit_yok",
+                "Borsa MCP yanıt vermiyor — fiyat/KAP fallback'leri devrede.")
+    return None
+
+
 # --- spam onleme: gunde 1 kez ---
 
 def _state_yukle() -> dict:
@@ -250,7 +276,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
     core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata,
-            _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det)
+            _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
     market = (lambda: _kontrol_cache_tazelik(now), _kontrol_abd)
     if mode == "core":
         kontroller = core

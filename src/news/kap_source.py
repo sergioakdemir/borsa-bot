@@ -82,6 +82,7 @@ class KAPSource(NewsSource):
 
     # --- ticker -> mkkMemberOid -------------------------------------------
     def _resolve_oid(self, ticker: str) -> str:
+        ticker = (ticker or "").upper().replace(".IS", "").strip()
         if ticker in _OID_CACHE:
             return _OID_CACHE[ticker]
         s = self._get_session()
@@ -93,14 +94,19 @@ class KAPSource(NewsSource):
             raise NewsSourceUnavailable(
                 f"KAP arama basarisiz ({ticker}): {type(e).__name__}: {str(e)[:80]}"
             ) from e
-        # companyOrFunds icinden kodu birebir eslesen sirketi sec
+        # companyOrFunds icinden kodu eslesen sirketi sec. cmpOrFundCode virgullu
+        # COKLU kod olabilir (or. GARAN -> 'garan,tgb') ve kucuk harf gelir; parcalara
+        # ayirip buyuk/kucuk harf onemsemeden birebir eslesme aranir.
         for cat in (data if isinstance(data, list) else []):
             for res in cat.get("results", []):
                 if res.get("searchType") != "C":
                     continue
-                code = str(res.get("cmpOrFundCode") or "").upper()
                 oid = res.get("memberOrFundOid")
-                if oid and code == ticker:
+                if not oid:
+                    continue
+                kodlar = {c.strip().upper() for c in
+                          str(res.get("cmpOrFundCode") or "").split(",") if c.strip()}
+                if ticker in kodlar:
                     _OID_CACHE[ticker] = oid
                     return oid
         raise NewsSourceUnavailable(f"KAP'ta '{ticker}' kodu bulunamadi")
