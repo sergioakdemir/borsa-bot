@@ -647,8 +647,9 @@ def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") 
     """
     if market in ("us", "abd"):
         try:
+            # Hisse basi GUNLUK EN FAZLA 3 haber (en yenileri) — Haiku maliyet kontrolu.
             from src.news.us_news import ticker_news
-            haberler = ticker_news(ticker, within_days=7)
+            haberler = ticker_news(ticker, within_days=7, limit=3)
         except Exception:
             haberler = []
         # Bildirimler (30g KAP) ABD'de yok; haberler hem 'bildirimler' hem '7g' listesi.
@@ -1079,6 +1080,24 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
     # Haber -> karar baglantisi: her taze haberi bu hisse acisindan etiketle
     # (olumlu_mu / etki_buyuklugu / etki_yonu). Ucuz Haiku cagrisi; ana modele girer.
     news["haberler"] = _haber_etki_analizi(ticker, news["haberler"])
+    # KALICI HAVUZ (ABD): haberleri BIST KAP'lari gibi haber_etki'ye yaz (ticker/tarih/
+    # baslik/kaynak/etki_yorumu). Boylece yukselis hafizasi + priced_in ABD tarafinda da
+    # gecmise bakabilir. Dedup baslik+tarih uzerinden (record_us_haber). Best-effort.
+    if is_us and news.get("haberler"):
+        try:
+            from src.db import database as _db
+            _fiyat = sig.get("son_kapanis")
+            for _h in news["haberler"]:
+                _yorum = None
+                if _h.get("olumlu_mu") is not None:
+                    _yon = "olumlu" if _h.get("olumlu_mu") else "olumsuz"
+                    _yorum = f"{_yon} · {_h.get('etki_buyuklugu') or '?'} etki · " \
+                             f"{_h.get('etki_yonu') or '?'}"
+                _db.record_us_haber(
+                    ticker, _h.get("tarih"), _h.get("baslik"),
+                    kaynak=_h.get("kaynak"), etki_yorumu=_yorum, fiyat=_fiyat)
+        except Exception:
+            pass
     # Analist konsensusu (hedeffiyat + borsaveyatirim) - yalniz BIST
     analist = {"available": False}
     if not is_us:

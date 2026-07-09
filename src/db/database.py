@@ -345,6 +345,14 @@ def _migrate(c) -> None:
             cs = {r["name"] for r in c.execute(f"PRAGMA table_info({tbl})")}
             if "para_birimi" not in cs:
                 c.execute(f"ALTER TABLE {tbl} ADD COLUMN para_birimi TEXT DEFAULT 'TL'")
+    # haber_etki: ABD haber havuzu icin kaynak + etki_yorumu (yon/etki ozeti). BIST KAP
+    # kayitlarinda bos kalir (geriye uyumlu); ABD haberleri bunlarla saklanir.
+    if "haber_etki" in tbls:
+        cols_he = {r["name"] for r in c.execute("PRAGMA table_info(haber_etki)")}
+        if "kaynak" not in cols_he:
+            c.execute("ALTER TABLE haber_etki ADD COLUMN kaynak TEXT")
+        if "etki_yorumu" not in cols_he:
+            c.execute("ALTER TABLE haber_etki ADD COLUMN etki_yorumu TEXT")
     # decisions: her (ticker, tarih) icin TEK kayit. Index yoksa once mukerrerleri
     # temizle (en yuksek id = en son karar kalir), sonra UNIQUE index'i kur. Index
     # varken bu blok atlanir; record_decision INSERT OR REPLACE ile tekrar olusturmaz.
@@ -1147,13 +1155,47 @@ def record_haber_etki(ticker, haber_id, haber_tarihi, fiyat_haber_ani,
             return None
 
 
+def record_us_haber(ticker, tarih, baslik, kaynak=None, etki_yorumu=None,
+                    fiyat=None, kategori=None) -> int | None:
+    """ABD hisse haberini KALICI havuza (haber_etki) yazar: ticker, tarih, baslik,
+    kaynak, etki_yorumu (yon/etki ozeti). Dedup baslik+tarih(gun)+ticker'dan turetilen
+    deterministik haber_id ile (UNIQUE); ayni haber tekrar yazilmaz (None doner).
+    Fiyat-etki kolonlari (30dk/2saat/1gun) bos kalir; update_haber_etki ABD satirlarini
+    atlar (BIST fiyatlanmaz). Bos baslik -> None."""
+    baslik = (baslik or "").strip()
+    if not baslik:
+        return None
+    import hashlib
+    tkr = str(ticker).upper().replace(".IS", "")
+    gun = str(tarih or "")[:10]
+    hid = "US:" + hashlib.md5(
+        f"{tkr}|{gun}|{baslik.lower()}".encode("utf-8")).hexdigest()[:20]
+    init_db()
+    with get_conn() as c:
+        try:
+            cur = c.execute(
+                """INSERT INTO haber_etki
+                     (ticker, haber_id, haber_tarihi, haber_kategori, baslik,
+                      kaynak, etki_yorumu, fiyat_haber_ani, olusturma)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (tkr, hid, tarih, kategori or "ABD", baslik, kaynak, etki_yorumu,
+                 fiyat, _now()))
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
 def haber_etki_eksikler(limit: int = 200) -> list[dict]:
-    """30dk/2saat/1gun fiyatlarindan en az biri bos olan kayitlar."""
+    """30dk/2saat/1gun fiyatlarindan en az biri bos olan kayitlar (fiyat-etki takibi
+    icin). ABD tickerlari HARIC: onlar BIST verisiyle fiyatlanamaz ve yalnizca kalici
+    haber kaydidir; eksikler kuyrugunu doldurup BIST kayitlarini ac birakmasinlar."""
     init_db()
     with get_conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT * FROM haber_etki WHERE fiyat_30dk IS NULL OR fiyat_2saat IS NULL "
-            "OR fiyat_1gun IS NULL ORDER BY id LIMIT ?", (limit,))]
+            "SELECT * FROM haber_etki WHERE (fiyat_30dk IS NULL OR fiyat_2saat IS NULL "
+            "OR fiyat_1gun IS NULL) AND ticker NOT IN "
+            "(SELECT ticker FROM instruments WHERE UPPER(market)='US') "
+            "ORDER BY id LIMIT ?", (limit,))]
 
 
 def update_haber_etki(row_id, **alanlar) -> None:

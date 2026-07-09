@@ -356,6 +356,21 @@ def _portfolio_tickers():
         return set()
 
 
+def _us_instrument_tickers():
+    """instruments tablosunda market='US' (aktif) olan TÜM ABD hisseleri. ABD brifingi
+    ve us_news haber taraması artık yalnız portföyü değil bu evrenin tamamını kapsar
+    (AMD/TSM/ASML/MU/IONQ/... dahil)."""
+    from src.db import database as db
+    try:
+        with db.get_conn() as c:
+            rows = c.execute(
+                "SELECT ticker FROM instruments WHERE UPPER(market)='US' "
+                "AND COALESCE(is_active,1)=1")
+            return {(r[0] or "").upper().replace(".IS", "") for r in rows if r[0]}
+    except Exception:
+        return set()
+
+
 def _us_watchlist_tickers():
     """Watchlist'teki ABD hisseleri (kisisel_diger, market=abd). Ufuk'un izledigi
     NVDA/AMD/TSM/IONQ... gibi semboller. Akademik haberleri bunlarla iliskilendiririz."""
@@ -437,12 +452,13 @@ def select_targets(market="bist"):
     """AI brifingi icin hedef hisseleri sec.
 
     market='bist' -> TUM bist_endeks watchlist + kisisel (09:00 brifingi).
-    market='us'   -> yalnizca portfoydeki ABD hisseleri (':us' etiketli, 15:30).
+    market='us'   -> TÜM ABD watchlist'i: instruments market='US' (+ portföy US), 15:30.
     """
     from src.watchlist import load_mover_threshold
 
     if market in ("us", "abd"):
-        us = _us_portfolio_tickers()
+        # Yalnız portföy değil; instruments'taki tüm ABD evreni taransın (haber kapsamı).
+        us = sorted(_us_instrument_tickers() | set(_us_portfolio_tickers()))
         targets = [f"{t}:us" for t in us]
         return {"targets": targets, "personal": [], "movers": [], "us": us,
                 "changes": {}, "threshold": load_mover_threshold(),

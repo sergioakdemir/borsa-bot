@@ -234,6 +234,9 @@ def ticker_news(ticker: str, within_days: int = 7, limit: int = 12) -> list[dict
                 "fiyatlanma": "VERI_YOK",
             })
 
+    # En yeni haberler once (tarih 'YYYY-MM-DD HH:MM' string, sozluksel siralanabilir)
+    # -> limit uygulanınca en guncel N haber kalir (hisse basi gunluk cap icin onemli).
+    out.sort(key=lambda r: str(r.get("tarih") or ""), reverse=True)
     return out[:limit]
 
 
