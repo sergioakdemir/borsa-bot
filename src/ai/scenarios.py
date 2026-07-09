@@ -1,12 +1,13 @@
 """Tarihsel senaryo kutuphanesi.
 
-Her hisse (sektor grubu) icin statik tarihsel baglam + makro kosullara bagli
-olasiliksal egilimler. get_scenario_context, mevcut makro durumu (faiz yuksek mi,
-TL zayif mi, petrol ne yapti) tespit edip eslesen kurallardan
-"Bu kosulda bu hisse gecmiste %X olasilikla X yonde hareket etti" metni uretir.
+Her hisse (sektor grubu) icin statik tarihsel baglam + makro kosullara bagli NITEL
+egilimler. get_scenario_context, mevcut makro durumu (faiz yuksek mi, TL zayif mi,
+petrol ne yapti) tespit edip eslesen kurallardan "bu kosulda gecmiste genelde X
+yonde hareket etme egilimindeydi" tarzi NITEL metin uretir.
 
-NOT: Olasiliklar tarihsel egilimi temsil eden statik tahminlerdir (kesin degildir);
-AI'a baglam olarak verilir, tek basina karar olcutu degildir.
+NOT: Bu egilimler kabaca gecmis davranisi temsil eder (kesin degildir). UYDURMA
+OLASILIK TEMIZLIGI (2026-07): AI baglamina artik SAYISAL yuzde/olasilik verilmez
+(kaydirilmis kesinlik izlenimi yaratmasin); yalniz nitel yon/egilim aktarilir.
 """
 
 # Makro kosul etiketleri:
@@ -14,128 +15,130 @@ AI'a baglam olarak verilir, tek basina karar olcutu degildir.
 #   celik_yukseldi
 # (Petrol/celik icin canli kaynak yoksa o kurallar eslesmeZ; ozet yine gosterilir.)
 
+# NITEL egilim kutuphanesi. 'ozet' ve kurallar SAYISAL olasilik ICERMEZ (bkz. modul
+# docstring, 2026-07 temizligi); yalniz yon/egilim tutulur.
 _GRUPLAR = {
     "havayolu": {
-        "ozet": ("Faiz artışında tarihin %60'ında düştü. Petrol -%10'da tarihin "
-                 "%75'inde yükseldi. TL değer kaybında tarihin %65'inde yükseldi "
-                 "(döviz geliri)."),
+        "ozet": ("Faiz artışı dönemlerinde geçmişte genelde geriledi. Petrol "
+                 "gerilerken (yakıt maliyeti düşer) çoğunlukla olumlu tepki verdi. "
+                 "TL değer kaybında döviz geliriyle desteklenme eğilimindeydi."),
         "kurallar": [
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 60, "aciklama": "faiz yüksekken"},
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 65, "aciklama": "TL değer kaybederken (döviz geliri)"},
-            {"kosul": "petrol_dustu", "yon": "yükseliş", "olasilik": 75, "aciklama": "petrol gerilerken (yakıt maliyeti)"},
-            {"kosul": "petrol_yukseldi", "yon": "düşüş", "olasilik": 70, "aciklama": "petrol yükselirken"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL değer kaybederken (döviz geliri)"},
+            {"kosul": "petrol_dustu", "yon": "yükseliş", "aciklama": "petrol gerilerken (yakıt maliyeti)"},
+            {"kosul": "petrol_yukseldi", "yon": "düşüş", "aciklama": "petrol yükselirken"},
         ],
     },
     "banka": {
-        "ozet": ("Faiz artışında tarihin %70'inde düştü. TCMB faiz indirimi "
-                 "beklentisinde tarihin %80'inde yükseldi."),
+        "ozet": ("Faiz artışında (marj baskısı) geçmişte genelde geriledi. TCMB "
+                 "faiz indirimi beklentisinde çoğunlukla yükselme eğilimindeydi."),
         "kurallar": [
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 70, "aciklama": "faiz yüksekken (marj baskısı)"},
-            {"kosul": "faiz_dusuk", "yon": "yükseliş", "olasilik": 80, "aciklama": "faiz düşüş/indirim beklentisinde"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken (marj baskısı)"},
+            {"kosul": "faiz_dusuk", "yon": "yükseliş", "aciklama": "faiz düşüş/indirim beklentisinde"},
         ],
     },
     "savunma": {
-        "ozet": ("Savunma bütçesi artışında tarihin %85'inde yükseldi. TL "
-                 "zayıflamasında tarihin %70'inde yükseldi (dolar ihracatı)."),
+        "ozet": ("Savunma bütçesi artışında geçmişte genelde yükseldi. TL "
+                 "zayıflamasında (dolar ihracatı) çoğunlukla olumlu tepki verdi."),
         "kurallar": [
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 70, "aciklama": "TL zayıflarken (dolar ihracatı)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (dolar ihracatı)"},
         ],
     },
     "rafineri": {
-        "ozet": ("Ham petrol -%10'da tarihin %65'inde düştü. Rafinaj marjı "
-                 "genişlemesinde tarihin %80'inde yükseldi. TL zayıflamasında "
-                 "dolar bazlı gelir desteklenir."),
+        "ozet": ("Ham petrol gerilerken geçmişte genelde baskılandı. Rafinaj marjı "
+                 "genişlemesinde çoğunlukla yükseldi. TL zayıflamasında dolar bazlı "
+                 "gelir desteklenir."),
         "kurallar": [
-            {"kosul": "petrol_dustu", "yon": "düşüş", "olasilik": 65, "aciklama": "ham petrol gerilerken"},
-            {"kosul": "petrol_yukseldi", "yon": "yükseliş", "olasilik": 60, "aciklama": "ham petrol yükselirken (stok/marj)"},
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 60, "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
+            {"kosul": "petrol_dustu", "yon": "düşüş", "aciklama": "ham petrol gerilerken"},
+            {"kosul": "petrol_yukseldi", "yon": "yükseliş", "aciklama": "ham petrol yükselirken (stok/marj)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
         ],
     },
     "celik": {
-        "ozet": ("Global çelik fiyatı +%10'da tarihin %75'inde yükseldi. Enerji "
-                 "maliyeti artışında tarihin %60'ında düştü. TL zayıflamasında "
+        "ozet": ("Global çelik fiyatı artarken geçmişte genelde yükseldi. Enerji "
+                 "maliyeti artışında baskılanma eğilimindeydi. TL zayıflamasında "
                  "ihracat geliri desteklenir."),
         "kurallar": [
-            {"kosul": "celik_yukseldi", "yon": "yükseliş", "olasilik": 75, "aciklama": "global çelik fiyatı artarken"},
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 60, "aciklama": "TL zayıflarken (ihracat)"},
+            {"kosul": "celik_yukseldi", "yon": "yükseliş", "aciklama": "global çelik fiyatı artarken"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (ihracat)"},
         ],
     },
     "gyo": {
-        "ozet": ("Faiz düşüşünde tarihin %80'inde yükseldi. Konut satışları "
-                 "yüksekken tarihin %70'inde yükseldi."),
+        "ozet": ("Faiz düşüşünde geçmişte genelde yükseldi (konut talebi). Faiz "
+                 "yüksekken (konut kredisi pahalı) baskılanma eğilimindeydi."),
         "kurallar": [
-            {"kosul": "faiz_dusuk", "yon": "yükseliş", "olasilik": 80, "aciklama": "faiz düşerken (konut talebi)"},
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 65, "aciklama": "faiz yüksekken (konut kredisi pahalı)"},
+            {"kosul": "faiz_dusuk", "yon": "yükseliş", "aciklama": "faiz düşerken (konut talebi)"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken (konut kredisi pahalı)"},
         ],
     },
     "otomotiv": {
-        "ozet": ("Faiz düşüşünde (kredili satış) tarihin %75'inde yükseldi. TL "
+        "ozet": ("Faiz düşüşünde (kredili satış) geçmişte genelde yükseldi. TL "
                  "zayıflamasında ihracatçı modeller desteklenir ama ithal girdi "
                  "maliyeti artar (karışık)."),
         "kurallar": [
-            {"kosul": "faiz_dusuk", "yon": "yükseliş", "olasilik": 75, "aciklama": "faiz düşerken (taşıt kredisi)"},
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 60, "aciklama": "faiz yüksekken (talep daralması)"},
+            {"kosul": "faiz_dusuk", "yon": "yükseliş", "aciklama": "faiz düşerken (taşıt kredisi)"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken (talep daralması)"},
         ],
     },
     "holding": {
-        "ozet": ("Geniş piyasa ile birlikte hareket eder; faiz indirimi/risk "
-                 "iştahı arttığında tarihin %70'inde yükseldi."),
+        "ozet": ("Geniş piyasayla birlikte hareket eder; faiz indirimi/risk iştahı "
+                 "arttığında genelde yükselme eğilimindeydi."),
         "kurallar": [
-            {"kosul": "faiz_dusuk", "yon": "yükseliş", "olasilik": 70, "aciklama": "faiz düşerken (risk iştahı)"},
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 60, "aciklama": "faiz yüksekken"},
+            {"kosul": "faiz_dusuk", "yon": "yükseliş", "aciklama": "faiz düşerken (risk iştahı)"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken"},
         ],
     },
     "perakende": {
-        "ozet": ("Defansif yapı: faiz yüksek/belirsizlik dönemlerinde tarihin "
-                 "%65'inde piyasadan iyi performans gösterdi. Enflasyon ciroyu "
+        "ozet": ("Defansif yapı: faiz yüksek/belirsizlik dönemlerinde geçmişte "
+                 "genelde piyasadan iyi performans gösterdi. Enflasyon ciroyu "
                  "nominal büyütür."),
         "kurallar": [
-            {"kosul": "faiz_yuksek", "yon": "göreceli güçlü", "olasilik": 65, "aciklama": "faiz yüksek/belirsizlikte (defansif)"},
+            {"kosul": "faiz_yuksek", "yon": "göreceli güçlü", "aciklama": "faiz yüksek/belirsizlikte (defansif)"},
         ],
     },
     "telekom": {
         "ozet": ("Defansif, enflasyona endeksli gelir: yüksek enflasyon/faiz "
-                 "döneminde tarihin %65'inde piyasaya göre dayanıklı kaldı."),
+                 "döneminde geçmişte genelde piyasaya göre dayanıklı kaldı."),
         "kurallar": [
-            {"kosul": "faiz_yuksek", "yon": "göreceli güçlü", "olasilik": 65, "aciklama": "faiz yüksekken (defansif, endeksli gelir)"},
+            {"kosul": "faiz_yuksek", "yon": "göreceli güçlü", "aciklama": "faiz yüksekken (defansif, endeksli gelir)"},
         ],
     },
     "cam": {
-        "ozet": ("Enerji maliyeti ve ihracata duyarlı: TL zayıflamasında tarihin "
-                 "%65'inde yükseldi (ihracat geliri); enerji artışında baskılandı."),
+        "ozet": ("Enerji maliyeti ve ihracata duyarlı: TL zayıflamasında geçmişte "
+                 "genelde yükseldi (ihracat geliri); enerji artışında baskılandı."),
         "kurallar": [
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 65, "aciklama": "TL zayıflarken (ihracat geliri)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (ihracat geliri)"},
         ],
     },
     "altin": {
-        "ozet": ("Ons altın ve TL'ye duyarlı: TL zayıflamasında tarihin %70'inde "
+        "ozet": ("Ons altın ve TL'ye duyarlı: TL zayıflamasında geçmişte genelde "
                  "yükseldi (dolar bazlı gelir + güvenli liman talebi)."),
         "kurallar": [
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 70, "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
         ],
     },
     "beyaz_esya": {
-        "ozet": ("Faiz düşüşünde (kredili dayanıklı tüketim) tarihin %70'inde "
-                 "yükseldi. TL zayıflamasında ihracat artısı vs. ithal girdi "
-                 "maliyeti karışık etki yapar."),
+        "ozet": ("Faiz düşüşünde (kredili dayanıklı tüketim) geçmişte genelde "
+                 "yükseldi. TL zayıflamasında ihracat vs. ithal girdi maliyeti "
+                 "karışık etki yapar."),
         "kurallar": [
-            {"kosul": "faiz_dusuk", "yon": "yükseliş", "olasilik": 70, "aciklama": "faiz düşerken (kredili talep)"},
-            {"kosul": "faiz_yuksek", "yon": "düşüş", "olasilik": 60, "aciklama": "faiz yüksekken (talep daralması)"},
+            {"kosul": "faiz_dusuk", "yon": "yükseliş", "aciklama": "faiz düşerken (kredili talep)"},
+            {"kosul": "faiz_yuksek", "yon": "düşüş", "aciklama": "faiz yüksekken (talep daralması)"},
         ],
     },
     "taahhut": {
         "ozet": ("Yurt dışı projeler ve döviz gelirine dayalı: TL zayıflamasında "
-                 "tarihin %70'inde yükseldi."),
+                 "geçmişte genelde yükseldi."),
         "kurallar": [
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 70, "aciklama": "TL zayıflarken (döviz geliri)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (döviz geliri)"},
         ],
     },
     "petrokimya": {
         "ozet": ("Ürün-nafta makası ve dolar kuruna duyarlı: petrol/nafta "
                  "gerilerken marj genişler; TL zayıflamasında dolar bazlı gelir."),
         "kurallar": [
-            {"kosul": "petrol_dustu", "yon": "yükseliş", "olasilik": 60, "aciklama": "nafta/petrol gerilerken (marj)"},
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 60, "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
+            {"kosul": "petrol_dustu", "yon": "yükseliş", "aciklama": "nafta/petrol gerilerken (marj)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "TL zayıflarken (dolar bazlı gelir)"},
         ],
     },
     "kiymetli_maden": {
@@ -144,8 +147,8 @@ _GRUPLAR = {
                  "(TL değer kaybettiğinde) veya enflasyon yükseldiğinde genellikle yukarı "
                  "hareket eder; güvenli liman talebiyle desteklenir."),
         "kurallar": [
-            {"kosul": "tl_zayif", "yon": "yükseliş", "olasilik": 70, "aciklama": "dolar güçlenirken / TL değer kaybederken"},
-            {"kosul": "enflasyon_yuksek", "yon": "yükseliş", "olasilik": 65, "aciklama": "enflasyon yüksekken (değer saklama / güvenli liman)"},
+            {"kosul": "tl_zayif", "yon": "yükseliş", "aciklama": "dolar güçlenirken / TL değer kaybederken"},
+            {"kosul": "enflasyon_yuksek", "yon": "yükseliş", "aciklama": "enflasyon yüksekken (değer saklama / güvenli liman)"},
         ],
     },
 }
@@ -229,9 +232,10 @@ def get_scenario_context(ticker: str, macro_data: dict | None = None,
 
     parcalar = [f"Tarihsel bağlam: {grup['ozet']}"]
     if eslesen:
+        # NITEL: sayisal olasilik verilmez; yalniz gecmis egilim yonu aktarilir.
         durum = "; ".join(
-            f"{k['aciklama']} geçmişte %{k['olasilik']} olasılıkla {k['yon']} yönde "
-            "hareket etti" for k in eslesen)
+            f"{k['aciklama']} geçmişte genelde {k['yon']} yönde hareket etme "
+            "eğilimindeydi" for k in eslesen)
         parcalar.append(f"Şu anki koşullarda ({durum}).")
     metin = " ".join(parcalar)
 
@@ -240,8 +244,7 @@ def get_scenario_context(ticker: str, macro_data: dict | None = None,
         "ticker": ticker,
         "grup": grup_ad,
         "ozet": grup["ozet"],
-        "eslesen": [{"kosul": k["kosul"], "yon": k["yon"],
-                     "olasilik": k["olasilik"]} for k in eslesen],
+        "eslesen": [{"kosul": k["kosul"], "yon": k["yon"]} for k in eslesen],
         "metin": metin,
     }
 

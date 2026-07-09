@@ -105,7 +105,11 @@ def _haber_etki_analizi(ticker: str, haberler: list, client=None) -> list:
             h["etki_buyuklugu"] = a.get("etki_buyuklugu")
             h["etki_yonu"] = a.get("etki_yonu")
     except Exception:
-        pass
+        try:                                     # gunluk AI hata sayaci (health_monitor okur)
+            from src.db import database as _db
+            _db.ai_hata_inc()
+        except Exception:
+            pass
     return haberler
 
 
@@ -1011,6 +1015,20 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         return (_kill_kaydi(ticker, market,
                 f"fiyat verisi 24 saatten eski (son veri {sig.get('son_bar_tarihi')})"),
                 None, None)
+    # VERI TAZELIGI BEKCISI: son bar 3 ISLEM GUNUNDEN eskiyse karar uretme -> KILL_SWITCH.
+    # (Yukaridaki 'bayat' kontrolune ek acik guvenlik agi; net sebep + tarih yazar.)
+    _son_bar_str = sig.get("son_bar_tarihi")
+    if _son_bar_str:
+        try:
+            import numpy as _np
+            _sb = datetime.fromisoformat(str(_son_bar_str)[:10]).date()
+            _isl = int(_np.busday_count(_sb.isoformat(),
+                                        datetime.now(_TZ).date().isoformat()))
+        except Exception:
+            _isl = 0
+        if _isl > 3:
+            return (_kill_kaydi(ticker, market,
+                    f"veri bayat: son bar {str(_son_bar_str)[:10]}"), None, None)
 
     # Deterministik risk (risk.py): market_data'nin ham barlariyla hesapla. _bars'i
     # AI payload'ina/kayda gitmeden sig'ten cikar (prompt + kayit sismesin).
@@ -1545,6 +1563,7 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
     results yerinde degistirilir (cagiranin gosterdigi kayitlar da guncellenir)."""
     from src.db import database as db
     from src.ai.learning import _sektor_of
+    from src.news import bilanco_takvimi
     bugun = datetime.now(_TZ).date()
 
     # 0a) AL PUAN ESIGI: BIST'te puan<8, ABD'de puan<7 olan AL -> BEKLE (daha secici).
@@ -1592,6 +1611,33 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
             r["position_size_oneri"] = "Yarım pozisyon — portföyün %2-3'ü"
             if verbose:
                 print(f"  [filtre] {r.get('ticker')}: EQ {eq_skor} -> yarım pozisyon")
+
+    # 0d) BILANCO FRENI: hissenin bilanco aciklama tarihi 2 ISLEM GUNU icindeyse yeni AL
+    #   -> BEKLE. Sonuc oncesi surpriz/volatilite riski; aciklama sonrasi degerlendir.
+    #   Bilanco tarihi bilinmiyorsa (gun_farki None) filtre atlanir.
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        ticker = (r.get("ticker") or "").upper().replace(".IS", "")
+        if not ticker:
+            continue
+        try:
+            gun = bilanco_takvimi.gun_farki(ticker, bugun)
+        except Exception:
+            gun = None
+        if gun is None:
+            continue                              # bilinmiyor -> filtre atla
+        try:
+            import numpy as _np
+            _ed = bugun + timedelta(days=gun)     # bilanco aciklama tarihi
+            islem_gun = int(_np.busday_count(bugun.isoformat(), _ed.isoformat()))
+        except Exception:
+            continue
+        if islem_gun <= 2:
+            kala = "bugün" if gun == 0 else f"{gun} gün"
+            _al_to_bekle(
+                r, f"Bilanço açıklamasına {kala} var — sonuç belirsizliği, "
+                   "açıklama sonrası değerlendir.", verbose=verbose)
 
     # 1) Tekrarli sinyal filtresi (hisse bazli, bagimsiz)
     for r in results or []:
@@ -1810,6 +1856,11 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                 else:
                     final[cid] = {"ticker": ctx["ticker"], "skipped": True,
                                   "reason": f"Batch {res.result.type}"}
+                    try:                         # gunluk AI hata sayaci (health_monitor okur)
+                        from src.db import database as _db
+                        _db.ai_hata_inc()
+                    except Exception:
+                        pass
 
         # Tum batch bitti -> token/maliyet ozeti (log dosyasina dusen stdout).
         # TR brifingi -> briefing.log, US brifingi -> briefing_us.log (cron yonlendirmesi).

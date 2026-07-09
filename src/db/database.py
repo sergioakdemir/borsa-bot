@@ -336,6 +336,9 @@ def _migrate(c) -> None:
     if "strategy_version" not in cols_t:      # strateji surumu: mevcut trade'ler 'v1',
         # 7 Temmuz 2026 paketi sonrasi acilanlar 'v2' (bkz. commentary.STRATEGY_VERSION)
         c.execute("ALTER TABLE trades ADD COLUMN strategy_version TEXT DEFAULT 'v1'")
+    if "brut_pnl_yuzde" not in cols_t:        # islem maliyeti oncesi brut getiri; ana
+        # olcu pnl_yuzde NET'tir (brut - 0.3 puan komisyon+slippage, bkz. update_trades)
+        c.execute("ALTER TABLE trades ADD COLUMN brut_pnl_yuzde REAL")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -1514,16 +1517,20 @@ def set_yeniden_degerlendir(trade_id, deger: int = 1) -> None:
 
 
 def close_trade(trade_id, kapanis_fiyat, kapanis_sebep=None, pnl_yuzde=None,
-                pnl_tl=None, holding_days=None, tarih=None) -> None:
-    """Trade'i kapatir (durum='kapali') ve pnl/sebep/holding bilgisini yazar."""
+                pnl_tl=None, holding_days=None, tarih=None,
+                brut_pnl_yuzde=None) -> None:
+    """Trade'i kapatir (durum='kapali') ve pnl/sebep/holding bilgisini yazar.
+    pnl_yuzde: NET getiri (islem maliyeti dusulmus, ana olcu). brut_pnl_yuzde:
+    maliyet oncesi brut getiri (verilmezse dokunulmaz)."""
     init_db()
     tarih = tarih or datetime.now(_TZ).date().isoformat()
     with get_conn() as c:
         c.execute(
             "UPDATE trades SET durum='kapali', kapanis_fiyat=?, kapanis_tarihi=?, "
-            "kapanis_sebep=?, pnl_yuzde=?, pnl_tl=?, holding_days=? WHERE id=?",
+            "kapanis_sebep=?, pnl_yuzde=?, pnl_tl=?, holding_days=?, "
+            "brut_pnl_yuzde=? WHERE id=?",
             (kapanis_fiyat, tarih, kapanis_sebep, pnl_yuzde, pnl_tl, holding_days,
-             trade_id))
+             brut_pnl_yuzde, trade_id))
 
 
 if __name__ == "__main__":
@@ -1556,3 +1563,26 @@ def set_setting(anahtar, deger):
         c.execute("INSERT INTO ayar (anahtar, deger) VALUES (?, ?) "
                   "ON CONFLICT(anahtar) DO UPDATE SET deger=excluded.deger",
                   (anahtar, str(deger)))
+
+
+def ai_hata_inc(tarih=None) -> int:
+    """Gunun AI cagri hata sayacini 1 artirir, yeni degeri doner (ayar tablosu,
+    anahtar 'ai_hata:YYYY-MM-DD'). AI cagri exception'larinda cagrilir; health_monitor
+    bu sayaci okuyup gunluk esik (>5) asilinca admin'e uyarir."""
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    key = f"ai_hata:{tarih}"
+    try:
+        n = int(get_setting(key, 0) or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    set_setting(key, n)
+    return n
+
+
+def ai_hata_sayisi(tarih=None) -> int:
+    """Verilen gunun (varsayilan bugun) AI cagri hata sayisini doner (yoksa 0)."""
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    try:
+        return int(get_setting(f"ai_hata:{tarih}", 0) or 0)
+    except (TypeError, ValueError):
+        return 0

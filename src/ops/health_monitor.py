@@ -130,6 +130,24 @@ def _kontrol_db():
     return None
 
 
+AI_HATA_ESIGI = 5          # gun icinde bu kadardan FAZLA AI hatasi -> admin uyarisi
+
+
+def _kontrol_ai_hata():
+    """Bugunku AI cagri hata sayaci (db.ai_hata_sayisi) esigi asti mi? AI cagri
+    exception'larinda artan gunluk sayaci okur; 5'ten fazlaysa veri/kredi sorunu
+    isareti -> admin uyarisi (gunde 1 kez, run() spam-state ile)."""
+    try:
+        from src.db import database as db
+        n = db.ai_hata_sayisi()
+    except Exception:
+        return None
+    if n > AI_HATA_ESIGI:
+        return ("ai_hata_cok",
+                f"Bugün {n} AI çağrısı başarısız — veri/kredi kontrolü gerek.")
+    return None
+
+
 # --- spam onleme: gunde 1 kez ---
 
 def _state_yukle() -> dict:
@@ -172,7 +190,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
-    core = (_kontrol_servis, _kontrol_db)
+    core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata)
     market = (lambda: _kontrol_cache_tazelik(now), _kontrol_abd)
     if mode == "core":
         kontroller = core

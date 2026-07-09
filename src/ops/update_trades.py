@@ -18,6 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
 
+# Islem maliyeti (yuzde puan): pozisyon kapanirken brut getiriden dusulur. Gidis-donus
+# komisyon + slippage tahmini. Ana olcu NET pnl_yuzde = brut - bu deger; brut ayrica
+# brut_pnl_yuzde kolonunda saklanir. Ornek: brut +%2.5 -> net +%2.2.
+ISLEM_MALIYETI_PUAN = 0.3
+
+
+def _net_pnl(brut: float) -> float:
+    """Brut getiriden islem maliyetini duser (net getiri). Kar da zarar da maliyet
+    kadar kotulesir (ornn brut -%8.47 -> net -%8.77)."""
+    return round(brut - ISLEM_MALIYETI_PUAN, 2)
+
 
 def _yf_sembol(ticker: str, para_birimi: str = "TL") -> str:
     """Ticker'in yfinance sembolu (enstruman ana tablosundan). ABD'de '.IS' eklenmez.
@@ -110,10 +121,10 @@ def _kapanis_bildir(t: dict, sebep: str, native: float, pnl_y: float) -> None:
     yuzde = f"{isaret}%{abs(pnl_y):.1f}"
     if sebep == "stop":
         mesaj = (f"🔴 STOP-LOSS: {t['ticker']} {fiyat} {birim}'ye düştü. "
-                 f"Pozisyon kapatıldı. {kz}: {yuzde}")
+                 f"Pozisyon kapatıldı. {kz}: {yuzde} (net, işlem maliyeti dahil)")
     else:
         mesaj = (f"🎯 HEDEF: {t['ticker']} {fiyat} {birim}'ye ulaştı. "
-                 f"Pozisyon kapatıldı. {kz}: {yuzde}")
+                 f"Pozisyon kapatıldı. {kz}: {yuzde} (net, işlem maliyeti dahil)")
 
     chat_id = None
     uid = t.get("kullanici_id") or 0
@@ -238,17 +249,19 @@ def run(verbose: bool = True) -> dict:
             if gecen is not None and gecen >= 5 and yeni_mp < 1.0 and pct < 0:
                 if not t.get("time_stop_adayi"):
                     db.mark_time_stop(t["id"], 1)     # kayda geç (kapanış öncesi işaret)
-                pnl_y = round(pct, 2)
+                brut = round(pct, 2)
+                pnl_y = _net_pnl(brut)                # NET (islem maliyeti dusuldu)
                 hold = _gun_farki(t.get("acilis_tarihi"), bugun)
                 db.close_trade(t["id"], native, kapanis_sebep="time_stop",
-                               pnl_yuzde=pnl_y, holding_days=hold, tarih=bugun)
+                               pnl_yuzde=pnl_y, holding_days=hold, tarih=bugun,
+                               brut_pnl_yuzde=brut)
                 _trade_bildir(t, f"⏰ TIME STOP: {t['ticker']} {gecen} gündür kâra "
-                                 f"giremedi, -%{abs(pnl_y):.1f} zararla kapatıldı. "
-                                 f"Sermaye serbest kaldı.")
+                                 f"giremedi, -%{abs(pnl_y):.1f} zararla kapatıldı "
+                                 f"(net, işlem maliyeti dahil). Sermaye serbest kaldı.")
                 kapanan += 1
                 if verbose:
-                    print(f"  {t['ticker']:7} TIME-STOP KAPANDI @ {native:.2f} -> %{pnl_y} "
-                          f"({gecen} işlem günü, maxP %{yeni_mp})")
+                    print(f"  {t['ticker']:7} TIME-STOP KAPANDI @ {native:.2f} -> "
+                          f"net %{pnl_y} (brüt %{brut}, {gecen} işlem günü, maxP %{yeni_mp})")
                 continue
 
         # Stop / hedef tetiği -> kapat
@@ -283,15 +296,16 @@ def run(verbose: bool = True) -> dict:
             elif hedef is not None and native >= hedef:
                 sebep = "hedef"
         if sebep:
-            pnl_y = round(pct, 2)
+            brut = round(pct, 2)
+            pnl_y = _net_pnl(brut)                    # NET (islem maliyeti dusuldu)
             hold = _gun_farki(t.get("acilis_tarihi"), bugun)
             db.close_trade(t["id"], native, kapanis_sebep=sebep, pnl_yuzde=pnl_y,
-                           holding_days=hold, tarih=bugun)
+                           holding_days=hold, tarih=bugun, brut_pnl_yuzde=brut)
             _kapanis_bildir(t, sebep, native, pnl_y)
             kapanan += 1
             if verbose:
-                print(f"  {t['ticker']:7} {sebep.upper()} @ {native:.2f} -> %{pnl_y} "
-                      f"(giriş {entry})")
+                print(f"  {t['ticker']:7} {sebep.upper()} @ {native:.2f} -> net %{pnl_y} "
+                      f"(brüt %{brut}, giriş {entry})")
         elif verbose:
             print(f"  {t['ticker']:7} giriş {entry} -> {native:.2f} : %{pct:.2f} "
                   f"(maxP %{yeni_mp} / maxD %{yeni_md})")

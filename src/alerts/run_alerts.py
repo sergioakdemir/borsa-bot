@@ -60,7 +60,15 @@ def _ai_create(**kwargs):
     TOKEN OZET (alerts.log) basilabilsin."""
     import anthropic
     client = anthropic.Anthropic()
-    resp = client.messages.create(**kwargs)
+    try:
+        resp = client.messages.create(**kwargs)
+    except Exception:
+        try:                                    # gunluk AI hata sayaci (health_monitor okur)
+            from src.db import database as db
+            db.ai_hata_inc()
+        except Exception:
+            pass
+        raise
     try:
         u = resp.usage
         _TOKEN_ACC["input"] += getattr(u, "input_tokens", 0) or 0
@@ -848,6 +856,30 @@ def _hareket_sebebi(ticker, change, haberler, now=None):
         return None
 
 
+def _fiyatlanma_notu(item):
+    """Haberin GERCEK fiyat tepkisini olcup (src.news.priced_in.check_priced_in)
+    bildirim icin NITEL etiket doner:
+      FIYATLANDI   -> "⚠️ Not: Fiyat bu habere muhtemelen tepki verdi bile
+                       (%X hareket) — geç kalmış olabilirsin."
+      FIYATLANMADI -> "Haber henüz fiyatlanmamış görünüyor."
+      VERI_YOK/hata -> None (etiket eklenmez).
+    Bildirimi ENGELLEMEZ; yalniz etiketler. 'item' .ticker/.symbol/.published_at
+    tasimalidir (KAP haber nesnesi veya sektor icin SimpleNamespace shim)."""
+    try:
+        from src.news.priced_in import check_priced_in
+        rap = check_priced_in(item)
+    except Exception:
+        return None
+    if rap.status == "FIYATLANDI":
+        hareket = (f" (%{abs(rap.day_return_pct):.1f} hareket)"
+                   if isinstance(rap.day_return_pct, (int, float)) else "")
+        return (f"⚠️ Not: Fiyat bu habere muhtemelen tepki verdi bile{hareket} — "
+                "geç kalmış olabilirsin.")
+    if rap.status == "FIYATLANMADI":
+        return "Haber henüz fiyatlanmamış görünüyor."
+    return None
+
+
 def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
     """GUN ICI KAP TARAMASI (cron: hafta ici 10-18 her 15 dk).
 
@@ -953,6 +985,9 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
                 baslik]
         if h.get("yorum"):
             blok.append(h["yorum"])
+        fnot = _fiyatlanma_notu(it)             # fiyatlanma kontrolu (etiket; engellemez)
+        if fnot:
+            blok.append(fnot)
         blok.append("Aksiyon: Haber fiyatlanmadan değerlendir.")
         bloklar.append("\n".join(blok))
     bas = (f"<b>GÜN İÇİ DİKKAT</b> — {now:%H:%M}\n"
@@ -1340,6 +1375,20 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             blok = f"📰 <b>{', '.join(etkilenen)}</b> için önemli haber: {baslik}"
             if etki.get("cumle"):
                 blok += f"\n{etki['cumle']}"
+            # Fiyatlanma kontrolu (etiket; engellemez). info dict -> check_priced_in'in
+            # bekledigi .ticker/.symbol/.published_at icin hafif shim kur.
+            try:
+                from types import SimpleNamespace
+                try:
+                    _pub = datetime.fromisoformat(str(info.get("tarih")))
+                except Exception:
+                    _pub = now
+                fnot = _fiyatlanma_notu(SimpleNamespace(
+                    ticker=etkilenen[0], symbol=None, published_at=_pub))
+            except Exception:
+                fnot = None
+            if fnot:
+                blok += f"\n{fnot}"
             bloklar.append(blok)
             if len(bloklar) >= 8:                           # mesaji sismekten koru
                 break
