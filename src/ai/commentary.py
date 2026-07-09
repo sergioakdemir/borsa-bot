@@ -807,9 +807,7 @@ def _ai_verdict(ticker: str, payload: dict, client=None, usage_acc=None) -> Verd
     client = client or anthropic.Anthropic()
     resp = client.messages.parse(
         model=MODEL, max_tokens=MAX_TOKENS, system=_SYSTEM_CACHED,
-        messages=[{"role": "user", "content": (
-            f"{ticker} hissesini degerlendir. Yalnizca asagidaki veriyi kullan, "
-            "veri uydurma:\n\n" + json.dumps(payload, ensure_ascii=False, indent=2))}],
+        messages=[{"role": "user", "content": _user_prompt(ticker, payload)}],
         output_format=Verdict,
     )
     u = getattr(resp, "usage", None)            # token toplama (run fallback loglamasi)
@@ -967,9 +965,33 @@ VERDICT_SCHEMA = {
 }
 
 
-def _user_prompt(ticker: str, payload: dict) -> str:
-    return (f"{ticker} hissesini degerlendir. Yalnizca asagidaki veriyi kullan, "
-            "veri uydurma:\n\n" + json.dumps(payload, ensure_ascii=False, indent=2))
+def _baglam_blok(context: dict) -> dict:
+    """Ortak 'piyasa_baglami' (market_context) icin cache_control ISARETLI metin blogu.
+    Batch icindeki tum isteklerde AYNI oldugundan, SYSTEM'den sonraki IKINCI cache
+    breakpoint'i olur: ~99 istekte tekrar giden ~3k token, ilk yazimdan sonra ucuz
+    cache-read'e doner. Metin ve JSON serilesmesi sabit kalmali (prefix ayni olmali)."""
+    return {
+        "type": "text",
+        "text": ("GENEL PIYASA BAGLAMI (tum hisseler icin ortak; 'piyasa_baglami'):\n"
+                 + json.dumps({"piyasa_baglami": context}, ensure_ascii=False, indent=2)),
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
+def _user_prompt(ticker: str, payload: dict) -> list:
+    """Kullanici mesaj icerigini BLOK LISTESI olarak kurar (cache'i etkinlestirmek icin).
+
+    'piyasa_baglami' TUM hisse isteklerinde ayni oldugundan ayri, cache_control isaretli
+    bir blok olarak hisse verisinden ONCE gelir (sabit prefix -> cache-read). Hisseye
+    ozel govde ikinci (cache'siz) blokta. Baglam yoksa yalniz hisse blogu doner."""
+    baglam = payload.get("piyasa_baglami")
+    govde = {k: v for k, v in payload.items() if k != "piyasa_baglami"}
+    hisse_blok = {
+        "type": "text",
+        "text": (f"{ticker} hissesini degerlendir. Yalnizca asagidaki veriyi kullan, "
+                 "veri uydurma:\n\n" + json.dumps(govde, ensure_ascii=False, indent=2)),
+    }
+    return [_baglam_blok(baglam), hisse_blok] if baglam else [hisse_blok]
 
 
 def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
@@ -1727,6 +1749,24 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     # 2) Batch gonder + polling
     if requests:
         client = anthropic.Anthropic()
+        # SOGUK CACHE ISITMA: batch istekleri paralel firlar; SYSTEM (+ ortak
+        # piyasa_baglami) cache'i daha yazilmadan cok sayida istek onu yeniden yazar
+        # (pahali cache_write). Batch'ten hemen ONCE tek kucuk istekle ayni onekleri
+        # (SYSTEM + piyasa_baglami) bir kez yaz -> batch istekleri ucuz cache-read'e
+        # duser. Prefix'in birebir eslesmesi icin batch ile AYNI model/system/output_config
+        # ve ayni baglam blogu kullanilir. Best-effort; hata batch'i dusurmez.
+        try:
+            client.messages.create(
+                model=MODEL, max_tokens=16, system=_SYSTEM_CACHED,
+                messages=[{"role": "user", "content": [
+                    _baglam_blok(context),
+                    {"type": "text", "text": "Hazir."}]}],
+                output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}})
+            if verbose:
+                print("  [batch] cache ısıtıldı (SYSTEM + piyasa_baglami)")
+        except Exception as e:
+            if verbose:
+                print(f"  [batch] cache ısıtma atlandı: {type(e).__name__}")
         batch = client.messages.batches.create(requests=requests)
         if verbose:
             print(f"  [batch] {len(requests)} istek gonderildi (id={batch.id}); bekleniyor...")

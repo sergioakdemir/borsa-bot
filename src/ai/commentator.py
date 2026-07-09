@@ -99,6 +99,14 @@ class StockVerdict(BaseModel):
 
 def evaluate_stock(stock: dict, news: list | None = None,
                    client: anthropic.Anthropic | None = None) -> dict:
+    # DEVRE DISI (2026-07 API maliyet analizi): bu modul Opus 4.8 tabanli ESKI analiz
+    # motoru; uretimde KULLANILMIYOR (prod yolu src.ai.commentary -> Sonnet, batch).
+    # Hicbir cron/canli yol cagirmaz; yalnizca elle 'run_commentary' calistirilirsa
+    # ~100 hisse x Opus (4000 tok + adaptive thinking) ~ tek kosuda ~$33 yakardi.
+    # Yanlislikla token yakilmasin diye guard'landi. Kasitli kullanmak icin bu blogu kaldir.
+    raise RuntimeError(
+        "commentator.py (Opus 4.8 analiz motoru) DEVRE DISI. Uretim yolu "
+        "src.ai.commentary (Sonnet, batch). Kasitli kullanim icin guard'i kaldir.")
     ticker = stock.get("ticker")
     symbol = stock.get("symbol")
     status = stock.get("freshness", {}).get("status")

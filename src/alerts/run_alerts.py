@@ -1312,6 +1312,12 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             if tok in db.alert_levels_today(etkilenen[0], today):
                 continue
             etki = _etki(h, info)
+            # DEDUP SIZINTISI FIX: 'tok' kaydini AI cagrisindan (_etki) HEMEN SONRA yaz —
+            # haber sonucta gonderilsin ya da (net-yonlu degil / gece / tema-tekrari
+            # nedeniyle) gonderilmesin, ayni haber sonraki 30dk kosularinda 2 saatlik RSS
+            # penceresi boyunca YENIDEN Haiku'ya sorulmaz. (Onceden yalniz gonderimde
+            # yazildigi icin gonderilmeyen haberler her kosuda tekrar etiketleniyordu.)
+            db.record_alert(etkilenen[0], today, tok, 0)
             # Degisiklik 4: yalniz net yonlu (olumlu/olumsuz + orta/yuksek etki) haber
             # gonder; notr/etkisiz/dusuk etkili haberi bildirme.
             if not _haber_net_yonlu(etki):
@@ -1327,8 +1333,7 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
             tema_key = f"{etki['tema']}:{info['konu']}"
             if tema_key in db.alert_levels_today(tema_anahtar, today):
                 continue
-            db.record_alert(etkilenen[0], today, tok, 0)
-            db.record_alert(tema_anahtar, today, tema_key, 0)
+            db.record_alert(tema_anahtar, today, tema_key, 0)   # tema dedup: yalniz gonderimde
             baslik = info["baslik"]
             if info.get("link"):
                 baslik = f'<a href="{info["link"]}">{baslik}</a>'
