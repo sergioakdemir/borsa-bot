@@ -6,11 +6,10 @@ Kontroller iki gruba ayrilir:
     4. DB: data/borsa.db erisilebilir mi?
   MARKET (yalniz borsa saatleri, hafta ici 9-19) -- fiyat akisi:
     1. Fiyat cache tazeligi: data/fiyat_cache.json BORSA ACIKKEN 20 dk'dan eski ise uyar.
-    2. ABD hisseleri: NVDA/SPCX/RXT/CNCK cache'te fiyatli mi?
 
 Cron iki ayri satirla calisir:
   */30 * * * *           -> mod 'core'   (servis + DB; 7/24)
-  */30 9-19 * * 1-5      -> mod 'market' (fiyat cache + ABD; borsa saatleri)
+  */30 9-19 * * 1-5      -> mod 'market' (fiyat cache; borsa saatleri)
 
 Sorun bulunursa Serhat + Yigit'e "⚠️ SİSTEM UYARISI: ..." gonderir.
 SPAM ONLEME: ayni sorun gunde EN FAZLA 1 kez bildirilir
@@ -57,7 +56,6 @@ BILDIRIM_LISTESI = [
     1192292093,   # Serhat
     1347729005,   # Yigit
 ]
-ABD_HISSELERI = ["NVDA", "SPCX", "RXT", "CNCK"]
 CACHE_BAYAT_DK = 20                   # cache bu kadar dakikadan eskiyse (borsa acikken) uyar
 
 
@@ -86,21 +84,6 @@ def _kontrol_cache_tazelik(now: datetime):
         return ("cache_bayat",
                 f"Fiyat cache {int(yas_dk)} dakikadır güncellenmedi "
                 f"(son: {mtime:%H:%M}). update_fiyat_cache cron'u takılmış olabilir.")
-    return None
-
-
-def _kontrol_abd():
-    """NVDA/SPCX/RXT/CNCK cache'te fiyatli mi?"""
-    try:
-        cache = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    except Exception as e:
-        return ("cache_okunamadi", f"Fiyat cache JSON okunamadı: {type(e).__name__}")
-    eksik = [t for t in ABD_HISSELERI
-             if not isinstance(cache.get(t), dict) or cache[t].get("fiyat") is None]
-    if eksik:
-        return ("abd_eksik",
-                f"ABD hisseleri cache'te fiyatsız: {', '.join(eksik)}. "
-                f"(Sembol yönlendirme / borsa_mcp sorunu olabilir.)")
     return None
 
 
@@ -271,13 +254,13 @@ def _bildir(mesaj: str) -> bool:
 
 
 def run(verbose: bool = True, mode: str = "all") -> dict:
-    """mode='core' -> servis + DB (7/24); 'market' -> fiyat cache + ABD
+    """mode='core' -> servis + DB (7/24); 'market' -> fiyat cache tazeligi
     (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
     core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata,
             _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
-    market = (lambda: _kontrol_cache_tazelik(now), _kontrol_abd)
+    market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
         kontroller = core
     elif mode == "market":
