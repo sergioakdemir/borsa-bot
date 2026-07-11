@@ -17,6 +17,7 @@ CIKTI
 Calistir:  python -m src.ai.commentary [TICKER ...]
 """
 import json
+import math
 import os
 import re
 import statistics
@@ -572,6 +573,24 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         lows = [float(x) for x in df["Low"].tolist()]
         vols = [float(x) for x in df["Volume"].tolist()]
 
+    # --- Veri hijyeni (KRITIK): yfinance/borsa kaynaklari araya NaN/inf'li bar
+    # koyabilir. 7-10 Tem 2026'da tek bir NaN bar asagidaki statistics.pstdev'i
+    # "cannot convert NaN to integer ratio" ile cokertip hisseyi AI'dan ONCE
+    # atliyor, karar uretilmiyordu (BIST watchlist'inin %88-99'u dustu). Tum
+    # sayisal hesaplardan (ma/getiri/52h/hacim/pstdev) ONCE dizileri temizle:
+    # Close'u finite olmayan barlari tamamen at; High/Low/Volume finite degilse
+    # guvenli degere indir. Aligned kalsinlar diye zip uzerinden birlikte filtrele.
+    def _isfin(x):
+        return isinstance(x, (int, float)) and math.isfinite(x)
+    _temiz = [(float(c), h, l, v) for c, h, l, v in zip(closes, highs, lows, vols)
+              if _isfin(c)]
+    if len(_temiz) < 2:                      # gercek veri yoklugu -> atla
+        return None
+    closes = [c for c, _h, _l, _v in _temiz]
+    highs = [float(h) if _isfin(h) else c for c, h, _l, _v in _temiz]
+    lows = [float(l) if _isfin(l) else c for c, _h, l, _v in _temiz]
+    vols = [float(v) if _isfin(v) else 0.0 for c, _h, _l, v in _temiz]
+
     last, prev = closes[-1], closes[-2]
     gunluk = round((last - prev) / prev * 100, 2) if prev else None
 
@@ -596,8 +615,12 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
     avg_vol = sum(vwin) / len(vwin) if vwin else 0
     hacim_vs = round((vols[-1] / avg_vol - 1) * 100, 2) if avg_vol else None
 
-    rets = [(closes[i] - closes[i - 1]) / closes[i - 1] * 100
-            for i in range(max(1, len(closes) - 20), len(closes)) if closes[i - 1]]
+    # closes yukarida temizlendi; yine de bolme sonucu NaN/inf uretmesin diye
+    # filtrele. Yetersiz veri kalirsa vol_std=0.0 ile DEVAM et, hisseyi ATLAMA.
+    rets = [r for r in (
+        (closes[i] - closes[i - 1]) / closes[i - 1] * 100
+        for i in range(max(1, len(closes) - 20), len(closes)) if closes[i - 1])
+        if math.isfinite(r)]
     vol_std = round(statistics.pstdev(rets), 2) if len(rets) >= 2 else 0.0
 
     rng = hafta52_yuksek - hafta52_dusuk
@@ -1989,6 +2012,29 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
             if r:
                 print(_verbose_satir(t, r))
     _persist(results, save=save, verbose=verbose)
+
+    # --- Sessiz basarisizlik alarmi: hazirlik (veri) hatasiyla atlanan hisseleri
+    # say. Watchlist'in >%20'si veri hatasiyla dustuyse o brifingde karar
+    # uretilememis demektir (7-10 Tem 2026 gibi) -> yoneticilere Telegram uyarisi.
+    # "N hisse tarandi" yalani bir daha sessiz kalmasin.
+    toplam = len(tickers)
+    veri_hatasi = sum(1 for r in final.values()
+                      if isinstance(r, dict) and r.get("skipped")
+                      and str(r.get("reason", "")).startswith("Hata:"))
+    if toplam and veri_hatasi / toplam > 0.20:
+        us_n = sum(1 for t in tickers if str(t).lower().endswith(":us"))
+        pazar = "US" if us_n > toplam / 2 else "BIST"
+        mesaj = (f"{pazar} brifingi: {veri_hatasi}/{toplam} hisse veri hatasiyla "
+                 f"atlandi, karar uretilmedi.")
+        if verbose:
+            print(f"  [ALARM] {mesaj}")
+        try:
+            from src.notify import telegram
+            telegram.notify_admins(mesaj)
+        except Exception as e:
+            print(f"  [ALARM] telegram gonderilemedi: {type(e).__name__}: "
+                  f"{str(e)[:80]}")
+
     return results
 def run(tickers: list[str], save: bool = True, verbose: bool = True,
         overview=None, learning=None, extra_context=None) -> list[dict]:
