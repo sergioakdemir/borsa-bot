@@ -52,22 +52,35 @@ def _son_bar(ticker: str, para_birimi: str = "TL"):
     intraday_high_pct/intraday_low_pct güncellemesinde kullanılır."""
     from src.data.factory import get_data_source
     symbol = _yf_sembol(ticker, para_birimi)
+    # Once Midas: BIST (TL) sembolu icin son <=60sn'de canli tick geldiyse onu kullan.
+    # Tick yoksa mp=None kalir ve davranis eskisiyle birebir aynidir (non-breaking).
+    mp = None
+    if para_birimi == "TL":
+        try:
+            from src.data import midas_feed
+            mp = midas_feed.fresh_price(ticker)
+        except Exception:
+            mp = None
     start = (datetime.now(_TZ).date() - timedelta(days=10)).isoformat()
     try:
         df = get_data_source().get_history(symbol, start=start)
     except Exception:
-        return None
+        df = None
     if df is None or df.empty:
-        return None
+        return (mp, mp, mp) if mp is not None else None
     if "Volume" in df.columns:
         f = df[df["Volume"] > 0]
         if not f.empty:
             df = f
     if df.empty:
-        return None
+        return (mp, mp, mp) if mp is not None else None
     close = float(df["Close"].iloc[-1])
     high = float(df["High"].iloc[-1]) if "High" in df.columns else close
     low = float(df["Low"].iloc[-1]) if "Low" in df.columns else close
+    if mp is not None:                       # taze Midas fiyati kapanisi ezer (canli)
+        high = max(high, mp)
+        low = min(low, mp)
+        close = mp
     return close, high, low
 
 

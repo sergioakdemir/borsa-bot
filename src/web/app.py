@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -5117,7 +5118,8 @@ def api_auth_logout():
 # '?bb_devtok=' ile gelir; gecersizse 401. Istemci tarafinda global fetch
 # sarmalayicisi token'i otomatik ekler.
 # ---------------------------------------------------------------------------
-_AUTH_MUAF_PREFIX = ("/api/auth/",)
+# /api/midas/* kendi X-Midas-Key auth'unu yapar -> cihaz-token guard'indan muaf.
+_AUTH_MUAF_PREFIX = ("/api/auth/", "/api/midas/")
 _AUTH_MUAF_TAM = {"/api/health", "/api/status"}
 
 
@@ -5476,6 +5478,77 @@ def api_ask_stream():
         yield "data: " + json.dumps({"done": True}, ensure_ascii=False) + "\n\n"
     return app.response_class(generate(), mimetype="text/event-stream",
                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Transfer-Encoding": "chunked"})
+
+# ---------------------------------------------------------------------------
+# Midas Atlas canli tick ALICI kapisi (gonderen taraf: MacBook Chrome, ayri kurulur)
+# ---------------------------------------------------------------------------
+_MIDAS_RL_LOCK = threading.Lock()
+_MIDAS_RL: dict[str, deque] = {}
+_MIDAS_RL_MAX = 1200          # pencere basi azami istek
+_MIDAS_RL_WINDOW = 60.0       # saniye
+
+
+def _midas_key_ok() -> bool:
+    """X-Midas-Key header'i .env'deki MIDAS_INGEST_KEY ile birebir mi (sabit-zamanli)."""
+    import hmac
+    beklenen = os.environ.get("MIDAS_INGEST_KEY", "")
+    if not beklenen:
+        return False
+    gelen = request.headers.get("X-Midas-Key", "") or request.args.get("key", "")
+    return hmac.compare_digest(str(gelen), str(beklenen))
+
+
+def _midas_rate_ok() -> bool:
+    """Basit kayan-pencere rate limit (istemci IP basi)."""
+    import time as _t
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "?").split(",")[0].strip()
+    now = _t.time()
+    with _MIDAS_RL_LOCK:
+        dq = _MIDAS_RL.setdefault(ip, deque())
+        while dq and now - dq[0] > _MIDAS_RL_WINDOW:
+            dq.popleft()
+        if len(dq) >= _MIDAS_RL_MAX:
+            return False
+        dq.append(now)
+        return True
+
+
+@app.route("/api/midas/tick", methods=["POST"])
+def api_midas_tick():
+    """MacBook'tan gelen canli Midas tick'ini alir. Govde: tek tick {symbol,price,...}
+    VEYA tick listesi. Auth: X-Midas-Key header. Ham format toleransli."""
+    if not os.environ.get("MIDAS_INGEST_KEY"):
+        return jsonify({"ok": False, "hata": "MIDAS_INGEST_KEY tanimli degil"}), 503
+    if not _midas_key_ok():
+        return jsonify({"ok": False, "hata": "yetkisiz"}), 401
+    if not _midas_rate_ok():
+        return jsonify({"ok": False, "hata": "rate limit"}), 429
+    from src.data import midas_feed
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"ok": False, "hata": "json govde gerekli"}), 400
+    ticks = body if isinstance(body, list) else [body]
+    if len(ticks) > 500:
+        return jsonify({"ok": False, "hata": "cok fazla tick (max 500)"}), 400
+    kaydedilen, hatali = 0, 0
+    for t in ticks:
+        r = midas_feed.record_tick(t, persist=False)   # diske yazmayi ertele
+        if r.get("ok"):
+            kaydedilen += 1
+        else:
+            hatali += 1
+    midas_feed.flush()                                  # batch sonrasi tek atomik yazma
+    return jsonify({"ok": True, "kaydedilen": kaydedilen, "hatali": hatali})
+
+
+@app.route("/api/midas/status")
+def api_midas_status():
+    """Midas tick cache saglik ozeti (auth: X-Midas-Key). Kac sembol taze, son tick."""
+    if not _midas_key_ok():
+        return jsonify({"ok": False, "hata": "yetkisiz"}), 401
+    from src.data import midas_feed
+    return jsonify({"ok": True, **midas_feed.status()})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)
