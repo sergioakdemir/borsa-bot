@@ -1398,10 +1398,34 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         # Stop-loss: guncel fiyatin -%8'i (alis fiyati bilinmiyorsa referans guncel)
         stop_loss_seviyesi = round(son_kapanis * 0.92, 2)
 
+    # --- VERI GUVENI DAMGASI (kayit; karar kurallarina DOKUNMAZ) ---
+    # veri_guveni: teknik veri butunlugu 0-100. entry_quality yalniz AL'da hesaplaniyor;
+    # burada TUM kararlar icin bagimsiz (yan etkisiz) hesaplanir ki damga her karara dussun.
+    veri_guveni = None
+    try:
+        from src.ai import entry_quality as _eq
+        veri_guveni = _eq.hesapla(sig, v.risk).get("veri_guveni")
+    except Exception:
+        veri_guveni = None
+    # eksik_veriler: karar aninda BOS olan kaynaklar (dolu olanlar yazilmaz).
+    _eksik = []
+    if not news.get("haberler"):
+        _eksik.append("haber")
+    if (not is_us) and not news.get("bildirimler"):   # KAP bildirimleri yalniz BIST
+        _eksik.append("kap")
+    if not temel.get("available"):                    # bilanco/finansal saglik
+        _eksik.append("bilanco")
+    if not (analist.get("available") and analist.get("veri_kalitesi") != "bayat"):
+        _eksik.append("analist")
+    eksik_veriler = ",".join(_eksik) or None
+
     return {
         "ticker": ticker,
         "symbol": sig["sembol"],
         "market": "abd" if is_us else "bist",
+        # veri guveni damgasi (record_decision/open_trade bunlari yazar)
+        "veri_guveni": veri_guveni,
+        "eksik_veriler": eksik_veriler,
         "para_birimi": "$" if is_us else "₺",
         "aciklama": aciklama,
         "skipped": False,
@@ -1544,7 +1568,9 @@ def _record_trades(results, verbose: bool = False, tarih=None):
                     rr = round((hedef - fiyat) / (fiyat - stop), 2)
                 db.open_trade(ticker, karar, fiyat, stop_fiyat=stop, hedef_fiyat=hedef,
                               hedef2_fiyat=hedef2, para_birimi=para_birimi, rr_oran=rr,
-                              acilis_tarihi=bugun, strategy_version=STRATEGY_VERSION)
+                              acilis_tarihi=bugun, strategy_version=STRATEGY_VERSION,
+                              veri_guveni=r.get("veri_guveni"),
+                              eksik_veriler=r.get("eksik_veriler"))
                 acilan += 1
                 if verbose:
                     if sh:
@@ -1830,7 +1856,9 @@ def _persist(results, save: bool, verbose: bool):
                     puan=r.get("score"), risk=(r.get("risk") or {}).get("score"),
                     eminlik=r.get("eminlik"), gerekce=r.get("gerekce"), tarih=today,
                     tahmini_sure=(r.get("tahmini_sure") or None),
-                    strategy_version=STRATEGY_VERSION)
+                    strategy_version=STRATEGY_VERSION,
+                    veri_guveni=r.get("veri_guveni"),
+                    eksik_veriler=r.get("eksik_veriler"))
         except Exception as e:
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")

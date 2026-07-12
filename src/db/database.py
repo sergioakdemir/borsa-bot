@@ -310,6 +310,13 @@ def _migrate(c) -> None:
     if "strategy_version" not in cols_d:    # strateji surumu: mevcut kayitlar 'v1',
         # 7 Temmuz 2026 buyuk paketi sonrasi acilanlar 'v2' (bkz. commentary.STRATEGY_VERSION)
         c.execute("ALTER TABLE decisions ADD COLUMN strategy_version TEXT DEFAULT 'v1'")
+    # VERI GUVENI KAYIT SISTEMI (12 Tem 2026): karar anindaki veri kalitesi izi.
+    if "veri_guveni" not in cols_d:         # teknik veri butunlugu 0-100 (entry_quality)
+        c.execute("ALTER TABLE decisions ADD COLUMN veri_guveni INTEGER")
+    if "eksik_veriler" not in cols_d:       # o an BOS olan kaynaklar: "haber,analist,kap"
+        c.execute("ALTER TABLE decisions ADD COLUMN eksik_veriler TEXT")
+    if "gun_kalitesi" not in cols_d:        # gun veri kalitesi: TEMIZ/KISMI/KIRLI (backfill)
+        c.execute("ALTER TABLE decisions ADD COLUMN gun_kalitesi TEXT")
     # kullanici_profil: derin onboarding alanlari (varsa atlanir)
     tbls = {r["name"] for r in c.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -339,6 +346,11 @@ def _migrate(c) -> None:
     if "brut_pnl_yuzde" not in cols_t:        # islem maliyeti oncesi brut getiri; ana
         # olcu pnl_yuzde NET'tir (brut - 0.3 puan komisyon+slippage, bkz. update_trades)
         c.execute("ALTER TABLE trades ADD COLUMN brut_pnl_yuzde REAL")
+    # VERI GUVENI KAYIT SISTEMI (12 Tem 2026): pozisyon hangi veri guveniyle acildi.
+    if "veri_guveni" not in cols_t:
+        c.execute("ALTER TABLE trades ADD COLUMN veri_guveni INTEGER")
+    if "eksik_veriler" not in cols_t:
+        c.execute("ALTER TABLE trades ADD COLUMN eksik_veriler TEXT")
     # paper_trades / model_portfoy: para_birimi (ABD hisse destegi)
     for tbl in ("paper_trades", "model_portfoy"):
         if tbl in tbls:
@@ -992,7 +1004,8 @@ def list_portfoy_snapshots(kullanici_id, limit: int = 90) -> list[dict]:
 # ---- karar gunlugu (decisions) ----
 def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
                     gerekce=None, tarih=None, sonuc=None, tahmini_sure=None,
-                    kullanici_id=0, strategy_version="v2") -> int:
+                    kullanici_id=0, strategy_version="v2",
+                    veri_guveni=None, eksik_veriler=None, gun_kalitesi=None) -> int:
     """Bir AL/TUT/SAT kararini gunluge yazar. sonuc ileride doldurulur (None).
     tahmini_sure: TUT kararinda AI'nin tahmin ettigi tutma penceresi (islem gunu).
     kullanici_id: karar kimin icin uretildi (0=sistem geneli/brifing; ileride kisiye ozel).
@@ -1007,10 +1020,12 @@ def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
             # mukerrer olusmaz. NOT: sonuc/ilk_gun_degisim gibi alanlar yeniden
             # NULL'lanir; karar gunu (sonuc dolmadan once) yeniden uretildigi icin sorun degil.
             """INSERT OR REPLACE INTO decisions (ticker, karar, puan, risk, eminlik, gerekce,
-                                      tarih, sonuc, tahmini_sure, kullanici_id, strategy_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      tarih, sonuc, tahmini_sure, kullanici_id, strategy_version,
+                                      veri_guveni, eksik_veriler, gun_kalitesi)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), karar, puan, risk,
-             eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id, strategy_version))
+             eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id, strategy_version,
+             veri_guveni, eksik_veriler, gun_kalitesi))
         return cur.lastrowid
 
 
@@ -1468,7 +1483,7 @@ def close_model_position(pos_id, kapanis_fiyati, kz_tl, kz_yuzde, tarih=None) ->
 def open_trade(ticker, karar, entry_fiyat, stop_fiyat=None, hedef_fiyat=None,
                position_size=None, para_birimi="TL", rr_oran=None,
                kullanici_id=0, acilis_tarihi=None, hedef2_fiyat=None,
-               strategy_version="v2") -> int:
+               strategy_version="v2", veri_guveni=None, eksik_veriler=None) -> int:
     """Yeni bir trade acar (durum='acik'). entry_fiyat o anki fiyat, stop/hedef
     verdict'ten gelen seviyeler, rr_oran = (hedef-entry)/(entry-stop). hedef2_fiyat
     doluysa kademeli hedef (deterministik motor) devrededir. strategy_version: trade'i
@@ -1480,11 +1495,12 @@ def open_trade(ticker, karar, entry_fiyat, stop_fiyat=None, hedef_fiyat=None,
             """INSERT INTO trades
                  (ticker, kullanici_id, karar, entry_fiyat, stop_fiyat, hedef_fiyat,
                   hedef2_fiyat, position_size, para_birimi, acilis_tarihi, rr_oran,
-                  strategy_version, durum)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik')""",
+                  strategy_version, durum, veri_guveni, eksik_veriler)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'acik', ?, ?)""",
             (str(ticker).upper().replace(".IS", ""), kullanici_id, karar, entry_fiyat,
              stop_fiyat, hedef_fiyat, hedef2_fiyat, position_size,
-             (para_birimi or "TL").upper(), acilis_tarihi, rr_oran, strategy_version))
+             (para_birimi or "TL").upper(), acilis_tarihi, rr_oran, strategy_version,
+             veri_guveni, eksik_veriler))
         return cur.lastrowid
 
 

@@ -308,6 +308,25 @@ def run(verbose: bool = True) -> int:
 
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} karar sonucu guncellendi.")
+
+    # GUN VERI KALITESI: son 14 gunu damgala (yeni KIRLI gun -> admin Telegram) +
+    # temiz karne ozeti (KIRLI gunler basari hesabina KATILMAZ). Karar kurallarina
+    # dokunmaz; yalniz kayit/istatistik. Hata olsa da ana degerlendirme etkilenmez.
+    try:
+        from src.ops import gun_kalitesi
+        from datetime import timedelta
+        log_ist = gun_kalitesi._log_gun_istatistik()
+        with db.get_conn() as c:
+            son_gunler = [r[0] for r in c.execute(
+                "SELECT DISTINCT tarih FROM decisions WHERE tarih >= ? ORDER BY tarih",
+                ((datetime.now(_TZ).date() - timedelta(days=14)).isoformat(),))]
+        for g in son_gunler:
+            gun_kalitesi.damgala(g, log_ist=log_ist, alert=True, verbose=False)
+        if verbose:
+            gun_kalitesi.karne_ozet(verbose=True)
+    except Exception as e:
+        if verbose:
+            print(f"  [gun_kalitesi] atlandi: {type(e).__name__}: {str(e)[:80]}")
     return guncellenen
 
 

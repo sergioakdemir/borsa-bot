@@ -24,6 +24,12 @@ def _outcome_wrong(sonuc: str) -> bool | None:
     return None
 
 
+def _kirli(r: dict) -> bool:
+    """Karar KIRLI veri gununden mi? (basari orani hesabina KATILMAZ; bkz.
+    src/ops/gun_kalitesi.py). Kayit silinmez, yalniz istatistikten cikar."""
+    return (r.get("gun_kalitesi") == "KIRLI")
+
+
 def build_learning_note(ticker: str, limit: int = 10) -> str | None:
     """Tek hisse icin karar gecmisi notu (yoksa None)."""
     from src.db import database as db
@@ -188,6 +194,8 @@ def sector_success_rates(limit: int = 400) -> dict:
         w = _outcome_wrong(r.get("sonuc"))
         if w is None:
             continue
+        if _kirli(r):                    # KIRLI veri gunu -> karneye katma
+            continue
         sek = _sektor_of(r.get("ticker"))
         if not sek:
             continue
@@ -224,6 +232,8 @@ def sector_confidence_adjustment(sektor, limit: int = 30) -> dict | None:
             continue
         w = _outcome_wrong(r.get("sonuc"))
         if w is None:
+            continue
+        if _kirli(r):                    # KIRLI veri gunu -> adaptif ogrenmeye katma
             continue
         sonuclar.append(w)
         if len(sonuclar) >= limit:              # yalniz son `limit` karar
@@ -284,6 +294,8 @@ def user_sector_success_rates(kullanici_id, limit: int = 800) -> dict:
             continue
         w = _outcome_wrong(r.get("sonuc"))
         if w is None:
+            continue
+        if _kirli(r):                    # KIRLI veri gunu -> karneye katma
             continue
         sek = _sektor_of(t)
         if not sek:
