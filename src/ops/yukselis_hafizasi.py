@@ -199,6 +199,11 @@ def run(verbose=True):
                 print(f"  [{ticker}] hata: {type(e).__name__}: {e}")
     if verbose:
         print(f"[{bugun}] Kaydedilen: {kaydedilen}/{len(yukselenler)}")
+    try:                                 # heartbeat: gunluk saglik karnesi bunu okur
+        from src.db import database as db
+        db.kalp_at("yukselis_hafizasi")
+    except Exception:
+        pass
     return kaydedilen
 
 if __name__ == "__main__":

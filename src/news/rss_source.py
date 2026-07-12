@@ -158,9 +158,10 @@ class RSSNewsSource(NewsSource):
         if self._entries is not None:
             return self._entries
         import feedparser
+        from . import kaynak_config
         cutoff = datetime.now(_TZ) - timedelta(hours=self.within_hours)
         out = []
-        for feed in self.feeds:
+        for feed in kaynak_config.aktif_feedler(self.feeds):   # olu/kapali feed'leri ele
             text = _fetch(feed["url"])
             if not text:
                 continue
@@ -215,9 +216,10 @@ class RSSNewsSource(NewsSource):
         '[Kaynak] Baslik' formatinda liste doner (en yeni once)."""
         if self._macro is None:
             import feedparser
+            from . import kaynak_config
             cutoff = datetime.now(_TZ) - timedelta(hours=self.within_hours)
             rows = []
-            for feed in self.macro_feeds:
+            for feed in kaynak_config.aktif_feedler(self.macro_feeds):
                 text = _fetch(feed["url"])
                 if not text:
                     continue

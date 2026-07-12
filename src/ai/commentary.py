@@ -2049,19 +2049,27 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     veri_hatasi = sum(1 for r in final.values()
                       if isinstance(r, dict) and r.get("skipped")
                       and str(r.get("reason", "")).startswith("Hata:"))
-    if toplam and veri_hatasi / toplam > 0.20:
-        us_n = sum(1 for t in tickers if str(t).lower().endswith(":us"))
-        pazar = "US" if us_n > toplam / 2 else "BIST"
-        mesaj = (f"{pazar} brifingi: {veri_hatasi}/{toplam} hisse veri hatasiyla "
-                 f"atlandi, karar uretilmedi.")
+    oran = (veri_hatasi / toplam) if toplam else 0
+    us_n = sum(1 for t in tickers if str(t).lower().endswith(":us"))
+    pazar = "US" if us_n > toplam / 2 else "BIST"
+    # Esikler (12 Tem 2026 denetimi): >%5 SARI (yalniz log; gunluk karneye yansir),
+    # >%10 KIRMIZI (anlik admin Telegram). Onceki %20 esigi cok gecti; 4 gunluk
+    # sessiz cokusu yakalayamadi.
+    if oran > 0.10:
+        mesaj = (f"{pazar} brifingi: {veri_hatasi}/{toplam} hisse (%{oran*100:.0f}) "
+                 f"veri hatasiyla atlandi, karar uretilmedi.")
         if verbose:
-            print(f"  [ALARM] {mesaj}")
+            print(f"  [KIRMIZI ALARM] {mesaj}")
         try:
             from src.notify import telegram
-            telegram.notify_admins(mesaj)
+            telegram.notify_admins(mesaj, prefix="🔴")
         except Exception as e:
             print(f"  [ALARM] telegram gonderilemedi: {type(e).__name__}: "
                   f"{str(e)[:80]}")
+    elif oran > 0.05:
+        if verbose:
+            print(f"  [SARI UYARI] {pazar} brifingi: {veri_hatasi}/{toplam} "
+                  f"(%{oran*100:.0f}) hisse atlandi (gunluk karneye yansir).")
 
     return results
 def run(tickers: list[str], save: bool = True, verbose: bool = True,

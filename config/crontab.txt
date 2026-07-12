@@ -53,3 +53,7 @@ CRON_TZ=Europe/Istanbul
 # Bilanco aciklama takvimi guncelle (THYAO/GARAN/... buyuk hisseler): her Pazartesi 08:00
 0 8 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.bilanco_takvimi >> /root/borsa-bot/logs/bilanco_takvimi.log 2>&1
 30 18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.yukselis_hafizasi >> /root/borsa-bot/logs/yukselis_hafizasi.log 2>&1
+# Gunluk sistem saglik karnesi (her gun 18:45; sessiz bozulmalari yakalar)
+45 18 * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.saglik_karnesi >> /root/borsa-bot/logs/saglik_karnesi.log 2>&1
+# Haftalik derin tarama (Pazar 20:00; fail-safe/anomali/simetri/butunluk denetimi)
+0 20 * * 0 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.haftalik_tarama >> /root/borsa-bot/logs/haftalik_tarama.log 2>&1

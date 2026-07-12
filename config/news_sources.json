@@ -1,0 +1,6 @@
+{
+  "_aciklama": "Haber kaynagi ac/kapa. Denetim (12 Tem 2026): akademik/kripto feed'leri hisse kararina girmiyor (yalniz ABD brifingi susu); Mynet/ParaAnaliz olu (404). Karar kurallarina dokunmaz; yalniz haber toplama/gosterim.",
+  "akademik_gundem_enabled": false,
+  "kripto_gundem_enabled": false,
+  "disabled_feeds": ["Mynet", "ParaAnaliz"]
+}

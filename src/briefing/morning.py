@@ -1054,20 +1054,30 @@ def main(market="bist"):
         except Exception as e:
             print(f"  ABD gundemi alinamadi: {type(e).__name__}: {str(e)[:80]}")
             us_gundem = []
-        try:
-            from src.news.us_news import academic_news
-            akademik_gundem = academic_news(within_hours=24, limit=8)
-            print(f"  akademik/kurum gundemi: {len(akademik_gundem)} haber (24s)")
-        except Exception as e:
-            print(f"  akademik gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
-            akademik_gundem = []
-        try:
-            from src.news.us_news import crypto_news
-            kripto_gundem = crypto_news(within_hours=24, limit=6)
-            print(f"  kripto gundemi: {len(kripto_gundem)} haber (24s)")
-        except Exception as e:
-            print(f"  kripto gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
-            kripto_gundem = []
+        # AKADEMIK & KRIPTO: denetim (12 Tem 2026) -> bunlar hisse KARARINA girmiyor
+        # (yalniz ABD brifingi susu). config/news_sources.json ile kapali (varsayilan);
+        # token+zaman tasarrufu. Geri acmak icin bayragi true yap.
+        from src.news import kaynak_config
+        if kaynak_config.akademik_acik():
+            try:
+                from src.news.us_news import academic_news
+                akademik_gundem = academic_news(within_hours=24, limit=8)
+                print(f"  akademik/kurum gundemi: {len(akademik_gundem)} haber (24s)")
+            except Exception as e:
+                print(f"  akademik gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
+                akademik_gundem = []
+        else:
+            print("  akademik/kurum gundemi: KAPALI (config; karara girmiyordu)")
+        if kaynak_config.kripto_acik():
+            try:
+                from src.news.us_news import crypto_news
+                kripto_gundem = crypto_news(within_hours=24, limit=6)
+                print(f"  kripto gundemi: {len(kripto_gundem)} haber (24s)")
+            except Exception as e:
+                print(f"  kripto gundem alinamadi: {type(e).__name__}: {str(e)[:80]}")
+                kripto_gundem = []
+        else:
+            print("  kripto gundemi: KAPALI (config; kullanici kripto ile ilgilenmiyor)")
 
     # 2.6) AKADEMIK OZET: akademik/kurum haberlerini Haiku ile Turkceye cevir + izlenen
     #      ABD hisseleriyle (watchlist + ABD portfoy) iliskilendir. Bir kez hesaplanir.
