@@ -48,11 +48,46 @@ class KAPSource(NewsSource):
         self.days = days
         self.market = BIST()
         self._session = None
+        # Hibrit proxy: once KAP_PROXY_URL (kendi TR VPS tinyproxy'miz), 429 veya
+        # cografi/baglanti engeli gelirse KAP_PROXY_FALLBACK_URL'e (residential,
+        # IP rotasyonlu) duseriz. Tek-IP tinyproxy 429'a cozum degil; residential
+        # rotasyon rate-limiti asar. Fallback'e gecince o surec sonuna kadar orada
+        # kalir (rate-limitli IP'yi tekrar dovmemek icin).
+        self._proxy_url = os.environ.get("KAP_PROXY_URL")
+        self._fallback_url = os.environ.get("KAP_PROXY_FALLBACK_URL")
+        self._on_fallback = False
 
     # --- altyapi -----------------------------------------------------------
     def _proxies(self):
-        url = os.environ.get("KAP_PROXY_URL")
+        url = self._proxy_url
         return {"http": url, "https": url} if url else None
+
+    # --- basari sayaci + hibrit fallback ----------------------------------
+    @staticmethod
+    def _say(ad: str):
+        """Gunluk KAP sayacini 1 artir (kap_ok/kap_fail/kap_429/kap_fallback).
+        Sayim hicbir zaman cekim akisini bozmamali -> sessizce yut."""
+        try:
+            from ..db import database as db
+            db.gunluk_sayac_arttir(ad)
+        except Exception:
+            pass
+
+    def _fallback_yapilabilir(self, e: Exception) -> bool:
+        """Hata proxy/rate-limit kaynakliysa ve kullanilmamis bir fallback proxy
+        varsa True. 'bulunamadi' (kod listede yok) veri sorunu -> fallback yok."""
+        if self._on_fallback or not self._fallback_url:
+            return False
+        msg = str(e).lower()
+        if "bulunamadi" in msg or "bulunamadı" in msg:
+            return False
+        return ("429" in msg or "ulasilamadi" in msg or "ulaşılamadı" in msg
+                or "http 5" in msg or "http 403" in msg or "reset" in msg)
+
+    def _fallbacke_gec(self):
+        self._proxy_url = self._fallback_url
+        self._on_fallback = True
+        self._session = None            # yeni proxy ile taze oturum + cerez
 
     def _get_session(self):
         """curl_cffi oturumu: proxy + chrome taklidi + KAP oturum cerezi."""
@@ -130,7 +165,33 @@ class KAPSource(NewsSource):
         return data if isinstance(data, list) else []
 
     def get_news(self, ticker: str, limit: int = 20) -> list[NewsItem]:
+        """Disa acik giris: basari/hata sayar ve gerekince residential fallback'e
+        duser. Bir 'bulunamadi' (kod listede yok) sayilmaz (veri sorunu, altyapi
+        degil); geri kalan her sonuc kap_ok / kap_fail'e islenir."""
         ticker = ticker.upper().replace(".IS", "")
+        try:
+            items = self._get_news_core(ticker, limit)
+            self._say("kap_ok")
+            return items
+        except NewsSourceUnavailable as e:
+            # 429/cografi engel ise bir kez fallback proxy ile yeniden dene
+            if self._fallback_yapilabilir(e):
+                self._say("kap_fallback")
+                self._fallbacke_gec()
+                try:
+                    items = self._get_news_core(ticker, limit)
+                    self._say("kap_ok")
+                    return items
+                except NewsSourceUnavailable as e2:
+                    e = e2                       # fallback da patladi -> asagida say
+            msg = str(e)
+            if "bulunamadi" not in msg and "bulunamadı" not in msg:
+                self._say("kap_fail")
+                if "429" in msg:
+                    self._say("kap_429")
+            raise
+
+    def _get_news_core(self, ticker: str, limit: int = 20) -> list[NewsItem]:
         oid = self._resolve_oid(ticker)
         rows = self._fetch(oid)
         items = []

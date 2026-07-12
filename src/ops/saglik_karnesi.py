@@ -69,6 +69,18 @@ def _kap_durum(tarih):
     return (not ornek), n
 
 
+def _kap_basari(tarih):
+    """Gunun KAP cekim basari metrikleri (kap_source._say sayaclarindan).
+    (oran %|None, ok, fail, r429, fallback, toplam)."""
+    from src.db import database as db
+    g = lambda ad: int(db.get_setting(f"{ad}:{tarih}", 0) or 0)
+    ok, fail, r429, fb = g("kap_ok"), g("kap_fail"), g("kap_429"), g("kap_fallback")
+    toplam = ok + fail
+    oran = (ok / toplam * 100) if toplam else None
+    return {"oran": oran, "ok": ok, "fail": fail, "r429": r429,
+            "fallback": fb, "toplam": toplam}
+
+
 def _mcp_calisiyor():
     try:
         from src.news import borsa_mcp
@@ -132,6 +144,7 @@ def topla(tarih=None) -> dict:
     gk = gun_kalitesi.siniflandir(tarih, log_ist={tarih: log_ist} if log_ist else None)
 
     kap_canli, kap_n = _kap_durum(tarih)
+    kap_basari = _kap_basari(tarih)
     cache_yas = _fiyat_cache_yas_dk()
     mcp = _mcp_calisiyor()
     havuz, haber_eslesme = _haber_istatistik()
@@ -176,6 +189,10 @@ def topla(tarih=None) -> dict:
         sari.append(f"fiyat cache {cache_yas:.0f} dk bayat")
     if gk["gun_sinif"] == "KISMI":
         sari.append("gun kalitesi KISMI")
+    # KAP basari orani dusukse (yeterli cagri hacmiyle) sari uyari.
+    if kap_basari["toplam"] >= 20 and kap_basari["oran"] is not None \
+            and kap_basari["oran"] < 70:
+        sari.append(f"KAP basari %{kap_basari['oran']:.0f} (<%70)")
     if not hafta_ici:
         sari.append("hafta sonu — brifing beklenmez")
 
@@ -189,7 +206,8 @@ def topla(tarih=None) -> dict:
     return {
         "tarih": tarih, "bist": bist, "us": us, "kill": kill, "atlanan": atlanan,
         "taranan": taranan, "gun_sinif": gk["gun_sinif"], "gun_sebep": gk["sebep"],
-        "kap_canli": kap_canli, "kap_n": kap_n, "cache_yas": cache_yas, "mcp": mcp,
+        "kap_canli": kap_canli, "kap_n": kap_n, "kap_basari": kap_basari,
+        "cache_yas": cache_yas, "mcp": mcp,
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
     }
@@ -202,6 +220,12 @@ def _mesaj(m: dict) -> str:
                  (f"bayat — {m['cache_yas']:.0f} dk" if m["cache_yas"] is not None else "yok"))
     haber_txt = (f"{m['havuz']} haber, {m['haber_eslesme']} hisse eslesti"
                  if m["havuz"] is not None else "olculemedi")
+    kb = m["kap_basari"]
+    if kb["toplam"]:
+        kap_basari_txt = (f"%{kb['oran']:.0f} ({kb['ok']}/{kb['toplam']})"
+                          f" | 429: {kb['r429']} | fallback: {kb['fallback']}")
+    else:
+        kap_basari_txt = "veri yok (bugun cagri olmadi)"
     g = m["gece"]
     satirlar = [
         f"📋 SİSTEM KARNESİ — {m['tarih']}",
@@ -211,6 +235,7 @@ def _mesaj(m: dict) -> str:
         "─────",
         "Veri kaynaklari:",
         f"KAP: {'canli' if m['kap_canli'] else 'KOPUK'} — {m['kap_n']} bildirim",
+        f"KAP basari orani: {kap_basari_txt}",
         f"Fiyat cache: {cache_txt}",
         f"Borsa MCP: {'calisiyor' if m['mcp'] else 'OLU'}",
         f"Haber: {haber_txt}",
