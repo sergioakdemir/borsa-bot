@@ -36,6 +36,145 @@ OUT_PATH = ROOT / "data" / "ai_commentary.json"
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1000
 
+# --- AI cagri hatasi siniflandirmasi (15 Tem 2026) ---------------------------
+# 15 Tem 2026: kredi bitince batch cagrisi BadRequestError verdi, evaluate_all
+# tek-tek yola dustu ve 92 hisse "Hata: BadRequestError" ile atlandi; sessiz
+# basarisizlik alarmi YALNIZ run_batch icinde oldugu icin kimse haberdar olmadi
+# ve icerigi bos brifing kullaniciya gitti. Ayrica 92 cagri bosuna denendi.
+# Cozum: (1) AI hatasi olan atlamalari 'ai_hata' bayragiyla isaretle,
+# (2) kredi bitti sinyalini yakalayip GUN BOYU devre kesici uygula,
+# (3) alarmi iki yolun da (batch + tek-tek) kullandigi ortak yardimciya tasi.
+
+# Bu exception adlari AI cagrisinin kendisinin basarisiz oldugunu gosterir
+# (veri hazirligi hatasi degil). anthropic SDK sinif adlari.
+_AI_CAGRI_HATALARI = (
+    "BadRequestError", "RateLimitError", "AuthenticationError",
+    "PermissionDeniedError", "NotFoundError", "APIStatusError",
+    "APIConnectionError", "APITimeoutError", "InternalServerError",
+    "OverloadedError", "APIError",
+)
+
+# Kredi/bakiye tukendi imzalari (Anthropic 400 invalid_request_error govdesi).
+_KREDI_IMZALARI = ("credit balance is too low", "plans & billing",
+                   "purchase credits", "billing")
+
+
+def _ai_cagri_hatasi_mi(e) -> bool:
+    """Exception AI cagrisinin basarisizligi mi (veri hazirligi hatasi degil)?"""
+    return type(e).__name__ in _AI_CAGRI_HATALARI
+
+
+def kredi_bitti_mi(e) -> bool:
+    """Exception 'kredi/bakiye bitti' hatasi mi? (para harcamadan reddedilen cagri)"""
+    m = str(e).lower()
+    return any(s in m for s in _KREDI_IMZALARI)
+
+
+def kredi_freni_aktif_mi() -> bool:
+    """Bugun kredi bitti bayragi konmus mu? Konmussa yeni AI cagrisi YAPILMAZ
+    (bosa deneme yok). Bayrak gunluk; ertesi gun kendiliginden dusler."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        return bool(db.get_setting(f"ai_kredi_bitti:{bugun}"))
+    except Exception:
+        return False
+
+
+def kredi_freni_koy(sebep: str = "") -> None:
+    """Kredi bitti -> gun sonuna kadar AI cagrilarini durdur + admin'e bildir.
+    Ayni gun icinde bir kez bildirir (bayrak zaten varsa tekrar bildirmez)."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        anahtar = f"ai_kredi_bitti:{bugun}"
+        if db.get_setting(anahtar):
+            return                       # bugun zaten isaretlendi + bildirildi
+        db.set_setting(anahtar, sebep[:200] or "1")
+    except Exception:
+        return
+    try:
+        from src.notify import telegram
+        telegram.notify_admins(
+            "KREDİ BİTTİ: Anthropic API bakiyesi tükendi — AI çağrıları gün "
+            "sonuna kadar DURDURULDU (boşa deneme yapılmayacak). Karar "
+            "üretimi durdu. Bakiye yüklenince otomatik devam eder.",
+            prefix="🔴")
+    except Exception as e:
+        print(f"  [kredi] admin bildirimi gonderilemedi: {type(e).__name__}: "
+              f"{str(e)[:80]}")
+
+
+def kredi_freni_kaldir() -> None:
+    """Basarili bir AI cagrisindan sonra bayragi dusur (bakiye yuklenmis)."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        if db.get_setting(f"ai_kredi_bitti:{bugun}"):
+            db.set_setting(f"ai_kredi_bitti:{bugun}", "")
+    except Exception:
+        pass
+
+
+def atlama_ozeti(results, tickers=None) -> dict:
+    """Bir brifing kosusunun atlama karnesi. Cagiranlar: run/run_batch alarmi ve
+    morning.main (bos brifing engeli).
+
+    ai_hata  : AI cagrisi basarisiz oldugu icin karar uretilemeyen hisse sayisi
+    veri_freni: KILL_SWITCH (fiyat verisi yok/bayat) — bu SAGLIKLI bir fren,
+                bos brifing sayilmaz, ai_hata'dan ayri tutulur.
+    uretilen : gercekten karar uretilen hisse sayisi (brifingde yazilabilecek tek sayi)
+    """
+    kayitlar = [r for r in (results or []) if isinstance(r, dict)]
+    toplam = len(tickers) if tickers else len(kayitlar)
+    ai_hata = [r for r in kayitlar if r.get("skipped") and r.get("ai_hata")]
+    veri_freni = sum(1 for r in kayitlar if r.get("kill_switch"))
+    uretilen = sum(1 for r in kayitlar if not r.get("skipped"))
+    ornek = next((str(r.get("reason") or "") for r in ai_hata), "")
+    return {
+        "toplam": toplam,
+        "uretilen": uretilen,
+        "ai_hata": len(ai_hata),
+        "veri_freni": veri_freni,
+        "ai_hata_orani": (len(ai_hata) / toplam) if toplam else 0.0,
+        "ornek_hata": ornek,
+        "kredi_bitti": kredi_freni_aktif_mi(),
+    }
+
+
+def _atlama_alarmi(results, tickers, verbose: bool = True) -> dict:
+    """Sessiz basarisizlik alarmi — run() ve run_batch() ORTAK kullanir.
+
+    Watchlist'in >%10'u AI cagri hatasiyla dustuyse o brifingde karar
+    uretilememis demektir -> yoneticilere Telegram uyarisi. ">%5 SARI (yalniz
+    log), >%10 KIRMIZI (anlik admin Telegram)" esikleri 12 Tem 2026 denetiminden.
+    "N hisse tarandi" yalani bir daha sessiz kalmasin.
+    """
+    ozet = atlama_ozeti(results, tickers)
+    toplam, ai_hata, oran = ozet["toplam"], ozet["ai_hata"], ozet["ai_hata_orani"]
+    us_n = sum(1 for t in (tickers or []) if str(t).lower().endswith(":us"))
+    pazar = "US" if toplam and us_n > toplam / 2 else "BIST"
+    if oran > 0.10:
+        neden = " (kredi bitti)" if ozet["kredi_bitti"] else ""
+        mesaj = (f"{pazar} brifingi: {ai_hata}/{toplam} hisse (%{oran*100:.0f}) "
+                 f"AI çağrı hatasıyla atlandı, karar üretilmedi{neden}. "
+                 f"Örnek: {ozet['ornek_hata'] or '-'}")
+        if verbose:
+            print(f"  [KIRMIZI ALARM] {mesaj}")
+        # Kredi freni zaten kendi (daha net) bildirimini gonderdi -> tekrarlama.
+        if not ozet["kredi_bitti"]:
+            try:
+                from src.notify import telegram
+                telegram.notify_admins(mesaj, prefix="🔴")
+            except Exception as e:
+                print(f"  [ALARM] telegram gonderilemedi: {type(e).__name__}: "
+                      f"{str(e)[:80]}")
+    elif oran > 0.05:
+        if verbose:
+            print(f"  [SARI UYARI] {pazar} brifingi: {ai_hata}/{toplam} "
+                  f"(%{oran*100:.0f}) hisse atlandi (gunluk karneye yansir).")
+    return ozet
+
 # Strateji surumu: bu sabit, uretilen her yeni karar ve trade'e etiketlenir. 7 Temmuz
 # 2026 buyuk paketiyle (deterministik stop/hedef, cift risk vetosu, BEKLE pozisyon
 # yonetimi, sektor tavani) 'v2'ye gecildi. Migration'dan once yazilan tum kayitlar 'v1'.
@@ -1894,6 +2033,19 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY yok - AI yorumu uretilemez.")
 
+    # KREDI FRENI: bakiye bittiyse batch bile acma (veri hazirligi + batch
+    # olusturma bosuna). Fren gun boyu; ertesi gun kendiliginden duser.
+    if kredi_freni_aktif_mi():
+        if verbose:
+            print("  [kredi] AI kredisi bitti (gunluk fren aktif) -> batch "
+                  "acilmayacak, hicbir AI cagrisi yapilmayacak.")
+        results = [{"ticker": str(t).partition(":")[0].strip().upper(),
+                    "skipped": True, "ai_hata": True,
+                    "reason": "Kredi bitti (AI cagrisi atlandi)"}
+                   for t in (tickers or [])]
+        _atlama_alarmi(results, tickers, verbose=verbose)
+        return results
+
     news_src, is_sample = get_news_source(verbose=verbose)
     rss_src = RSSNewsSource()
     context = market_context(rss_src=rss_src, overview=overview)
@@ -1964,7 +2116,25 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
         except Exception as e:
             if verbose:
                 print(f"  [batch] cache ısıtma atlandı: {type(e).__name__}")
-        batch = client.messages.batches.create(requests=requests)
+            # Isitma "best-effort" ama KREDI hatasi burada gorunur (15 Tem 2026:
+            # sessizce yutuldu, ardindan batch 400 verdi). Freni hemen koy ki
+            # fallback run() tek bir cagri bile denemesin.
+            if kredi_bitti_mi(e):
+                kredi_freni_koy(f"{type(e).__name__}: {str(e)[:120]}")
+                results = [{"ticker": ctxs.get(c, {}).get("ticker",
+                                                          str(t).partition(":")[0].upper()),
+                            "skipped": True, "ai_hata": True,
+                            "reason": "Kredi bitti (AI cagrisi atlandi)"}
+                           for c, t in order]
+                _persist(results, save=save, verbose=verbose)
+                _atlama_alarmi(results, tickers, verbose=verbose)
+                return results
+        try:
+            batch = client.messages.batches.create(requests=requests)
+        except Exception as e:
+            if kredi_bitti_mi(e):
+                kredi_freni_koy(f"{type(e).__name__}: {str(e)[:120]}")
+            raise
         if verbose:
             print(f"  [batch] {len(requests)} istek gonderildi (id={batch.id}); bekleniyor...")
         waited = 0
@@ -2003,9 +2173,11 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                         final[cid] = _finalize_record(ctx, v)
                     except Exception as e:
                         final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                                      "ai_hata": True,
                                       "reason": f"Batch parse: {type(e).__name__}"}
                 else:
                     final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                                  "ai_hata": True,
                                   "reason": f"Batch {res.result.type}"}
                     try:                         # gunluk AI hata sayaci (health_monitor okur)
                         from src.db import database as _db
@@ -2030,6 +2202,7 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
     for cid, ctx in ctxs.items():
         if cid not in final:
             final[cid] = {"ticker": ctx["ticker"], "skipped": True,
+                          "ai_hata": True,
                           "reason": "Batch sonuc gelmedi (timeout)"}
 
     # 4) Orijinal sirada birlestir + kaydet
@@ -2041,35 +2214,8 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                 print(_verbose_satir(t, r))
     _persist(results, save=save, verbose=verbose)
 
-    # --- Sessiz basarisizlik alarmi: hazirlik (veri) hatasiyla atlanan hisseleri
-    # say. Watchlist'in >%20'si veri hatasiyla dustuyse o brifingde karar
-    # uretilememis demektir (7-10 Tem 2026 gibi) -> yoneticilere Telegram uyarisi.
-    # "N hisse tarandi" yalani bir daha sessiz kalmasin.
-    toplam = len(tickers)
-    veri_hatasi = sum(1 for r in final.values()
-                      if isinstance(r, dict) and r.get("skipped")
-                      and str(r.get("reason", "")).startswith("Hata:"))
-    oran = (veri_hatasi / toplam) if toplam else 0
-    us_n = sum(1 for t in tickers if str(t).lower().endswith(":us"))
-    pazar = "US" if us_n > toplam / 2 else "BIST"
-    # Esikler (12 Tem 2026 denetimi): >%5 SARI (yalniz log; gunluk karneye yansir),
-    # >%10 KIRMIZI (anlik admin Telegram). Onceki %20 esigi cok gecti; 4 gunluk
-    # sessiz cokusu yakalayamadi.
-    if oran > 0.10:
-        mesaj = (f"{pazar} brifingi: {veri_hatasi}/{toplam} hisse (%{oran*100:.0f}) "
-                 f"veri hatasiyla atlandi, karar uretilmedi.")
-        if verbose:
-            print(f"  [KIRMIZI ALARM] {mesaj}")
-        try:
-            from src.notify import telegram
-            telegram.notify_admins(mesaj, prefix="🔴")
-        except Exception as e:
-            print(f"  [ALARM] telegram gonderilemedi: {type(e).__name__}: "
-                  f"{str(e)[:80]}")
-    elif oran > 0.05:
-        if verbose:
-            print(f"  [SARI UYARI] {pazar} brifingi: {veri_hatasi}/{toplam} "
-                  f"(%{oran*100:.0f}) hisse atlandi (gunluk karneye yansir).")
+    # Sessiz basarisizlik alarmi (run() ile ORTAK yardimci; esikler orada).
+    _atlama_alarmi(results, tickers, verbose=verbose)
 
     return results
 def run(tickers: list[str], save: bool = True, verbose: bool = True,
@@ -2099,11 +2245,21 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
 
     usage_acc = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     results = []
+    # KREDI FRENI: bakiye bittiyse tek bir cagri bile yapma (15 Tem 2026: 92
+    # hisse icin 92 bosuna cagri yapildi). Fren gun boyu; ertesi gun duser.
+    kredi_frenli = kredi_freni_aktif_mi()
+    if kredi_frenli and verbose:
+        print("  [kredi] AI kredisi bitti (gunluk fren aktif) -> "
+              "hicbir AI cagrisi yapilmayacak.")
     for raw in tickers:
         # "TICKER" (bist) veya "TICKER:us"/"TICKER:abd" formatini destekle
         t, _, mk = str(raw).partition(":")
         t = t.strip()
         market = (mk.strip().lower() or "bist")
+        if kredi_frenli:                  # cagri YOK -> token/para harcanmaz
+            results.append({"ticker": t.upper(), "skipped": True, "ai_hata": True,
+                            "reason": "Kredi bitti (AI cagrisi atlandi)"})
+            continue
         try:
             r = analyze_stock(t, news_src=news_src, rss_src=rss_src,
                               client=client, context=context, market=market,
@@ -2114,6 +2270,15 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
                 print(f"  [{t}] HATA: {type(e).__name__}: {str(e)[:100]}")
             r = {"ticker": t.upper(), "skipped": True,
                  "reason": f"Hata: {type(e).__name__}"}
+            if _ai_cagri_hatasi_mi(e):
+                r["ai_hata"] = True
+            # Kredi bitti -> bayragi koy, KALAN hisseler icin cagri yapma.
+            if kredi_bitti_mi(e):
+                kredi_freni_koy(f"{type(e).__name__}: {str(e)[:120]}")
+                kredi_frenli = True
+                if verbose:
+                    print("  [kredi] Bakiye bitti -> kalan hisseler icin AI "
+                          "cagrisi YAPILMAYACAK (gun sonuna kadar fren).")
         results.append(r)
         if verbose:
             if r.get("kill_switch"):
@@ -2127,6 +2292,15 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
     # Persist (sektor tavani + tekrarli sinyal filtresi _persist icinde uygulanir,
     # ardindan decisions + trades + ai_commentary.json yazilir). run_batch ile ayni yol.
     _persist(results, save=save, verbose=verbose)
+
+    # Sessiz basarisizlik alarmi — run_batch ile ORTAK. 15 Tem 2026'ya kadar bu
+    # alarm YALNIZ run_batch icindeydi; batch kredi hatasiyla dusup buraya
+    # (fallback) gelince kimse uyarilmadi. Hatalar tam da bu yola dusuyor.
+    _atlama_alarmi(results, tickers, verbose=verbose)
+
+    # En az bir cagri basardiysa kredi freni gereksiz -> kaldir (bakiye yuklenmis).
+    if any(not r.get("skipped") for r in results if isinstance(r, dict)):
+        kredi_freni_kaldir()
 
     # TOKEN OZET (batch ile ayni format) — fallback tek-tek cagri yolunda da
     maliyet = (usage_acc["input"] * _BATCH_FIYAT_INPUT

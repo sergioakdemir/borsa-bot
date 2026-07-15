@@ -14,6 +14,9 @@ Cron iki ayri satirla calisir:
 Sorun bulunursa Serhat + Yigit'e "⚠️ SİSTEM UYARISI: ..." gonderir.
 SPAM ONLEME: ayni sorun gunde EN FAZLA 1 kez bildirilir
 (data/health_state.json'da {sorun_anahtari: 'YYYY-MM-DD'} tutulur).
+ISTISNA — KRITIK_ANAHTARLAR (kredi bitti, AI hata patlamasi): sistem karar
+uretemiyor demektir; gunluk filtreye TAKILMAZ, sorun surdukce
+KRITIK_TEKRAR_SAAT'te bir tekrar bildirilir (state'te ISO zaman damgasi).
 
 Calistirma: python -m src.ops.health_monitor [core|market|all]  (varsayilan: all)
 """
@@ -116,10 +119,26 @@ def _kontrol_db():
 AI_HATA_ESIGI = 5          # gun icinde bu kadardan FAZLA AI hatasi -> admin uyarisi
 
 
+def _kontrol_kredi():
+    """Anthropic kredisi bitti mi? commentary.kredi_freni_koy 'ai_kredi_bitti:<gun>'
+    bayragini koyar; bu KRITIK bir durumdur (karar uretimi tamamen durur) ->
+    KRITIK_ANAHTARLAR sayesinde gunde 1 kez degil, cozulene kadar periyodik uyarir."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        if db.get_setting(f"ai_kredi_bitti:{bugun}"):
+            return ("ai_kredi_bitti",
+                    "🔴 KREDİ BİTTİ: Anthropic API bakiyesi tükendi. AI çağrıları "
+                    "durduruldu, karar üretilmiyor. Bakiye yükleyin.")
+    except Exception:
+        return None
+    return None
+
+
 def _kontrol_ai_hata():
     """Bugunku AI cagri hata sayaci (db.ai_hata_sayisi) esigi asti mi? AI cagri
     exception'larinda artan gunluk sayaci okur; 5'ten fazlaysa veri/kredi sorunu
-    isareti -> admin uyarisi (gunde 1 kez, run() spam-state ile)."""
+    isareti -> admin uyarisi (KRITIK: cozulene kadar periyodik tekrar)."""
     try:
         from src.db import database as db
         n = db.ai_hata_sayisi()
@@ -216,7 +235,17 @@ def _kontrol_mcp():
     return None
 
 
-# --- spam onleme: gunde 1 kez ---
+# --- spam onleme: gunde 1 kez (KRITIK olanlar haric) ---
+
+# KRITIK sorunlar: sistem karar uretemiyor demektir. Bunlar gunluk spam
+# filtresine TAKILMAZ; sorun devam ettigi surece KRITIK_TEKRAR_SAAT'te bir
+# yeniden bildirilir (15 Tem 2026: kredi bitti, ilk uyari 09:30'da gitti ama
+# gun boyu suren arizanin tekrari bastirildi -> sorun gozden kacti).
+# Not: tamamen filtresiz birakmak 30 dk'lik cron ile gunde 48 mesaj demekti;
+# periyodik tekrar hem "yutulmasin" hem "spam olmasin" dengesini kurar.
+KRITIK_ANAHTARLAR = {"ai_kredi_bitti", "ai_hata_cok"}
+KRITIK_TEKRAR_SAAT = 2
+
 
 def _state_yukle() -> dict:
     try:
@@ -231,6 +260,28 @@ def _state_kaydet(state: dict) -> None:
                               encoding="utf-8")
     except OSError as e:
         print(f"[uyari] health_state.json yazilamadi: {type(e).__name__}")
+
+
+def _bastirilsin_mi(kayit, anahtar: str, now: datetime) -> bool:
+    """Bu uyari spam filtresine takilsin mi?
+
+    Normal sorunlar : gunde 1 kez (kayit == bugunun tarihi ise bastir).
+    KRITIK sorunlar : asla gun boyu bastirilmaz; son bildirimden bu yana
+                      KRITIK_TEKRAR_SAAT gectiyse yeniden bildirilir.
+    Kayit yoksa (ilk kritik uyari) HER ZAMAN bildirilir -> yutulma olmaz.
+    """
+    if not kayit:
+        return False                          # ilk uyari -> mutlaka git
+    if anahtar not in KRITIK_ANAHTARLAR:
+        return str(kayit) == now.date().isoformat()
+    try:
+        son = datetime.fromisoformat(str(kayit))
+    except ValueError:
+        return False                          # eski/bozuk format -> bildir (guvenli taraf)
+    if son.tzinfo is None:
+        son = son.replace(tzinfo=_TZ)
+    gecen_saat = (now - son).total_seconds() / 3600
+    return gecen_saat < KRITIK_TEKRAR_SAAT
 
 
 def _bildir(mesaj: str) -> bool:
@@ -258,7 +309,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
-    core = (_kontrol_servis, _kontrol_db, _kontrol_ai_hata,
+    core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_ai_hata,
             _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
@@ -279,18 +330,21 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     state = _state_yukle()
     gonderilen, atlanan = [], []
     for anahtar, mesaj in sorunlar:
-        if state.get(anahtar) == bugun:       # bugun zaten bildirildi -> spam onleme
+        if _bastirilsin_mi(state.get(anahtar), anahtar, now):
             atlanan.append(anahtar)
             continue
         if _bildir(mesaj):
-            state[anahtar] = bugun
+            # KRITIK -> zaman damgasi (periyodik tekrar icin), digerleri -> tarih.
+            state[anahtar] = (now.isoformat(timespec="minutes")
+                              if anahtar in KRITIK_ANAHTARLAR else bugun)
             gonderilen.append(anahtar)
         else:
             atlanan.append(anahtar)           # gonderilemedi -> state'e yazma, tekrar dene
 
-    # Bugun cozulen sorunlarin state'ini temizle (yarinki tekrar icin degil; bugun
-    # tekrar olusursa yeniden bildirilmesin diye degil -> sadece eski gunleri at).
-    state = {k: v for k, v in state.items() if v == bugun}
+    # Bugun cozulen sorunlarin state'ini temizle (sadece eski gunleri at).
+    # Kritik anahtarlarda deger ISO zaman damgasi ('2026-07-15T14:00') -> ayni
+    # gune aitse basindaki tarih bugunle eslesir.
+    state = {k: v for k, v in state.items() if str(v).startswith(bugun)}
     _state_kaydet(state)
 
     if verbose:

@@ -211,7 +211,12 @@ _load_dotenv()
 
 from src.notify import telegram
 from src.notify.telegram import TelegramNotConfigured
+from src.ai import commentary
 from src.ai.decision import karar_kelime, karar_emoji, aksiyon_metni
+
+# Bir brifingde hisselerin bu oranindan FAZLASI AI cagri hatasiyla islenemediyse
+# brifing gonderilmez (15 Tem 2026: kredi bitti, 92/93 atlandi, bos brifing gitti).
+BRIFING_IPTAL_ORANI = 0.50
 
 
 def _esc(s):
@@ -1121,6 +1126,26 @@ def main(market="bist"):
     results = evaluate_all(sel["targets"], overview=overview, learning=learning,
                            extra_context=extra_context)
 
+    # 3.5) BOS BRIFING ENGELI (15 Tem 2026): AI kredisi bitince 92/93 hisse
+    # atlandi ama brifing yine de "93 hisse" diye gonderildi. Hisselerin
+    # %50'sinden fazlasi AI CAGRI HATASI yuzunden karar uretemediyse brifing
+    # GONDERILMEZ; yerine admin'e net sebep gider. KILL_SWITCH (veri freni)
+    # bu orana girmez — o saglikli bir fren, brifingi iptal ettirmez.
+    ozet = commentary.atlama_ozeti(results, sel["targets"])
+    if ozet["ai_hata_orani"] > BRIFING_IPTAL_ORANI:
+        sebep = ozet["ornek_hata"] or "bilinmiyor"
+        neden = ("kredi bitti" if ozet["kredi_bitti"]
+                 else "kredi/rate-limit olabilir")
+        mesaj = (f"BRİFİNG İPTAL: {ozet['ai_hata']}/{ozet['toplam']} hisse AI "
+                 f"hatasıyla işlenemedi. Sebep: {sebep}. Muhtemel neden: {neden}. "
+                 f"Üretilen karar: {ozet['uretilen']} — brifing gönderilmedi.")
+        print(f"[{now:%Y-%m-%d %H:%M}] [KIRMIZI] {mesaj}")
+        try:
+            telegram.notify_admins(mesaj, prefix="🔴")
+        except Exception as e:
+            print(f"  [iptal] admin bildirimi gonderilemedi: {type(e).__name__}")
+        return 2
+
     # 4) Paper trading: AL -> sanal alim ac, SAT -> kapat
     try:
         from src.portfolio import paper
@@ -1288,8 +1313,16 @@ def main(market="bist"):
     _gece_haber_temizle()
 
     ok = [c for c, s in sonuc.items() if s == "ok"]
+    # Sayi olarak YALNIZ gercekten karar uretilen hisse yazilir; atlananlar
+    # (AI hatasi / veri freni) ayrica belirtilir. "93 hisse" yalani (15 Tem 2026)
+    # len(results) atlananlari da saydigi icin olusmustu.
+    atlanan_not = ""
+    if ozet["ai_hata"] or ozet["veri_freni"]:
+        atlanan_not = (f", atlanan: {ozet['ai_hata']} AI hatasi"
+                       f" + {ozet['veri_freni']} veri freni")
     print(f"[{now:%Y-%m-%d %H:%M}] Telegram kisisel gonderim ({etiket}): {len(ok)}/{len(sonuc)} alici "
-          f"({len(results)} hisse). Sonuc: {sonuc}")
+          f"({ozet['uretilen']}/{ozet['toplam']} hisse karar uretildi{atlanan_not}). "
+          f"Sonuc: {sonuc}")
     return 0 if ok else 1
 
 
