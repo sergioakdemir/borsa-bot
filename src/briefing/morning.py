@@ -217,6 +217,8 @@ from src.ai.decision import karar_kelime, karar_emoji, aksiyon_metni
 # Bir brifingde hisselerin bu oranindan FAZLASI AI cagri hatasiyla islenemediyse
 # brifing gonderilmez (15 Tem 2026: kredi bitti, 92/93 atlandi, bos brifing gitti).
 BRIFING_IPTAL_ORANI = 0.50
+BIST_MIN_KARAR = 70         # sabah brifingi sonrasi bu sayinin altinda karar
+                            # uretildiyse sistem eksik calisiyor -> kirmizi alarm
 
 
 def _esc(s):
@@ -1010,6 +1012,41 @@ def _record_briefing_memory(results):
                 ticker=tkr, tarih=bugun)
 
 
+def _uretim_garantisi(ozet, market, now):
+    """GUNLUK URETIM GARANTISI (15 Tem 2026): brifing GONDERILSE BILE karar
+    sayisi dusukse sistem sessizce eksik calisiyor demektir -> aninda kirmizi
+    alarm. Bos brifing engeli (%50 AI hatasi) yalnizca felaket senaryosunu
+    yakalar; bu kontrol aradaki 'yarim calisti' bosluguna bakar (orn. 60 karar
+    + 30 veri freni: brifing gider, kimse fark etmez).
+
+    Yalnizca BIST icin — ABD listesi 16 hisse, esik anlamsiz.
+    """
+    if market != "bist":
+        return False
+    uretilen = ozet["uretilen"]
+    if uretilen >= BIST_MIN_KARAR:
+        return False
+
+    if ozet["kredi_bitti"]:
+        sebep = "API kredisi bitti"
+    elif ozet["ai_hata"]:
+        sebep = (f"{ozet['ai_hata']} hisse AI hatası "
+                 f"({ozet['ornek_hata'] or 'sebep bilinmiyor'})")
+    elif ozet["veri_freni"]:
+        sebep = f"{ozet['veri_freni']} hisse veri freni (fiyat kaynağı sorunlu)"
+    else:
+        sebep = f"tarama listesi yalnızca {ozet['toplam']} hisse — kadans/liste sorunu"
+
+    mesaj = (f"Bugün sadece {uretilen} karar üretildi, sistem eksik çalışıyor. "
+             f"Sebep: {sebep}. (beklenen ≥{BIST_MIN_KARAR}, liste {ozet['toplam']})")
+    print(f"[{now:%Y-%m-%d %H:%M}] [KIRMIZI] {mesaj}")
+    try:
+        telegram.notify_admins(mesaj, prefix="🔴")
+    except Exception as e:
+        print(f"  [uretim] admin bildirimi gonderilemedi: {type(e).__name__}")
+    return True
+
+
 def main(market="bist"):
     is_us = market in ("us", "abd")
     etiket = "ABD brifingi" if is_us else "Sabah brifingi"
@@ -1323,6 +1360,10 @@ def main(market="bist"):
     print(f"[{now:%Y-%m-%d %H:%M}] Telegram kisisel gonderim ({etiket}): {len(ok)}/{len(sonuc)} alici "
           f"({ozet['uretilen']}/{ozet['toplam']} hisse karar uretildi{atlanan_not}). "
           f"Sonuc: {sonuc}")
+
+    # Brifing gitti ama yeterli karar uretildi mi? Gonderim basarili olsa bile
+    # eksik uretim sessiz kalmasin.
+    _uretim_garantisi(ozet, market, now)
     return 0 if ok else 1
 
 

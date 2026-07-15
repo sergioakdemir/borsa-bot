@@ -135,6 +135,25 @@ def _kontrol_kredi():
     return None
 
 
+def _kontrol_kredi_azaliyor():
+    """ERKEN UYARI: kredi BITMEDEN once haber ver (15 Tem 2026'da kredi bitince
+    gun boyu karar uretilemedi). Anthropic'te bakiye sorgulama ucu olmadigi icin
+    kalan, elle kaydedilen yuklemeden gercek harcama dusulerek TAHMIN edilir
+    (bkz. src/ops/kredi_takip). Yukleme kaydi yoksa alarm URETILMEZ — bunun
+    yerine gunluk nabizda 'takip kurulu degil' satiri gorunur (her gun okunan
+    bir mesajda tek satir; ayri bir alarm gereksiz gurultu olurdu)."""
+    try:
+        from src.ops import kredi_takip
+        d = kredi_takip.durum()
+    except Exception:
+        return None
+    if not d.get("uyari"):
+        return None
+    return ("ai_kredi_azaliyor",
+            f"⚠️ API kredisi azalıyor: ~{d['gun_kaldi']:.0f} iş günü kaldı "
+            f"(~${d['kalan']:.2f} bakiye, günlük ~${d['gunluk_ort']:.2f}), yükle.")
+
+
 KILL_PATLAMA_ESIGI = 10    # gun icinde bu kadardan FAZLA KILL_SWITCH -> patlama
 
 
@@ -332,9 +351,11 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     (borsa saatleri); 'all' -> hepsi (elle/test calistirma)."""
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
-    core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_ai_hata,
-            _kontrol_kill_switch, _kontrol_kap, _kontrol_heartbeat,
-            _kontrol_risk_det, _kontrol_mcp)
+    # Not: _kontrol_kredi_azaliyor KRITIK_ANAHTARLAR'a GIRMEZ — erken uyaridir,
+    # gunde 1 kez yeter (kritikler 2 saatte bir tekrarlar; bu henuz ariza degil).
+    core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_kredi_azaliyor,
+            _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
+            _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
         kontroller = core

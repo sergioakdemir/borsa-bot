@@ -153,6 +153,14 @@
                                 : '🟢 Çalışıyor', kr.bitti?'kotu':'ok');
     h+=satir('Bugünkü AI hatası', kn.ai_hata, kn.ai_hata>5?'kotu':'ok');
     if(kr.bitti && kr.sebep) h+=satir('Sebep', E(kr.sebep), 'sonuk');
+    // Bakiye TAHMINI: Anthropic'te bakiye sorgulama ucu yok -> elle kaydedilen
+    // yukleme eksi log'lardan okunan gercek harcama.
+    const th=kr.tahmin||{};
+    let bs='ok';
+    if(!th.kayitli) bs='sonuk';
+    else if(th.uyari) bs='kotu';
+    else if(th.gun_kaldi!=null && th.gun_kaldi<=14) bs='uyari';
+    h+=satir('Kalan (tahmini)', E(kr.tahmin_txt||'—'), bs);
     h+='</div>';
 
     // Karar uretimi

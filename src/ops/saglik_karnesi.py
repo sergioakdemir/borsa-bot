@@ -141,7 +141,16 @@ def kredi_durumu(tarih=None) -> dict:
         bayrak = db.get_setting(f"ai_kredi_bitti:{tarih}")
     except Exception:
         bayrak = None
-    return {"bitti": bool(bayrak), "sebep": str(bayrak or "")[:160]}
+    # Bakiye TAHMINI (Anthropic'te bakiye ucu yok — elle kaydedilen yukleme
+    # eksi gercek harcama). Yukleme kaydi yoksa kayitli=False doner.
+    try:
+        from src.ops import kredi_takip
+        tahmin = kredi_takip.durum()
+        tahmin_txt = kredi_takip.ozet_satir(tahmin)
+    except Exception:
+        tahmin, tahmin_txt = {"kayitli": False}, "hesaplanamadi"
+    return {"bitti": bool(bayrak), "sebep": str(bayrak or "")[:160],
+            "tahmin": tahmin, "tahmin_txt": tahmin_txt}
 
 
 def motor_durumu() -> dict:
@@ -186,7 +195,16 @@ def nabiz(m: dict) -> str:
     """GUNLUK NABIZ (kalp atisi): tek satir ozet. Sorun olmasa BILE her aksam
     gonderilir — gelmezse cron/sistem cokmus demektir. Kredi bittiyse basa 🔴."""
     kredi = m.get("kredi") or {}
-    kredi_txt = "BİTTİ" if kredi.get("bitti") else "var"
+    if kredi.get("bitti"):
+        kredi_txt = "BİTTİ"
+    else:
+        t = kredi.get("tahmin") or {}
+        if not t.get("kayitli"):
+            kredi_txt = "var (takip kurulu değil)"
+        elif t.get("gun_kaldi") is None:
+            kredi_txt = f"var (~${t['kalan']:.0f})"
+        else:
+            kredi_txt = f"var (~{t['gun_kaldi']:.0f} iş günü)"
     kb = m.get("kap_basari") or {}
     kap_txt = f"%{kb['oran']:.0f}" if kb.get("oran") is not None else "veri yok"
     motor_txt = "ok" if m.get("motorlar_ok") else "SORUN"
