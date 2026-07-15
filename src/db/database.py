@@ -67,6 +67,23 @@ CREATE TABLE IF NOT EXISTS sifre_sifirlama (
     ip             TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_sifirlama_kullanici ON sifre_sifirlama(kullanici_id);
+
+-- EQ GOLGE (shadow mode, 15 Tem 2026): EQ 55-60 arasinda BEKLE'ye cekilen AL
+-- adaylari. CANLI KARARA ETKI ETMEZ — yalnizca kayit. 2 hafta sonra "esik 55
+-- olsaydi ne olurdu" sorusunu veriyle cevaplar (bkz. src/ops/eq_golge.py).
+CREATE TABLE IF NOT EXISTS eq_golge (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker        TEXT NOT NULL,
+    tarih         TEXT NOT NULL,
+    eq_skor       INTEGER,
+    fiyat         REAL,
+    market        TEXT,
+    strateji      TEXT,
+    degisim_yuzde REAL,
+    piyasa_farki  REAL,
+    sonuc         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_eq_golge_tarih ON eq_golge(tarih);
 CREATE TABLE IF NOT EXISTS portfoy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
@@ -1710,6 +1727,41 @@ if __name__ == "__main__":
 
 
 # ---- genel ayarlar (key-value) ----
+# ---- EQ golge (shadow mode) ----
+def eq_golge_kaydet(ticker, tarih, eq_skor, fiyat, market="bist",
+                    strateji=None) -> int:
+    """EQ 55-60 bandinda BEKLE'ye cekilen bir AL adayini golge olarak kaydeder.
+    Canli karara ETKISI YOKTUR; yalnizca 'esik 55 olsaydi' analizi icin veri."""
+    init_db()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT INTO eq_golge (ticker, tarih, eq_skor, fiyat, market, strateji)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (str(ticker).upper().replace(".IS", ""), tarih, eq_skor, fiyat,
+             (market or "bist").lower(), strateji))
+        return cur.lastrowid
+
+
+def eq_golge_listele(degerlendirilmis=None, limit: int = 500) -> list[dict]:
+    """degerlendirilmis=False -> sonucu henuz dolmamis golgeler."""
+    init_db()
+    with get_conn() as c:
+        q = "SELECT * FROM eq_golge"
+        if degerlendirilmis is True:
+            q += " WHERE sonuc IS NOT NULL AND sonuc<>''"
+        elif degerlendirilmis is False:
+            q += " WHERE sonuc IS NULL OR sonuc=''"
+        q += " ORDER BY tarih DESC, id DESC LIMIT ?"
+        return [dict(r) for r in c.execute(q, (limit,))]
+
+
+def eq_golge_sonuc_yaz(golge_id: int, degisim_yuzde, piyasa_farki, sonuc) -> None:
+    init_db()
+    with get_conn() as c:
+        c.execute("UPDATE eq_golge SET degisim_yuzde=?, piyasa_farki=?, sonuc=? "
+                  "WHERE id=?", (degisim_yuzde, piyasa_farki, sonuc, golge_id))
+
+
 _AYAR_SCHEMA = "CREATE TABLE IF NOT EXISTS ayar (anahtar TEXT PRIMARY KEY, deger TEXT)"
 
 

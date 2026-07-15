@@ -154,6 +154,20 @@ def _kontrol_kredi_azaliyor():
             f"(~${d['kalan']:.2f} bakiye, günlük ~${d['gunluk_ort']:.2f}), yükle.")
 
 
+def _kontrol_test_donemi():
+    """v2.1 test donemi hedefine ulasildi mi (15 kapanis VEYA 10 kesintisiz is
+    gunu)? Ulasildiysa BIR KEZ bildirir — kural dondurma degerlendirmesi zamani.
+    Bu bir ariza degil, olumlu bir esik; kritik alarm sayilmaz."""
+    try:
+        from src.ops import test_donemi
+        sonuc = test_donemi.alarm_gerekli_mi()
+        if sonuc:
+            test_donemi.alarm_bildirildi()
+        return sonuc
+    except Exception:
+        return None
+
+
 KILL_PATLAMA_ESIGI = 10    # gun icinde bu kadardan FAZLA KILL_SWITCH -> patlama
 
 
@@ -355,7 +369,8 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     # gunde 1 kez yeter (kritikler 2 saatte bir tekrarlar; bu henuz ariza degil).
     core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_kredi_azaliyor,
             _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
-            _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
+            _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp,
+            _kontrol_test_donemi)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
         kontroller = core

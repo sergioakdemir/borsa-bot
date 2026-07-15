@@ -316,8 +316,17 @@ def topla(tarih=None) -> dict:
     else:
         durum = "✅ SAĞLIKLI"
 
+    # v2.1 test donemi sayaci (15 kapanis VEYA 10 kesintisiz is gunu)
+    try:
+        from src.ops import test_donemi as _td
+        test_d = _td.durum()
+        test_txt = _td.ozet_satir(test_d)
+    except Exception:
+        test_d, test_txt = None, "hesaplanamadi"
+
     return {
         "tarih": tarih, "bist": bist, "us": us, "kill": kill, "atlanan": atlanan,
+        "test_donemi": test_d, "test_donemi_txt": test_txt,
         "taranan": taranan, "gun_sinif": gk["gun_sinif"], "gun_sebep": gk["sebep"],
         "kap_canli": kap_canli, "kap_n": kap_n, "kap_basari": kap_basari,
         "cache_yas": cache_yas, "mcp": mcp,
@@ -357,6 +366,7 @@ def _mesaj(m: dict) -> str:
         "",
         f"📋 SİSTEM KARNESİ — {m['tarih']}",
         f"Karar uretimi: BIST {m['bist']}/{BIST_BEKLENEN} | ABD {m['us']}/{US_BEKLENEN}",
+        f"Test donemi: {m.get('test_donemi_txt', '-')}",
         f"Veri hatasiyla atlanan: {m['atlanan']} hisse",
         f"Gun kalitesi: {m['gun_sinif']} ({m['gun_sebep']})",
         "─────",

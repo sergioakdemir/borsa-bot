@@ -179,7 +179,14 @@ def _atlama_alarmi(results, tickers, verbose: bool = True) -> dict:
 # 2026 buyuk paketiyle (deterministik stop/hedef, cift risk vetosu, BEKLE pozisyon
 # yonetimi, sektor tavani) 'v2'ye gecildi. Migration'dan once yazilan tum kayitlar 'v1'.
 # Performans karsilastirmasi (brifing/karne) bu etikete gore v1/v2 ayrimi yapar.
-STRATEGY_VERSION = "v2"
+#
+# 15 Tem 2026 -> 'v2.1': momentum kor noktasi kapatildi (momentum_profili girdisi +
+# "zayif bilanco TEK BASINA UZAK_DUR sebebi degildir" prompt kurali). Karar esikleri,
+# filtreler ve vetolar DEGISMEDI — bu yuzden ana surum v2 kaldi, alt surum .1 oldu.
+# Test donemi bu etiketle olculur (bkz. src/ops/test_donemi.py).
+# NOT: paper_trades tablosunda strategy_version kolonu YOK; surum karsilastirmasi
+# decisions + trades uzerinden yapilir.
+STRATEGY_VERSION = "v2.1"
 HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
 # Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
 _BATCH_FIYAT_INPUT = 1.50 / 1_000_000
@@ -350,6 +357,26 @@ SYSTEM = (
     "ise bunu acikca belirt ('bilanco verisi eksik, finansal saglik degerlendirilemedi') "
     "ve UYDURMA; kararini teknik+habere agirlik vererek ver. Sayilari girdiden birebir "
     "al, jargon kullanma.\n\n"
+    # 15 Tem 2026 — MOMENTUM KOR NOKTASI: momentum verisi payload'da hep vardi ve AI
+    # onu OKUYORDU, ama ustteki "~%40 temel agirlik + zayif bilanco AL'i frenler"
+    # kurali onu sistematik olarak eziyordu. KONTR 10 gunde +%107 yukselirken 5 gun
+    # UZAK_DUR (puan 1-3) yedi; gerekcesinde "son 5 gunde sert yukselmis OLSA DA ...
+    # sirket zarar ediyor" yazdi. Asagidaki blok bu ezmeyi kaldirir: temel zayifligi
+    # RISKI yukseltir ama tek basina UZAK_DUR'a cevirmez. Kurumsal/yonetisim
+    # sorunlari gecerli UZAK_DUR sebebi olarak KALIR (KONTR'da SPK yasagi vardi).
+    "MOMENTUM VE SPEKULATIF RALLY: Veride 'momentum_profili' varsa (son 5/10 gunluk "
+    "fiyat degisimi + hacim kati) bunu kararinda GIRDI olarak kullan. "
+    "'guclu_momentum': true ise fiyat VE hacim birlikte artiyor demektir; piyasa o "
+    "hisseye para sokuyor, bunu gormezden GELME. KRITIK KURAL: zayif bilanco TEK "
+    "BASINA (negatif ROE, zarar, dusuk marj, yuksek borc) UZAK_DUR icin YETERLI SEBEP "
+    "DEGILDIR. Guclu momentum + hacim artisi varsa bu bir spekulatif rally olabilir; "
+    "spekulatif rally gercek ve gecerli bir piyasa olgusudur. Boyle bir durumda temel "
+    "zayifligi RISK PUANINI yukseltir (risk 7-9), eminligi dusurur ve kademeli giris "
+    "gerektirir — ama karari otomatik UZAK_DUR'a CEVIRMEZ. Karari momentum, hacim, "
+    "temel ve kurumsal risklerin BUTUNUNE dayandir; 'temel kotu' diyip momentumu tek "
+    "cumleyle gecistirme. ISTISNA: kurumsal/yonetisim sorunlari (SPK islem yasagi, "
+    "yakin izleme pazari, itfa temerrudu, olumsuz denetim gorusu, yonetici kacisi) "
+    "AYRI ve gecerli bir UZAK_DUR sebebidir — bunlari momentum EZMEZ.\n\n"
     "HACIM ANOMALISI: Veride 'hacim_anomalisi' varsa degerlendir. Bugunku hacim son 5 "
     "gun ortalamasinin kac kati (kat) ve seviye (NORMAL/YUKSEK/COK YUKSEK). Yuksek "
     "hacim, fiyat hareketine veya bir habere guclu katilim/ilgi demektir; yonu (yukari/"
@@ -750,9 +777,29 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
     ref5 = closes[-6] if len(closes) >= 6 else closes[0]    # son 5 islem gunu
     son5g = round((last - ref5) / ref5 * 100, 2) if ref5 else None
 
+    # 10 islem gunu momentumu (15 Tem 2026): 5g cok kisa, 22g (donem) cok uzun;
+    # spekulatif rally'ler bu araligda gorunur hale geliyor (KONTR 10g +%107
+    # yukselirken 5 gun UZAK_DUR yedi).
+    ref10 = closes[-11] if len(closes) >= 11 else closes[0]
+    son10g = round((last - ref10) / ref10 * 100, 2) if ref10 else None
+
     vwin = vols[-20:]
     avg_vol = sum(vwin) / len(vwin) if vwin else 0
     hacim_vs = round((vols[-1] / avg_vol - 1) * 100, 2) if avg_vol else None
+
+    # Hacim artisi KAT olarak: son 5 gun ort / ONCEKI 20 gun ort (ORTUSMEZ).
+    # 20 gunluk ortalamayi payda yapmak YANLIS olurdu: payda hareketin kendi
+    # yuksek hacimli gunlerini icerip orani bastirir (KONTR 10g +%107 iken
+    # son5/ort20 = 0.81 cikiyordu -> "hacim artmamis" yaniltmasi). Taban,
+    # hareketin ONCESI olmali. UYARI: yapisal kirilmalarda (yakin izleme
+    # pazari, sermaye artirimi) taban ile guncel donem kiyaslanamaz hale
+    # gelir; oran ilgi kaybi degil pazar yapisi degisimi olcer. Bu yuzden
+    # sadece bir GIRDI'dir, kural degil.
+    vol5 = vols[-5:]
+    vol_taban = vols[-25:-5]
+    avg_vol5 = sum(vol5) / len(vol5) if vol5 else 0
+    avg_taban = sum(vol_taban) / len(vol_taban) if vol_taban else 0
+    hacim_kat = round(avg_vol5 / avg_taban, 2) if avg_taban else None
 
     # closes yukarida temizlendi; yine de bolme sonucu NaN/inf uretmesin diye
     # filtrele. Yetersiz veri kalirsa vol_std=0.0 ile DEVAM et, hisseyi ATLAMA.
@@ -772,6 +819,7 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "gunluk_degisim_%": gunluk,
         "donem_degisim_%": donem,
         "son5g_degisim_%": son5g,
+        "son10g_degisim_%": son10g,
         "ma10": ma10,
         "ma50": ma50,
         "hafta52_yuksek": hafta52_yuksek,
@@ -780,6 +828,7 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "son_hacim": int(vols[-1]),
         "ortalama_hacim": int(avg_vol),
         "hacim_vs_ort_%": hacim_vs,
+        "hacim_kat": hacim_kat,
         "hacim_sinyali": _volume_signal(hacim_vs),
         "volatilite_%": vol_std,
         "trend": _trend(donem),
@@ -791,6 +840,52 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
                    "volume": vols[i]}
                   for i in range(max(0, len(closes) - 60), len(closes))],
         "bayat": bayat,
+    }
+
+
+# --- Momentum profili (15 Tem 2026) ---------------------------------------
+# NEDEN: momentum verisi zaten payload['piyasa'] icindeydi ve AI onu OKUYORDU
+# (KONTR gerekcesi: "son 5 gunde sert yukselmis olsa da ..."), ama ~40 alanlik
+# sozlugun icinde gomuluydu ve 10 gunluk pencere hic yoktu. Burasi ayni veriyi
+# AI'a BELIRGIN ve okunabilir tek blok olarak sunar. Karar KURALI degildir —
+# yalnizca girdi; esikleri hicbir filtreyi tetiklemez.
+MOMENTUM_GUCLU_10G = 15.0   # 10 gunde >=%15 -> guclu momentum adayi
+MOMENTUM_GUCLU_5G = 10.0    # veya 5 gunde >=%10
+# 15 Tem 2026 gozlemi (9 hisselik ornek): gercek BIST rally'lerinde hacim_kat
+# 1.05-1.41 araligindaydi; 1.5 esigi HICBIR hisseyi tetiklemiyordu (olu kural).
+# 1.2 = tabanin %20 uzeri. Kucuk ornekten kalibre edildi, ayarlanabilir.
+HACIM_KAT_ESIGI = 1.2
+
+# EQ (giris kalitesi) esikleri. EQ_ESIK canli karar esigidir ve 15 Tem 2026'da
+# DEGISTIRILMEDI (60). EQ_GOLGE_ALT yalnizca golge (shadow) kaydi icindir:
+# 55 <= EQ < 60 "kil payi elenen" AL adaylari kaydedilir, karar degismez; 2 hafta
+# sonra "esik 55 olsaydi ne olurdu" veriyle cevaplanir (bkz. src/ops/eq_golge.py).
+EQ_ESIK = 60
+EQ_GOLGE_ALT = 55
+
+
+def momentum_profili(sig: dict) -> dict:
+    """AI baglamina konan momentum ozeti. guclu_momentum=True yalnizca fiyat VE
+    hacim birlikte artiyorsa (hacimsiz yukselis spekulatif rally sayilmaz)."""
+    s5 = sig.get("son5g_degisim_%")
+    s10 = sig.get("son10g_degisim_%")
+    kat = sig.get("hacim_kat")
+    fiyat_guclu = ((s10 is not None and s10 >= MOMENTUM_GUCLU_10G)
+                   or (s5 is not None and s5 >= MOMENTUM_GUCLU_5G))
+    hacim_guclu = kat is not None and kat >= HACIM_KAT_ESIGI
+    parcalar = []
+    if s5 is not None:
+        parcalar.append(f"son 5 günde %{s5:+.1f}")
+    if s10 is not None:
+        parcalar.append(f"son 10 günde %{s10:+.1f}")
+    if kat is not None:
+        parcalar.append(f"hacim son 5 günde 20 günlük ortalamanın {kat:g} katı")
+    return {
+        "son5g_%": s5,
+        "son10g_%": s10,
+        "hacim_kat": kat,
+        "guclu_momentum": bool(fiyat_guclu and hacim_guclu),
+        "ozet": "; ".join(parcalar) if parcalar else "momentum verisi yok",
     }
 
 
@@ -1292,6 +1387,9 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
     payload = {
         "ticker": ticker,
         "piyasa": sig,
+        # Momentum: sig icinde de var; burada AI'nin gozden kacirmamasi icin
+        # ayri/okunabilir blok olarak tekrarlanir (bkz. momentum_profili).
+        "momentum_profili": momentum_profili(sig),
         "kap_bildirimleri_30g": news["bildirimler"],
         "haberler_son": news["haberler"],
     }
@@ -1891,7 +1989,27 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
                 r, "Giriş kalitesi hesaplanamadı — güvenli tarafta BEKLE",
                 verbose=verbose)
             continue
-        if eq_skor < 60:
+        if eq_skor < EQ_ESIK:
+            # GOLGE KAYDI (shadow mode, 15 Tem 2026): 55 <= EQ < 60 bandi "kil
+            # payi elenenler". Karari DEGISTIRMEZ — asagidaki _al_to_bekle yine
+            # calisir. 2 hafta sonra bu golgelerin gercekten yukselip yukselmedigi
+            # olculur; yukseldiyse esik 60 fazla yuksek demektir (bkz.
+            # src/ops/eq_golge.py). Kayit hatasi canli karari BOZMASIN diye
+            # try/except ile sarili.
+            if EQ_GOLGE_ALT <= eq_skor < EQ_ESIK:
+                try:
+                    from src.db import database as db
+                    db.eq_golge_kaydet(
+                        r.get("ticker"), datetime.now(_TZ).date().isoformat(),
+                        eq_skor, (r.get("kullanilan_on_sinyal") or {}).get("son_kapanis"),
+                        market=r.get("market") or "bist",
+                        strateji=STRATEGY_VERSION)
+                    if verbose:
+                        print(f"  [golge] {r.get('ticker')}: EQ {eq_skor} "
+                              f"(55-60 bandi) kaydedildi — karar degismedi")
+                except Exception as e:
+                    print(f"  [golge] {r.get('ticker')} kaydedilemedi: "
+                          f"{type(e).__name__}")
             _al_to_bekle(
                 r, "Giriş kalitesi düşük (EQ < 60), daha iyi giriş noktası bekle",
                 verbose=verbose)
