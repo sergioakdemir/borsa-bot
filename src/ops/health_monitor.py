@@ -135,6 +135,28 @@ def _kontrol_kredi():
     return None
 
 
+KILL_PATLAMA_ESIGI = 10    # gun icinde bu kadardan FAZLA KILL_SWITCH -> patlama
+
+
+def _kontrol_kill_switch():
+    """KILL_SWITCH patlamasi: gun icinde cok sayida hisse veri freniyle atlandiysa
+    fiyat kaynagi cokmus demektir (9 Tem 2026: 10 KILL/gun). Tek tuk KILL normaldir
+    (orn. olu sembol GMSTR.F) -> esik 10. KRITIK: periyodik tekrar eder."""
+    try:
+        from src.db import database as db
+        bugun = datetime.now(_TZ).date().isoformat()
+        with db.get_conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM decisions WHERE tarih LIKE ? "
+                          "AND karar='KILL_SWITCH'", (f"{bugun}%",)).fetchone()[0]
+    except Exception:
+        return None
+    if n > KILL_PATLAMA_ESIGI:
+        return ("kill_switch_patlamasi",
+                f"🔴 KILL_SWITCH patlaması: bugün {n} hisse veri freniyle atlandı "
+                f"(eşik {KILL_PATLAMA_ESIGI}). Fiyat kaynağı çökmüş olabilir.")
+    return None
+
+
 def _kontrol_ai_hata():
     """Bugunku AI cagri hata sayaci (db.ai_hata_sayisi) esigi asti mi? AI cagri
     exception'larinda artan gunluk sayaci okur; 5'ten fazlaysa veri/kredi sorunu
@@ -243,7 +265,8 @@ def _kontrol_mcp():
 # gun boyu suren arizanin tekrari bastirildi -> sorun gozden kacti).
 # Not: tamamen filtresiz birakmak 30 dk'lik cron ile gunde 48 mesaj demekti;
 # periyodik tekrar hem "yutulmasin" hem "spam olmasin" dengesini kurar.
-KRITIK_ANAHTARLAR = {"ai_kredi_bitti", "ai_hata_cok"}
+KRITIK_ANAHTARLAR = {"ai_kredi_bitti", "ai_hata_cok",
+                     "kill_switch_patlamasi", "atlama_yuksek"}
 KRITIK_TEKRAR_SAAT = 2
 
 
@@ -310,7 +333,8 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     now = datetime.now(_TZ)
     bugun = now.date().isoformat()
     core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_ai_hata,
-            _kontrol_kap, _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp)
+            _kontrol_kill_switch, _kontrol_kap, _kontrol_heartbeat,
+            _kontrol_risk_det, _kontrol_mcp)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
         kontroller = core

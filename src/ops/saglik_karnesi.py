@@ -130,6 +130,80 @@ def _olu_sembol_sayisi():
     return sum(1 for t, n in cc.items() if n >= 3)
 
 
+def kredi_durumu(tarih=None) -> dict:
+    """AI kredisi var mi bitti mi? commentary.kredi_freni_koy'un koydugu gunluk
+    bayragi ('ai_kredi_bitti:<gun>') okur — canli API cagrisi YAPMAZ (panel 30 sn'de
+    bir yenileniyor; her yenilemede cagri para/kota harcardi).
+    doldu=True -> kredi BITTI."""
+    from src.db import database as db
+    tarih = tarih or _bugun()
+    try:
+        bayrak = db.get_setting(f"ai_kredi_bitti:{tarih}")
+    except Exception:
+        bayrak = None
+    return {"bitti": bool(bayrak), "sebep": str(bayrak or "")[:160]}
+
+
+def motor_durumu() -> dict:
+    """Motor fonksiyonlarinin son tetiklenme zamani + kod yolu bagli mi.
+
+    'Son tetiklenme' izlenebilir olanlar decisions'tan okunur (veto: risk>=9 karar,
+    kill: KILL_SWITCH karari). EQ/stop/bilanco freni icin ayri sayac YOK -> kod
+    yolu grep ile dogrulanir (haftalik_tarama.py ile ayni yaklasim); bu yuzden
+    'son tetiklenme' yerine 'BAGLI/KOPUK' gosterilir.
+    """
+    from src.db import database as db
+    out = {}
+    try:
+        with db.get_conn() as c:
+            r = c.execute("SELECT MAX(tarih) FROM decisions WHERE risk>=9").fetchone()
+            out["cift_risk_vetosu"] = {"tip": "sayac", "son": r[0] if r else None}
+            r = c.execute("SELECT MAX(tarih) FROM decisions "
+                          "WHERE karar='KILL_SWITCH'").fetchone()
+            out["kill_switch"] = {"tip": "sayac", "son": r[0] if r else None}
+    except Exception:
+        out["cift_risk_vetosu"] = {"tip": "sayac", "son": None}
+        out["kill_switch"] = {"tip": "sayac", "son": None}
+    # Kod yolu kontrolu: ilgili modul/filtre commentary'de hala cagriliyor mu?
+    try:
+        kaynak = (ROOT / "src" / "ai" / "commentary.py").read_text(encoding="utf-8")
+    except OSError:
+        kaynak = ""
+    for ad, imza in (("eq_filtresi", "entry_quality"),
+                     ("stop_hedef_motoru", "stop_hedef"),
+                     ("bilanco_freni", "BILANCO FRENI")):
+        out[ad] = {"tip": "kod", "bagli": (imza in kaynak) if kaynak else None}
+    return out
+
+
+def _motorlar_ok(motor: dict) -> bool:
+    """Kod yolu kontrolu yapilan motorlarin hepsi bagli mi? (nabiz satiri icin)"""
+    return all(v.get("bagli") is not False
+               for v in motor.values() if v.get("tip") == "kod")
+
+
+def nabiz(m: dict) -> str:
+    """GUNLUK NABIZ (kalp atisi): tek satir ozet. Sorun olmasa BILE her aksam
+    gonderilir — gelmezse cron/sistem cokmus demektir. Kredi bittiyse basa 🔴."""
+    kredi = m.get("kredi") or {}
+    kredi_txt = "BİTTİ" if kredi.get("bitti") else "var"
+    kb = m.get("kap_basari") or {}
+    kap_txt = f"%{kb['oran']:.0f}" if kb.get("oran") is not None else "veri yok"
+    motor_txt = "ok" if m.get("motorlar_ok") else "SORUN"
+    karar_n = (m.get("bist") or 0) + (m.get("us") or 0)
+    # Rozet: kredi bitti her seyi ezer (karar uretimi tamamen durur).
+    if kredi.get("bitti"):
+        rozet = "🔴"
+    elif m.get("durum", "").startswith("🔴"):
+        rozet = "🔴"
+    elif m.get("durum", "").startswith("⚠️"):
+        rozet = "⚠️"
+    else:
+        rozet = "✅"
+    return (f"{rozet} {m['tarih']}: {karar_n} karar üretildi | kredi: {kredi_txt} | "
+            f"KAP: {kap_txt} | AI hata: {m.get('ai_hata', 0)} | motorlar: {motor_txt}")
+
+
 def topla(tarih=None) -> dict:
     """Gunun tum saglik metriklerini toplar."""
     from src.db import database as db
@@ -155,10 +229,19 @@ def topla(tarih=None) -> dict:
     except Exception:
         pass
     olu = _olu_sembol_sayisi()
+    kredi = kredi_durumu(tarih)
+    motor = motor_durumu()
+    motorlar_ok = _motorlar_ok(motor)
     hafta_ici = datetime.now(_TZ).weekday() < 5   # brifing yalniz hafta ici (cron 1-5)
 
     # --- KIRMIZI kosullar ---
     kirmizi = []
+    # Kredi bitti -> karar uretimi tamamen durur; en agir kirmizi.
+    if kredi["bitti"]:
+        kirmizi.append("AI kredisi BITTI (karar uretimi durdu)")
+    if not motorlar_ok:
+        kopuk = [a for a, v in motor.items() if v.get("bagli") is False]
+        kirmizi.append(f"motor kod yolu KOPUK: {', '.join(kopuk)}")
     if taranan and atlanan / taranan > 0.10:
         kirmizi.append(f"watchlist'in %{atlanan/taranan*100:.0f}'i atlandi (>%10)")
     # BIST karar sayisi: yalniz brifing BEKLENEN gunlerde (hafta ici) alarm ver;
@@ -210,6 +293,7 @@ def topla(tarih=None) -> dict:
         "cache_yas": cache_yas, "mcp": mcp,
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
+        "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
     }
 
 
@@ -228,6 +312,10 @@ def _mesaj(m: dict) -> str:
         kap_basari_txt = "veri yok (bugun cagri olmadi)"
     g = m["gece"]
     satirlar = [
+        # GUNLUK NABIZ: en uste tek satir ozet. Karne her aksam kosulsuz gider;
+        # bu satir gelmezse cron/sistem cokmus demektir (kalp atisi).
+        nabiz(m),
+        "",
         f"📋 SİSTEM KARNESİ — {m['tarih']}",
         f"Karar uretimi: BIST {m['bist']}/{BIST_BEKLENEN} | ABD {m['us']}/{US_BEKLENEN}",
         f"Veri hatasiyla atlanan: {m['atlanan']} hisse",

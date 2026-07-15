@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS device_tokens (
     son_kullanim  TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_devtok_kullanici ON device_tokens(kullanici_id);
+-- Sifre sifirlama token'lari (15 Tem 2026). Token DUZ METIN saklanmaz: yalniz
+-- sha256 ozeti tutulur; ham token sadece kullaniciya giden baglantida bulunur.
+-- Tek kullanimlik (kullanildi_ts dolunca gecersiz) + sureli (son_gecerlilik).
+CREATE TABLE IF NOT EXISTS sifre_sifirlama (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kullanici_id   INTEGER NOT NULL REFERENCES kullanici(id),
+    token_hash     TEXT NOT NULL UNIQUE,
+    olusturma      TEXT NOT NULL,
+    son_gecerlilik TEXT NOT NULL,
+    kullanildi_ts  TEXT,
+    tetikleyen     TEXT,
+    ip             TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_sifirlama_kullanici ON sifre_sifirlama(kullanici_id);
 CREATE TABLE IF NOT EXISTS portfoy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),
@@ -809,6 +823,90 @@ def set_password_hash(ad, sifre_hash) -> bool:
         cur = c.execute("UPDATE kullanici SET sifre_hash=? WHERE LOWER(ad)=LOWER(?)",
                         (sifre_hash, str(ad)))
         return cur.rowcount > 0
+
+
+# ---- sifre sifirlama (15 Tem 2026) ----------------------------------------
+# Guvenlik kurallari:
+#  * Ham token DB'ye YAZILMAZ — yalniz sha256 ozeti. DB sizsa bile token
+#    yeniden uretilemez.
+#  * Tek kullanimlik: kullanilinca kullanildi_ts dolar, tekrar gecmez.
+#  * Sureli: son_gecerlilik gecince gecersiz.
+#  * Yeni token uretmek ESKI SIFREYI BOZMAZ — baglanti kullanilmazsa kullanici
+#    eski sifresiyle girmeye devam eder (kilitlenme yok).
+
+SIFIRLAMA_DAKIKA = 30              # token gecerlilik suresi
+
+
+def _token_ozet(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def sifirlama_token_olustur(kullanici_id, tetikleyen=None, ip=None,
+                            dakika=SIFIRLAMA_DAKIKA) -> str:
+    """Kriptografik rastgele token uretir, OZETINI kaydeder, HAM token'i doner.
+    Ham token yalnizca burada gorulur -> cagiran onu kullaniciya iletir."""
+    import secrets
+    from datetime import timedelta
+    init_db()
+    ham = secrets.token_urlsafe(32)
+    simdi = datetime.now(_TZ)
+    with get_conn() as c:
+        # Ayni kullanicinin ONCEKI kullanilmamis token'larini gecersiz kil: her an
+        # en fazla 1 canli baglanti olsun (birden fazla link kafa karistirir ve
+        # her kullanilmamis token canli bir kimlik bilgisidir).
+        c.execute("UPDATE sifre_sifirlama SET kullanildi_ts=? "
+                  "WHERE kullanici_id=? AND kullanildi_ts IS NULL",
+                  (simdi.isoformat(timespec="seconds") + " (yeni token ile iptal)",
+                   int(kullanici_id)))
+        c.execute(
+            """INSERT INTO sifre_sifirlama
+                 (kullanici_id, token_hash, olusturma, son_gecerlilik, tetikleyen, ip)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (int(kullanici_id), _token_ozet(ham), simdi.isoformat(timespec="seconds"),
+             (simdi + timedelta(minutes=dakika)).isoformat(timespec="seconds"),
+             str(tetikleyen or "")[:60], str(ip or "")[:60]))
+    return ham
+
+
+def sifirlama_token_dogrula(token) -> dict | None:
+    """Token gecerliyse {'id','kullanici_id','ad'} doner; degilse None.
+    Gecersizlik sebepleri: yok / kullanilmis / suresi dolmus."""
+    if not token:
+        return None
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            """SELECT s.id, s.kullanici_id, s.son_gecerlilik, s.kullanildi_ts, k.ad
+                 FROM sifre_sifirlama s JOIN kullanici k ON k.id = s.kullanici_id
+                WHERE s.token_hash = ?""", (_token_ozet(token),)).fetchone()
+    if not r or r["kullanildi_ts"]:
+        return None
+    try:
+        if datetime.fromisoformat(r["son_gecerlilik"]) < datetime.now(_TZ):
+            return None                      # suresi dolmus
+    except ValueError:
+        return None
+    return {"id": r["id"], "kullanici_id": r["kullanici_id"], "ad": r["ad"]}
+
+
+def sifirlama_token_tuket(token_id) -> None:
+    """Token'i tek-kullanimlik olarak kapatir (kullanildi_ts damgasi)."""
+    with get_conn() as c:
+        c.execute("UPDATE sifre_sifirlama SET kullanildi_ts=? WHERE id=?",
+                  (datetime.now(_TZ).isoformat(timespec="seconds"), int(token_id)))
+
+
+def sifirlama_kayitlari(limit=20) -> list[dict]:
+    """Son sifirlama istekleri (denetim izi: kim, ne zaman, kim icin, kullanildi mi)."""
+    init_db()
+    with get_conn() as c:
+        rows = c.execute(
+            """SELECT s.olusturma, s.son_gecerlilik, s.kullanildi_ts, s.tetikleyen,
+                      s.ip, k.ad
+                 FROM sifre_sifirlama s JOIN kullanici k ON k.id = s.kullanici_id
+                ORDER BY s.id DESC LIMIT ?""", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def add_device_token(kullanici_id, token, cihaz=None) -> None:

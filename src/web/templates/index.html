@@ -821,6 +821,10 @@
   <label class="auth-remember"><input type="checkbox" id="auth-remember" checked> Beni hatırla (bu cihazda şifre sorma)</label>
   <div class="auth-err" id="auth-err"></div>
   <button class="up-btn auth-go" id="auth-go" onclick="authSubmit()">Giriş yap</button>
+  <!-- Sifremi unuttum: yalniz sifresi OLAN kullanicida gorunur (openAuth ayarlar).
+       Baglanti kullanicinin kayitli Telegram'ina gider; sifreyi kendisi belirler. -->
+  <button class="up-close" id="auth-forgot" style="display:none"
+          onclick="authForgot()">Şifremi unuttum</button>
   <button class="up-close" onclick="authBack()">← Kullanıcı değiştir</button>
 </div></div>
 
@@ -947,8 +951,24 @@ function openAuth(k,sifreVar){AUTH_MODE=sifreVar?"login":"set";const u=USERS[k];
   const p2=document.getElementById("auth-pass2");p2.value="";p2.style.display=sifreVar?"none":"block";
   document.getElementById("auth-err").textContent="";
   document.getElementById("auth-go").textContent=sifreVar?"Giriş yap":"Şifreyi kaydet ve gir";
+  // 'Sifremi unuttum' yalniz sifre BELIRLENMIS kullanicida anlamli (ilk giriste degil).
+  document.getElementById("auth-forgot").style.display=sifreVar?"block":"none";
   document.getElementById("authpick").classList.add("open");
   setTimeout(()=>p1.focus(),150)}
+
+// Sifremi unuttum: kayitli Telegram'a tek kullanimlik + 30 dk gecerli baglanti
+// gonderir. Yanit kullanicinin var/yok oldugunu SIZDIRMAZ (sunucu ayni mesaji doner).
+async function authForgot(){
+  const k=PENDING_USER; if(!k) return;
+  const err=document.getElementById("auth-err");
+  const b=document.getElementById("auth-forgot");
+  b.disabled=true; err.textContent="Gönderiliyor…";
+  try{
+    const d=await apost("/api/auth/forgot",{kullanici:k});
+    err.textContent=d&&d.mesaj ? d.mesaj : "İstek alındı.";
+  }catch(e){ err.textContent="Bağlantı hatası"; }
+  b.disabled=false;
+}
 
 function authBack(){document.getElementById("authpick").classList.remove("open");PENDING_USER=null;openUserPick()}
 

@@ -32,7 +32,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, g, jsonify, render_template, request
+from flask import (Flask, g, jsonify, redirect, render_template, request,
+                   session)
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
@@ -5119,7 +5120,8 @@ def api_auth_logout():
 # sarmalayicisi token'i otomatik ekler.
 # ---------------------------------------------------------------------------
 # /api/midas/* kendi X-Midas-Key auth'unu yapar -> cihaz-token guard'indan muaf.
-_AUTH_MUAF_PREFIX = ("/api/auth/", "/api/midas/")
+# /api/saglik/* kendi admin-session auth'unu yapar -> cihaz-token guard'indan muaf.
+_AUTH_MUAF_PREFIX = ("/api/auth/", "/api/midas/", "/api/saglik/")
 _AUTH_MUAF_TAM = {"/api/health", "/api/status"}
 
 
@@ -5548,6 +5550,293 @@ def api_midas_status():
         return jsonify({"ok": False, "hata": "yetkisiz"}), 401
     from src.data import midas_feed
     return jsonify({"ok": True, **midas_feed.status()})
+
+
+# ---------------------------------------------------------------------------
+# SAGLIK PANELI (/saglik) — SALT OKUNUR + sifre korumali (15 Tem 2026)
+# ---------------------------------------------------------------------------
+# Sifre: .env ADMIN_SAGLIK_SIFRE. Tanimli DEGILSE panel tamamen KAPALIDIR
+# (acik birakmaktansa kapali olsun; uygulama 0.0.0.0:8080'de herkese acik).
+# Oturum: Flask imzali cookie (secret_key sirlardan turetilir -> restart'ta
+# oturum dusmez). Veri mevcut tablolardan/kaynaklardan okunur; yeni toplama yok.
+# ---------------------------------------------------------------------------
+
+_TZ = ZoneInfo("Europe/Istanbul")
+
+
+def _admin_sifre() -> str:
+    return (os.environ.get("ADMIN_SAGLIK_SIFRE") or "").strip()
+
+
+def _secret_key() -> str:
+    """Oturum imza anahtari. FLASK_SECRET_KEY varsa o; yoksa mevcut sirlardan
+    TURETILIR (restart'ta degismez -> oturumlar hayatta kalir). Hicbiri yoksa
+    rastgele (o zaman zaten panel de kapali olur)."""
+    acik = os.environ.get("FLASK_SECRET_KEY")
+    if acik:
+        return acik
+    tohum = (_admin_sifre() + (os.environ.get("TELEGRAM_BOT_TOKEN") or "")).strip()
+    if tohum:
+        import hashlib
+        return hashlib.sha256(("bb-saglik-v1:" + tohum).encode("utf-8")).hexdigest()
+    return uuid.uuid4().hex
+
+
+app.secret_key = _secret_key()
+
+
+def _saglik_oturum_acik() -> bool:
+    return bool(session.get("saglik_admin"))
+
+
+def _saglik_gate():
+    """Panel acik mi + oturum var mi? Sorun varsa (hata_json, kod) doner."""
+    if not _admin_sifre():
+        return ({"ok": False, "hata": "Panel kapalı: ADMIN_SAGLIK_SIFRE tanımlı değil."}, 503)
+    if not _saglik_oturum_acik():
+        return ({"ok": False, "hata": "Yetkisiz"}, 401)
+    return None
+
+
+@app.route("/api/saglik/login", methods=["POST"])
+def api_saglik_login():
+    """Panel girisi. Sabit-zamanli karsilastirma (timing sizintisi olmasin)."""
+    import secrets as _s
+    beklenen = _admin_sifre()
+    if not beklenen:
+        return jsonify({"ok": False, "hata": "Panel kapalı: ADMIN_SAGLIK_SIFRE yok."}), 503
+    d = request.get_json(silent=True) or {}
+    if not _s.compare_digest(str(d.get("sifre") or ""), beklenen):
+        return jsonify({"ok": False, "hata": "Şifre hatalı"}), 401
+    session["saglik_admin"] = True
+    session.permanent = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/saglik/logout", methods=["POST"])
+def api_saglik_logout():
+    session.pop("saglik_admin", None)
+    return jsonify({"ok": True})
+
+
+def _saglik_al_performansi() -> dict:
+    """AL karnesi: v2 kapanis sayisi (30-50 hedefi) + TEMIZ gun basari orani.
+    Alpha kriteri (update_decisions.py): degisim>0 VE piyasa_farki>=0.
+    NOT: iki alan da NULL olabiliyor -> 'olculebilir' payda ayrica raporlanir,
+    yoksa basari orani yaniltici cikar."""
+    from src.db import database as db
+    bitti = ("sonuc IS NOT NULL AND sonuc <> '' "
+             "AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%'")
+    out = {}
+    with db.get_conn() as c:
+        out["v2_kapanis"] = c.execute(
+            f"SELECT COUNT(*) FROM decisions WHERE strategy_version='v2' AND {bitti}"
+        ).fetchone()[0]
+        out["v2_toplam"] = c.execute(
+            "SELECT COUNT(*) FROM decisions WHERE strategy_version='v2'").fetchone()[0]
+        out["al_toplam"] = c.execute(
+            "SELECT COUNT(*) FROM decisions WHERE karar='AL'").fetchone()[0]
+        r = c.execute(
+            f"""SELECT COUNT(*),
+                       SUM(CASE WHEN ilk_gun_degisim>0 AND piyasa_farki>=0
+                                THEN 1 ELSE 0 END)
+                  FROM decisions
+                 WHERE karar='AL' AND gun_kalitesi='TEMIZ' AND {bitti}
+                   AND piyasa_farki IS NOT NULL AND ilk_gun_degisim IS NOT NULL"""
+        ).fetchone()
+    olculebilir, basarili = r[0] or 0, r[1] or 0
+    out["temiz_olculebilir"] = olculebilir
+    out["temiz_basarili"] = basarili
+    out["temiz_oran"] = (100.0 * basarili / olculebilir) if olculebilir else None
+    out["hedef"] = "30-50"
+    out["hedefe_kalan"] = max(0, 30 - out["v2_kapanis"])
+    return out
+
+
+def _saglik_alarmlar(saat=24) -> list[dict]:
+    """Son N saatin alarmlari: health_monitor state + kredi bayragi + log kuyrugu."""
+    from datetime import timedelta
+    out = []
+    simdi = datetime.now(_TZ)
+    try:
+        yol = ROOT / "data" / "health_state.json"
+        st = json.loads(yol.read_text(encoding="utf-8")) if yol.exists() else {}
+    except Exception:
+        st = {}
+    for anahtar, ts in (st or {}).items():
+        try:
+            t = datetime.fromisoformat(str(ts))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=_TZ)
+        except ValueError:
+            continue
+        if (simdi - t) <= timedelta(hours=saat):
+            out.append({"anahtar": anahtar, "zaman": t.strftime("%d.%m %H:%M"),
+                        "kritik": anahtar in ("ai_kredi_bitti", "ai_hata_cok",
+                                              "kill_switch_patlamasi", "atlama_yuksek")})
+    out.sort(key=lambda x: x["zaman"], reverse=True)
+    return out
+
+
+@app.route("/api/saglik/veri")
+def api_saglik_veri():
+    """Panelin tek veri ucu. SALT OKUNUR — hicbir sey degistirmez."""
+    gate = _saglik_gate()
+    if gate:
+        return jsonify(gate[0]), gate[1]
+    from src.ops import saglik_karnesi
+    m = saglik_karnesi.topla()
+    return jsonify({
+        "ok": True,
+        "guncelleme": datetime.now(_TZ).strftime("%d.%m.%Y %H:%M:%S"),
+        "durum": m["durum"],
+        "nabiz": saglik_karnesi.nabiz(m),
+        "karar": {"bist": m["bist"], "us": m["us"], "kill": m["kill"],
+                  "atlanan": m["atlanan"], "taranan": m["taranan"],
+                  "bist_beklenen": saglik_karnesi.BIST_BEKLENEN,
+                  "us_beklenen": saglik_karnesi.US_BEKLENEN,
+                  "tam_tarama": m["bist"] >= saglik_karnesi.BIST_BEKLENEN * 0.9,
+                  "gun_sinif": m["gun_sinif"], "gun_sebep": m["gun_sebep"]},
+        "kredi": m["kredi"],
+        "motor": m["motor"],
+        "kaynak": {"kap_canli": m["kap_canli"], "kap_n": m["kap_n"],
+                   "kap_basari": m["kap_basari"], "cache_yas": m["cache_yas"],
+                   "mcp": m["mcp"], "ai_hata": m["ai_hata"], "olu": m["olu"]},
+        "al": _saglik_al_performansi(),
+        "alarmlar": _saglik_alarmlar(),
+        "kirmizi": m["kirmizi"], "sari": m["sari"],
+    })
+
+
+@app.route("/saglik")
+def sayfa_saglik():
+    return render_template("saglik.html", oturum=_saglik_oturum_acik(),
+                           panel_acik=bool(_admin_sifre()))
+
+
+# ---------------------------------------------------------------------------
+# SIFRE SIFIRLAMA (15 Tem 2026)
+# ---------------------------------------------------------------------------
+# Akis: kullanici adi -> tek kullanimlik + 30 dk gecerli token -> baglanti
+# kullanicinin KAYITLI Telegram'ina gider -> kullanici YENI sifresini KENDI koyar.
+# Admin sifreyi ne gorur ne belirler; yalnizca sureci baslatir (loglanir).
+# NOT: kullanici tablosunda e-posta/telefon kolonu YOK (yalniz telegram_id) ->
+# teslimat kanali Telegram. telegram_id'si olmayan kullanici self-servis
+# sifirlayamaz (panelde belirtilir).
+# ---------------------------------------------------------------------------
+
+def _sifirlama_link(ham_token: str) -> str:
+    """Sifirlama baglantisi. SIFIRLAMA_BASE_URL verilmisse o kullanilir
+    (orn. ters proxy/TLS arkasindaysa); yoksa istegin kendi host'u."""
+    taban = (os.environ.get("SIFIRLAMA_BASE_URL") or request.host_url).rstrip("/")
+    return f"{taban}/sifre-sifirla?token={ham_token}"
+
+
+def _sifirlama_baslat(kullanici: dict, tetikleyen: str) -> tuple[bool, str]:
+    """Token uretir + kullanicinin Telegram'ina baglantiyi gonderir.
+    (basari, mesaj) doner. ESKI SIFREYI BOZMAZ."""
+    from src.db import database as db
+    from src.notify import telegram
+    if not kullanici.get("telegram_id"):
+        return False, (f"{kullanici['ad']}: kayıtlı Telegram yok — sıfırlama "
+                       f"bağlantısı gönderilemez.")
+    ham = db.sifirlama_token_olustur(
+        kullanici["id"], tetikleyen=tetikleyen,
+        ip=(request.headers.get("X-Forwarded-For") or request.remote_addr or ""))
+    link = _sifirlama_link(ham)
+    try:
+        telegram.send_message(
+            f"🔑 <b>Şifre sıfırlama</b>\n\n{kullanici['ad']} için sıfırlama "
+            f"bağlantısı ({db.SIFIRLAMA_DAKIKA} dk geçerli, tek kullanımlık):\n"
+            f"{link}\n\nBu isteği sen yapmadıysan bu mesajı yok say — "
+            f"mevcut şifren değişmedi.",
+            chat_id=kullanici["telegram_id"])
+    except Exception as e:
+        return False, f"Telegram gönderilemedi: {type(e).__name__}"
+    # flush=True: systemd stdout'u dosyaya yonlendiriyor -> Python blok bufferlar
+    # ve denetim satiri log'a saatlerce dusmez. Asil denetim izi DB'de
+    # (sifre_sifirlama tablosu); bu satir operasyonel kolaylik icin.
+    print(f"[sifirlama] {tetikleyen} -> {kullanici['ad']} icin baglanti gonderildi "
+          f"({datetime.now(_TZ):%Y-%m-%d %H:%M})", flush=True)
+    return True, f"{kullanici['ad']} kullanıcısına sıfırlama bağlantısı gönderildi."
+
+
+@app.route("/api/auth/forgot", methods=["POST"])
+def api_auth_forgot():
+    """'Sifremi unuttum': kullanici adi -> kayitli Telegram'ina baglanti.
+    GUVENLIK: kullanici var/yok bilgisini SIZDIRMAZ — her durumda ayni yanit
+    (kullanici sayimi yapilamasin)."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    genel = {"ok": True, "mesaj": ("Kayıtlı Telegram hesabın varsa sıfırlama "
+                                   "bağlantısı gönderildi. Bağlantı 30 dakika "
+                                   "geçerli.")}
+    u = db.get_user(str(d.get("kullanici") or "").strip())
+    if u:
+        _sifirlama_baslat(u, tetikleyen="self-servis")
+    return jsonify(genel)
+
+
+@app.route("/sifre-sifirla")
+def sayfa_sifre_sifirla():
+    from src.db import database as db
+    v = db.sifirlama_token_dogrula(request.args.get("token"))
+    return render_template("sifre_sifirla.html", gecerli=bool(v),
+                           ad=(v or {}).get("ad", ""),
+                           token=request.args.get("token", ""))
+
+
+@app.route("/api/auth/reset", methods=["POST"])
+def api_auth_reset():
+    """Token + yeni sifre -> bcrypt hash yaz, token'i tuket. Sifreyi KULLANICI koyar."""
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    v = db.sifirlama_token_dogrula(d.get("token"))
+    if not v:
+        return jsonify({"ok": False,
+                        "hata": "Bağlantı geçersiz veya süresi dolmuş. "
+                                "Yeni bir sıfırlama isteyin."}), 400
+    sifre = str(d.get("sifre") or "")
+    if len(sifre) < _SIFRE_MIN:
+        return jsonify({"ok": False,
+                        "hata": f"Şifre en az {_SIFRE_MIN} karakter olmalı"}), 400
+    db.set_password_hash(v["ad"], _hash_sifre(sifre))     # bcrypt; duz metin yok
+    db.sifirlama_token_tuket(v["id"])                     # tek kullanimlik
+    print(f"[sifirlama] {v['ad']} sifresini sifirladi "
+          f"({datetime.now(_TZ):%Y-%m-%d %H:%M})", flush=True)
+    return jsonify({"ok": True, "mesaj": "Şifren güncellendi, giriş yapabilirsin."})
+
+
+@app.route("/api/saglik/kullanicilar")
+def api_saglik_kullanicilar():
+    """Panel admin bolumu: kullanici listesi + sifirlama denetim izi."""
+    gate = _saglik_gate()
+    if gate:
+        return jsonify(gate[0]), gate[1]
+    from src.db import database as db
+    with db.get_conn() as c:
+        rows = c.execute("SELECT id, ad, telegram_id, "
+                         "CASE WHEN sifre_hash IS NULL OR sifre_hash='' THEN 0 "
+                         "ELSE 1 END AS sifre_var FROM kullanici ORDER BY id").fetchall()
+    return jsonify({"ok": True,
+                    "kullanicilar": [dict(r) for r in rows],
+                    "kayitlar": db.sifirlama_kayitlari(10)})
+
+
+@app.route("/api/saglik/sifirlama-gonder", methods=["POST"])
+def api_saglik_sifirlama_gonder():
+    """Admin: secilen kullaniciya sifirlama baglantisi gonderir.
+    Admin sifreyi GORMEZ ve BELIRLEMEZ; yalniz sureci baslatir. Islem loglanir."""
+    gate = _saglik_gate()
+    if gate:
+        return jsonify(gate[0]), gate[1]
+    from src.db import database as db
+    d = request.get_json(silent=True) or {}
+    u = db.get_user(str(d.get("kullanici") or "").strip())
+    if not u:
+        return jsonify({"ok": False, "hata": "Kullanıcı bulunamadı"}), 404
+    ok, mesaj = _sifirlama_baslat(u, tetikleyen="admin-panel")
+    return jsonify({"ok": ok, "mesaj" if ok else "hata": mesaj})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Sistem Sağlığı — Borsa Bot</title>
+<style>
+  :root{
+    --bg:#0f1115; --kart:#171a21; --cizgi:#262b36; --yazi:#e6e9ef; --sonuk:#8b93a7;
+    --yesil:#28c07a; --sari:#e8b339; --kirmizi:#f2544b; --mavi:#4c8dff;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f4f6fa; --kart:#fff; --cizgi:#e3e7ef; --yazi:#161a22; --sonuk:#5f6880; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--yazi);
+       font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       padding:12px;padding-bottom:40px}
+  .sar{max-width:760px;margin:0 auto}
+  h1{font-size:17px;margin:0 0 2px}
+  .ust{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+  .rozet{font-size:15px;font-weight:600;padding:6px 12px;border-radius:999px;
+         border:1px solid var(--cizgi);white-space:nowrap}
+  .r-ok{background:rgba(40,192,122,.12);color:var(--yesil);border-color:rgba(40,192,122,.35)}
+  .r-dikkat{background:rgba(232,179,57,.12);color:var(--sari);border-color:rgba(232,179,57,.35)}
+  .r-sorun{background:rgba(242,84,75,.12);color:var(--kirmizi);border-color:rgba(242,84,75,.35)}
+  .nabiz{background:var(--kart);border:1px solid var(--cizgi);border-radius:10px;
+         padding:10px 12px;margin-bottom:12px;font-size:13px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+         overflow-x:auto;white-space:nowrap}
+  .kart{background:var(--kart);border:1px solid var(--cizgi);border-radius:12px;
+        padding:12px 14px;margin-bottom:10px}
+  .kart h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+           color:var(--sonuk);margin:0 0 10px;font-weight:600}
+  .satir{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
+         border-bottom:1px solid var(--cizgi);font-size:14px}
+  .satir:last-child{border-bottom:0}
+  .satir .e{color:var(--sonuk);flex:0 0 auto}
+  .satir .d{text-align:right;font-weight:500;word-break:break-word}
+  .ok{color:var(--yesil)} .uyari{color:var(--sari)} .kotu{color:var(--kirmizi)}
+  .sonuk{color:var(--sonuk)}
+  .liste{margin:0;padding-left:18px;font-size:13px}
+  .liste li{margin:3px 0}
+  .bos{color:var(--sonuk);font-size:13px;font-style:italic}
+  .alt{color:var(--sonuk);font-size:11px;text-align:center;margin-top:14px}
+  input,button{font:inherit}
+  input{width:100%;padding:11px 12px;border-radius:9px;border:1px solid var(--cizgi);
+        background:var(--bg);color:var(--yazi);margin-bottom:10px}
+  button{padding:11px 16px;border-radius:9px;border:0;background:var(--mavi);
+         color:#fff;font-weight:600;cursor:pointer;width:100%}
+  button:disabled{opacity:.5;cursor:default}
+  button.ikincil{background:transparent;color:var(--mavi);border:1px solid var(--cizgi)}
+  .giris{max-width:320px;margin:14vh auto}
+  .hata{color:var(--kirmizi);font-size:13px;margin-bottom:8px;min-height:18px}
+  .not{background:rgba(76,141,255,.08);border:1px solid rgba(76,141,255,.3);
+       border-radius:8px;padding:9px 11px;font-size:12px;color:var(--sonuk);margin-bottom:10px}
+  .kul{display:flex;align-items:center;gap:8px;padding:7px 0;
+       border-bottom:1px solid var(--cizgi);font-size:14px}
+  .kul:last-child{border-bottom:0}
+  .kul .ad{flex:1;font-weight:500}
+  .kul button{width:auto;padding:6px 11px;font-size:12px;flex:0 0 auto}
+  .etiket{font-size:11px;color:var(--sonuk)}
+</style>
+</head>
+<body>
+<div class="sar">
+
+{% if not panel_acik %}
+  <div class="kart">
+    <h2>Panel kapalı</h2>
+    <p style="font-size:14px;margin:0">
+      <code>ADMIN_SAGLIK_SIFRE</code> tanımlı değil. Panel güvenlik gereği
+      kapalı — <code>.env</code> dosyasına şifre ekleyip servisi yeniden başlatın.
+    </p>
+  </div>
+
+{% elif not oturum %}
+  <div class="giris">
+    <h1>🔒 Sistem Sağlığı</h1>
+    <p class="sonuk" style="font-size:13px;margin:4px 0 16px">Yönetici şifresi gerekli.</p>
+    <div class="hata" id="hata"></div>
+    <input type="password" id="sifre" placeholder="Şifre" autocomplete="current-password"
+           autofocus onkeydown="if(event.key==='Enter')gir()">
+    <button id="btn" onclick="gir()">Giriş</button>
+  </div>
+  <script>
+    async function gir(){
+      const b=document.getElementById('btn'), h=document.getElementById('hata');
+      b.disabled=true; h.textContent='';
+      try{
+        const r=await fetch('/api/saglik/login',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({sifre:document.getElementById('sifre').value})});
+        const j=await r.json();
+        if(j.ok){ location.reload(); } else { h.textContent=j.hata||'Hata'; b.disabled=false; }
+      }catch(e){ h.textContent='Bağlantı hatası'; b.disabled=false; }
+    }
+  </script>
+
+{% else %}
+  <div class="ust">
+    <div>
+      <h1>Sistem Sağlığı</h1>
+      <div class="sonuk" style="font-size:12px">
+        <span id="guncelleme">yükleniyor…</span> · 30 sn'de bir yenilenir
+      </div>
+    </div>
+    <div class="rozet" id="rozet">…</div>
+  </div>
+
+  <div class="nabiz" id="nabiz">yükleniyor…</div>
+  <div id="icerik"></div>
+
+  <div class="kart">
+    <h2>Kullanıcılar — şifre sıfırlama</h2>
+    <div class="not">
+      Sıfırlama bağlantısı kullanıcının kayıtlı Telegram'ına gider; şifresini
+      <b>kendisi</b> belirler. Yönetici şifreyi görmez ve belirlemez.
+      Bağlantı kullanılmazsa <b>eski şifre çalışmaya devam eder</b>.
+    </div>
+    <div id="kullanicilar" class="bos">yükleniyor…</div>
+    <div id="kayitlar"></div>
+  </div>
+
+  <button class="ikincil" onclick="cik()">Çıkış</button>
+  <div class="alt">Salt okunur panel · hiçbir kararı değiştirmez</div>
+
+  <script>
+  const E = s => String(s??'').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const satir = (e,d,sinif='') =>
+    `<div class="satir"><span class="e">${E(e)}</span><span class="d ${sinif}">${d}</span></div>`;
+
+  function rozetAyar(d){
+    const el=document.getElementById('rozet');
+    let s='r-ok', t='🟢 Sağlıklı';
+    if(d.kredi?.bitti || (d.durum||'').startsWith('🔴')){ s='r-sorun'; t='🔴 Sorunlu'; }
+    else if((d.durum||'').startsWith('⚠️')){ s='r-dikkat'; t='🟡 Dikkat'; }
+    el.className='rozet '+s; el.textContent=t;
+  }
+
+  function ciz(d){
+    rozetAyar(d);
+    document.getElementById('nabiz').textContent = d.nabiz || '';
+    document.getElementById('guncelleme').textContent = d.guncelleme || '';
+    const k=d.karar, kr=d.kredi, kn=d.kaynak, al=d.al, mo=d.motor;
+    let h='';
+
+    // Kredi — en kritik kart, en uste
+    h+='<div class="kart"><h2>AI Kredisi</h2>';
+    h+=satir('Durum', kr.bitti ? '🔴 BİTTİ — karar üretimi durdu'
+                                : '🟢 Çalışıyor', kr.bitti?'kotu':'ok');
+    h+=satir('Bugünkü AI hatası', kn.ai_hata, kn.ai_hata>5?'kotu':'ok');
+    if(kr.bitti && kr.sebep) h+=satir('Sebep', E(kr.sebep), 'sonuk');
+    h+='</div>';
+
+    // Karar uretimi
+    h+='<div class="kart"><h2>Bugünkü Karar Üretimi</h2>';
+    h+=satir('BIST', `${k.bist} / ${k.bist_beklenen}`,
+             k.bist>=k.bist_beklenen*0.9?'ok':(k.bist>0?'uyari':'kotu'));
+    h+=satir('ABD', `${k.us} / ${k.us_beklenen}`, k.us>0?'ok':'uyari');
+    h+=satir('Tam tarama', k.tam_tarama?'✅ evet':'❌ hayır', k.tam_tarama?'ok':'kotu');
+    h+=satir('Veri hatasıyla atlanan', `${k.atlanan} hisse`, k.atlanan>0?'uyari':'ok');
+    h+=satir('KILL_SWITCH (veri freni)', k.kill, k.kill>10?'kotu':(k.kill>0?'uyari':'ok'));
+    h+=satir('Gün kalitesi', E(k.gun_sinif),
+             k.gun_sinif==='TEMIZ'?'ok':(k.gun_sinif==='KISMI'?'uyari':'kotu'));
+    if(k.gun_sebep) h+=satir('Sebep', E(k.gun_sebep), 'sonuk');
+    h+='</div>';
+
+    // Motorlar
+    h+='<div class="kart"><h2>Motor Fonksiyonları</h2>';
+    const adlar={cift_risk_vetosu:'Çift risk vetosu', kill_switch:'KILL_SWITCH',
+                 eq_filtresi:'EQ filtresi', stop_hedef_motoru:'Stop/hedef motoru',
+                 bilanco_freni:'Bilanço freni'};
+    for(const [ad,v] of Object.entries(mo||{})){
+      if(v.tip==='sayac')
+        h+=satir(adlar[ad]||ad, v.son ? `son: ${E(v.son)}` : 'hiç tetiklenmedi',
+                 v.son?'ok':'uyari');
+      else
+        h+=satir(adlar[ad]||ad, v.bagli===false?'🔴 KOPUK':(v.bagli?'🟢 bağlı':'—'),
+                 v.bagli===false?'kotu':(v.bagli?'ok':'sonuk'));
+    }
+    h+='<div class="etiket" style="margin-top:8px">EQ / stop / bilanço freni için ayrı '
+     + 'sayaç yok — kod yolu doğrulanır (bağlı = motor devrede).</div></div>';
+
+    // Veri kaynaklari
+    h+='<div class="kart"><h2>Veri Kaynakları</h2>';
+    const kb=kn.kap_basari||{};
+    h+=satir('KAP', kn.kap_canli?'🟢 canlı':'🔴 kopuk', kn.kap_canli?'ok':'kotu');
+    h+=satir('KAP başarı oranı',
+             kb.oran!=null ? `%${kb.oran.toFixed(0)} (${kb.ok}/${kb.toplam})` : 'veri yok',
+             kb.oran==null?'sonuk':(kb.oran>=90?'ok':(kb.oran>=70?'uyari':'kotu')));
+    h+=satir('Fiyat cache yaşı',
+             kn.cache_yas!=null ? `${kn.cache_yas.toFixed(0)} dk` : 'yok',
+             kn.cache_yas==null?'sonuk':(kn.cache_yas<=20?'ok':(kn.cache_yas<=60?'uyari':'kotu')));
+    h+=satir('Borsa MCP', kn.mcp?'🟢 çalışıyor':'🔴 ölü', kn.mcp?'ok':'kotu');
+    h+=satir('Ölü sembol', kn.olu, kn.olu>0?'uyari':'ok');
+    h+='</div>';
+
+    // AL performansi
+    h+='<div class="kart"><h2>AL Performansı</h2>';
+    h+=satir('v2 kapanış', `${al.v2_kapanis} / ${al.hedef} hedef`,
+             al.v2_kapanis>=30?'ok':'uyari');
+    h+=satir('30 hedefine kalan', al.hedefe_kalan, al.hedefe_kalan>0?'uyari':'ok');
+    h+=satir('v2 toplam karar', al.v2_toplam);
+    h+=satir('AL kararı (tüm zaman)', al.al_toplam);
+    h+=satir('Temiz gün — ölçülebilir', al.temiz_olculebilir,
+             al.temiz_olculebilir>=10?'ok':'uyari');
+    h+=satir('Temiz gün — başarı',
+             al.temiz_oran!=null
+               ? `%${al.temiz_oran.toFixed(1)} (${al.temiz_basarili}/${al.temiz_olculebilir})`
+               : 'ölçülemiyor',
+             al.temiz_oran==null?'sonuk':(al.temiz_oran>=50?'ok':'uyari'));
+    h+='<div class="etiket" style="margin-top:8px">Alpha kriteri: değişim&gt;0 VE '
+     + 'piyasa_farkı&ge;0. Payda yalnız iki alanı da dolu kararlar — örneklem '
+     + 'küçükken oran yanıltıcıdır.</div></div>';
+
+    // Alarmlar
+    h+='<div class="kart"><h2>Son 24 Saat Alarmları</h2>';
+    if((d.alarmlar||[]).length){
+      h+='<ul class="liste">';
+      for(const a of d.alarmlar)
+        h+=`<li><span class="${a.kritik?'kotu':'uyari'}">${a.kritik?'🔴':'⚠️'} `
+         + `${E(a.anahtar)}</span> <span class="sonuk">· ${E(a.zaman)}</span></li>`;
+      h+='</ul>';
+    } else h+='<div class="bos">Son 24 saatte alarm yok.</div>';
+    if((d.kirmizi||[]).length){
+      h+='<div style="margin-top:10px"><b class="kotu">Açık kırmızı koşullar</b><ul class="liste">';
+      for(const x of d.kirmizi) h+=`<li class="kotu">${E(x)}</li>`;
+      h+='</ul></div>';
+    }
+    if((d.sari||[]).length){
+      h+='<div style="margin-top:10px"><b class="uyari">Sarı uyarılar</b><ul class="liste">';
+      for(const x of d.sari) h+=`<li class="uyari">${E(x)}</li>`;
+      h+='</ul></div>';
+    }
+    h+='</div>';
+
+    document.getElementById('icerik').innerHTML=h;
+  }
+
+  async function yenile(){
+    try{
+      const r=await fetch('/api/saglik/veri');
+      if(r.status===401){ location.reload(); return; }
+      const j=await r.json();
+      if(j.ok) ciz(j);
+    }catch(e){ /* gecici ag hatasi -> sonraki turda tekrar dener */ }
+  }
+
+  async function kullanicilariYukle(){
+    try{
+      const r=await fetch('/api/saglik/kullanicilar');
+      if(!r.ok) return;
+      const j=await r.json();
+      let h='';
+      for(const u of j.kullanicilar){
+        const tg = u.telegram_id;
+        h+=`<div class="kul"><span class="ad">${E(u.ad)}</span>`
+         + `<span class="etiket">${tg?'📱 Telegram var':'⚠️ Telegram yok'}`
+         + ` · ${u.sifre_var?'şifreli':'şifresiz'}</span>`
+         + (tg ? `<button onclick="sifirla('${E(u.ad)}',this)">Sıfırlama gönder</button>`
+               : `<button disabled title="Kayıtlı Telegram yok">Gönderilemez</button>`)
+         + `</div>`;
+      }
+      document.getElementById('kullanicilar').className='';
+      document.getElementById('kullanicilar').innerHTML=h;
+      let k='';
+      if((j.kayitlar||[]).length){
+        k='<h2 style="margin-top:14px">Sıfırlama denetim izi</h2><ul class="liste">';
+        for(const r2 of j.kayitlar)
+          k+=`<li><b>${E(r2.ad)}</b> · ${E(r2.olusturma).replace('T',' ')} · `
+           + `tetikleyen: ${E(r2.tetikleyen||'-')} · `
+           + (r2.kullanildi_ts?'<span class="ok">kullanıldı</span>'
+                              :'<span class="sonuk">kullanılmadı</span>')+'</li>';
+        k+='</ul>';
+      }
+      document.getElementById('kayitlar').innerHTML=k;
+    }catch(e){}
+  }
+
+  async function sifirla(ad, btn){
+    if(!confirm(ad+' kullanıcısına şifre sıfırlama bağlantısı gönderilsin mi?\n\n'
+                +'Kullanıcı yeni şifresini kendisi belirler. Mevcut şifresi, '
+                +'bağlantıyı kullanana kadar çalışmaya devam eder.')) return;
+    btn.disabled=true; const eski=btn.textContent; btn.textContent='Gönderiliyor…';
+    try{
+      const r=await fetch('/api/saglik/sifirlama-gonder',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({kullanici:ad})});
+      const j=await r.json();
+      alert(j.ok ? '✅ '+j.mesaj : '🔴 '+(j.hata||'Gönderilemedi'));
+    }catch(e){ alert('🔴 Bağlantı hatası'); }
+    btn.disabled=false; btn.textContent=eski;
+    kullanicilariYukle();
+  }
+
+  async function cik(){
+    await fetch('/api/saglik/logout',{method:'POST'});
+    location.reload();
+  }
+
+  yenile(); kullanicilariYukle();
+  setInterval(yenile, 30000);
+  </script>
+{% endif %}
+
+</div>
+</body>
+</html>
