@@ -6,18 +6,24 @@ hesaplar ve karara gore 'DOGRU/YANLIS' verir; decisions.sonuc kolonunu gunceller
 Yanlis cikan kararlar icin ucuz Haiku ile kisa 'neden yanlis' analizi yapilir
 (decisions.yanlis_sebep). Degerlendirme penceresi: AL=5, SAT=3, TUT=10, BEKLE=5 islem gunu.
 
-Kazanma kurali (karar yonune gore):
-  AL / AL_TEMKINLI : ENDEKSTEN 1.5 puandan fazla geri kalmadiysa DOGRU
-                     (piyasa_farki >= -1.5). Benchmark: BIST hisseleri -> XU100.IS,
-                     ABD hisseleri -> SPY. Benchmark verisi yoksa mutlak yon (fiyat
-                     yukseldiyse DOGRU) uygulanir.
+Kazanma kurali (karar yonune gore; tek kaynak: _verdict):
+  AL / AL_TEMKINLI : hem KAR (degisim > 0) HEM ALPHA (piyasa_farki >= 0) -> DOGRU.
+                     Benchmark: BIST -> XU100.IS, ABD -> SPY. Benchmark yoksa
+                     yalniz mutlak yon (degisim > 0).
   SAT / GUCLU_SAT / AZALT : fiyat dustuyse DOGRU
-  TUT / BEKLE      : fiyat ~yatay kaldiysa (|degisim| <= %5) DOGRU
-  VETO / UZAK_DUR  : islemden kacinildi; fiyat yukselmediyse (<= 0) DOGRU
+  TUT              : piyasa_farki varsa endeksten 3 puandan fazla geri kalmadiysa
+                     (>= -3); yoksa yatay bant (|degisim| <= %5)
+  VETO / UZAK_DUR  : islemden kacinildi; endeksi gecmediyse (piyasa_farki <= 0) DOGRU
+NOT: 'degisim' = DEGERLENDIRME PENCERESI degisimi (AL=5 islem gunu). Bu, mini_update'in
+doldurdugu ilk_gun_degisim (1 GUNLUK hizli geri bildirim) ile AYNI SEY DEGILDIR;
+alpha basari orani pencere degisimiyle olculur.
 
 piyasa_farki (her yonlu karar icin) = hisse_getiri - benchmark_getiri (ayni pencere).
-BIST hisseleri XU100.IS'e, ABD hisseleri SPY'a gore olculur. decisions.piyasa_farki
-kolonuna yazilir; gecmis kayitlar 'backfill' ile geriye donuk doldurulabilir.
+decisions.piyasa_farki kolonuna yazilir.
+  * run()  : her gece; sonucu bos kararlari degerlendirir + piyasa_farki NULL
+             kalanlari TEKRAR dener (alpha_backfill) -> kalici NULL olusmaz.
+  * backfill_piyasa_farki() : elle; TUM degerlendirilmis kararlari GUNCEL kriterle
+             yeniden hukumlendirir (esik degisikliginden sonra tutarlilik icin).
 """
 import sys
 from datetime import datetime, timedelta
@@ -28,6 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _TZ = ZoneInfo("Europe/Istanbul")
 TUT_BANT = 5.0           # TUT icin yatay sayilan +/- yuzde bandi
+# Alpha olcum sagligi: degerlendirilmis kararlarin en fazla bu kadari piyasa_farki'siz
+# olabilir; ustunde benchmark cekimi bozuk demektir (saglik karnesi alarm verir).
+ALPHA_BOS_ESIK = 0.20
 HABER_MODEL = "claude-haiku-4-5"   # 'neden yanlis' analizi: ucuz + hizli
 
 # Karar tipine gore ISLEM GUNU bazli degerlendirme penceresi (sabit KAPANIS_GUN kaldirildi)
@@ -143,19 +152,63 @@ def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
     return _symbol_change(symbol, karar_tarihi, kapanis_gun)
 
 
+# --- Gecmis verisi: kosu-ici onbellek + retry (15 Tem 2026) -----------------
+# SORUN (26 Haz - 15 Tem 2026): _symbol_change her KARAR icin get_history'yi
+# yeniden cagiriyordu. Bir gece kosusu 111-385 karar degerlendiriyor -> ayni
+# XU100.IS yuzlerce kez cekiliyordu. yf.download rate-limit'te EXCEPTION ATMAZ,
+# BOS DataFrame doner -> benchmark None -> piyasa_farki NULL. Hisse cekimi
+# basarisiz olsa karar 'bekliyor'da kalip ertesi gece tekrar deneniyordu, ama
+# benchmark basarisizligi kalici NULL birakiyordu (asimetri) -> alpha olcumu
+# 39 AL kararinin 23'unde kalici olarak kayboldu.
+# COZUM: (1) sembol bazli onbellek -> kosu basina 385 cagri yerine 1;
+#        (2) bos/hatali donuste kisa beklemeli retry;
+#        (3) run() artik piyasa_farki NULL kalan kararlari TEKRAR dener.
+_HIST_CACHE: dict = {}          # symbol -> (start_iso, DataFrame)
+_HIST_RETRY = 3
+_HIST_BEKLE_SN = 2.0
+
+
+def _history(symbol: str, start: str):
+    """Sembolun gunluk barlari; kosu boyunca onbellege alinir + retry'li ceker.
+
+    Onbellekteki seri istenenden ERKEN basliyorsa yeniden cekmez (daha genis
+    pencere istenen her pencereyi kapsar). Bos DataFrame de basarisizlik sayilir
+    (yfinance throttle'da bos doner, hata atmaz)."""
+    import time
+    onbellek = _HIST_CACHE.get(symbol)
+    if onbellek and onbellek[0] <= start:
+        return onbellek[1]
+    from src.data.factory import get_data_source
+    df = None
+    for deneme in range(_HIST_RETRY):
+        try:
+            df = get_data_source().get_history(symbol, start=start)
+        except Exception:
+            df = None
+        if df is not None and not df.empty:
+            break
+        if deneme < _HIST_RETRY - 1:
+            time.sleep(_HIST_BEKLE_SN * (deneme + 1))     # kademeli bekleme
+    if df is None or df.empty:
+        return None
+    _HIST_CACHE[symbol] = (start, df)
+    return df
+
+
+def _hist_cache_temizle():
+    """Kosu basinda cagrilir: onbellek gunler arasi bayatlamasin."""
+    _HIST_CACHE.clear()
+
+
 def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
     """Verilen yfinance sembolu icin karar gunu -> kapanis_gun islem gunu sonraki
     yuzde degisim (bkz. _price_change). Pencere dolmadiysa/veri yoksa None."""
-    from src.data.factory import get_data_source
     import pandas as pd
 
     # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
     start = (datetime.fromisoformat(karar_tarihi).date()
              - timedelta(days=12)).isoformat()
-    try:
-        df = get_data_source().get_history(symbol, start=start)
-    except Exception:
-        return None
+    df = _history(symbol, start)
     if df is None or df.empty:
         return None
     # Hacimsiz VE kapanisi NaN olan barlari ele (yfinance bazen guncel/yarim bari
@@ -187,15 +240,34 @@ def _is_bist(ticker: str) -> bool:
     return isinstance(_market_for(ticker), BIST)
 
 
+# Benchmark sembol zinciri: ilki calismazsa sirayla denenir.
+# 15 Tem 2026'da olculdu: XU100.IS calisiyor; ^XU100 / XU100 / BIST100.IS yfinance'te
+# BOS donuyor -> BIST icin gercek bir alternatif sembol YOK, zincir tek elemanli.
+# ABD tarafinda ^GSPC ve ^SPX calisiyor -> SPY dusesrse ^GSPC'ye dus.
+# NOT: KAP icin kurdugumuz TR proxy buraya EKLENMEDI. Oradaki sorun cografi engel;
+# buradaki sorun Yahoo rate-limit'iydi ve onbellek cagriyi kosu basina 385'ten 1'e
+# indirdigi icin proxy gereksiz ek kirilganlik olurdu.
+_BENCHMARK_ZINCIR = {
+    "bist": ["XU100.IS"],
+    "us": ["SPY", "^GSPC", "^SPX"],
+}
+
+
 def _benchmark_symbol(ticker: str) -> str:
-    """Hissenin piyasa kiyas endeksi: BIST -> XU100.IS, ABD -> SPY."""
-    return "XU100.IS" if _is_bist(ticker) else "SPY"
+    """Hissenin piyasa kiyas endeksi (zincirin ilki): BIST -> XU100.IS, ABD -> SPY."""
+    return _BENCHMARK_ZINCIR["bist" if _is_bist(ticker) else "us"][0]
 
 
 def _benchmark_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
-    """Hissenin benchmark'inin (BIST -> XU100.IS, ABD -> SPY) ayni pencere icindeki
-    yuzde degisimi. Veri yoksa None. Hisse degisimi ile ayni bar mantigini kullanir."""
-    return _symbol_change(_benchmark_symbol(ticker), karar_tarihi, kapanis_gun)
+    """Hissenin benchmark'inin ayni pencere icindeki yuzde degisimi; sembol
+    zincirini sirayla dener (ilki bos donerse digerine duser). Hicbiri veri
+    vermezse None -> cagiran karari 'olculemedi' birakir ve SONRAKI kosuda
+    tekrar dener (kalici NULL yok)."""
+    for sembol in _BENCHMARK_ZINCIR["bist" if _is_bist(ticker) else "us"]:
+        deg = _symbol_change(sembol, karar_tarihi, kapanis_gun)
+        if deg is not None:
+            return deg
+    return None
 
 
 
@@ -244,9 +316,95 @@ def _yanlis_analiz(ticker, karar, gerekce, degisim, client=None):
         return None
 
 
+def alpha_backfill(verbose: bool = True, limit: int = None) -> dict:
+    """Sonucu YAZILMIS ama piyasa_farki NULL kalan kararlari geriye donuk doldurur.
+
+    Neden gerekli: 26 Haz - 15 Tem 2026 arasi benchmark cekimi rate-limit yuzunden
+    sik sik bos dondu; run() sonucu yine de yaziyordu -> piyasa_farki KALICI NULL
+    kaldi ve alpha olcumu 39 AL kararinin 23'unde kayboldu. Benchmark artik
+    cekilebiliyor (onbellek + retry ile) -> o gunlerin verisiyle hesap yapilabilir.
+
+    Doldururken sonuc metni ve DOGRU/YANLIS hukmu de YENIDEN hesaplanir: alpha
+    bilgisi geldiginde hukum degisebilir (orn. 'endeksi yendi ama zarar' -> AL YANLIS).
+    yanlis_sebep DOKUNULMAZ (Haiku cagrisi tekrar edilmez -> token harcanmaz).
+    KILL_SWITCH / DEGERLENDIRME DISI kayitlar atlanir.
+    """
+    from src.db import database as db
+    db.init_db()
+    _hist_cache_temizle()
+    with db.get_conn() as c:
+        sql = ("SELECT * FROM decisions WHERE piyasa_farki IS NULL "
+               "AND sonuc IS NOT NULL AND sonuc <> '' "
+               "AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%' "
+               "AND UPPER(COALESCE(karar,'')) NOT LIKE '%KILL%' ORDER BY id")
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        rows = [dict(r) for r in c.execute(sql)]
+
+    if verbose:
+        print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] alpha backfill: {len(rows)} aday karar")
+    dolduruldu = hala_yok = hukum_degisti = 0
+    for r in rows:
+        kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))
+        deg = _price_change(r["ticker"], r["tarih"], kg)
+        bench = _benchmark_change(r["ticker"], r["tarih"], kg)
+        if deg is None or bench is None:
+            hala_yok += 1
+            continue
+        piyasa_farki = round(deg - bench, 2)
+        dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
+        sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'} · piyasa {piyasa_farki:+.1f}p"
+        if ("AL" in (r["karar"] or "").upper() and piyasa_farki >= 0 and deg <= 0):
+            sonuc += " · endeksi yendi ama zarar"
+        eski_dogru = "DOGRU" in (r.get("sonuc") or "")
+        if eski_dogru != dogru:
+            hukum_degisti += 1
+        # yanlis_sebep gecilmiyor -> mevcut deger korunur (Haiku cagrisi yok)
+        db.set_decision_outcome(r["id"], sonuc, piyasa_farki=piyasa_farki)
+        dolduruldu += 1
+        if verbose and dolduruldu <= 5:
+            print(f"  {r['ticker']:7} {r['karar']:9} {r['tarih'][:10]} -> {sonuc}")
+    if verbose:
+        print(f"  dolduruldu={dolduruldu} | hala olculemiyor={hala_yok} "
+              f"| hukum degisti={hukum_degisti}")
+    return {"aday": len(rows), "dolduruldu": dolduruldu, "hala_yok": hala_yok,
+            "hukum_degisti": hukum_degisti}
+
+
+ALPHA_SAGLIK_GUN = 14      # bkz. asagidaki gecikme notu
+
+
+def alpha_olcum_sagligi(gun: int = ALPHA_SAGLIK_GUN) -> dict:
+    """Son N gunde alpha olcumu ne kadar saglikli? (saglik karnesi + panel okur)
+
+    Payda: degerlendirilmis (sonucu yazilmis, DEGERLENDIRME DISI olmayan) kararlar.
+    NULL orani ALPHA_BOS_ESIK'i gecerse benchmark cekimi yine bozulmus demektir.
+
+    NEDEN 14 GUN (7 degil): karar ancak penceresi dolunca degerlendirilir (AL=5,
+    TUT=10 ISLEM gunu). Son 7 gunun kararlarinin cogunun sonucu HENUZ yazilmamis
+    olur -> 7 gunluk pencere yapisal olarak bos cikar ve metrik hicbir bozulmayi
+    yakalayamaz. 14 gun, degerlendirme gecikmesini kapsayan en kisa penceredir.
+    """
+    from src.db import database as db
+    esik = (datetime.now(_TZ).date() - timedelta(days=gun)).isoformat()
+    with db.get_conn() as c:
+        r = c.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN piyasa_farki IS NULL THEN 1 ELSE 0 END)
+                 FROM decisions
+                WHERE tarih >= ? AND sonuc IS NOT NULL AND sonuc <> ''
+                  AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%'
+                  AND UPPER(COALESCE(karar,'')) NOT LIKE '%KILL%'""", (esik,)).fetchone()
+    toplam, bos = r[0] or 0, r[1] or 0
+    oran = (bos / toplam) if toplam else 0.0
+    return {"gun": gun, "toplam": toplam, "dolu": toplam - bos, "bos": bos,
+            "bos_oran": oran, "saglikli": (oran <= ALPHA_BOS_ESIK) if toplam else True}
+
+
 def run(verbose: bool = True) -> int:
     from src.db import database as db
     db.init_db()
+    _hist_cache_temizle()          # kosu basi: onbellek gunler arasi bayatlamasin
     today = datetime.now(_TZ).date()
     # Eligibility artik ISLEM GUNU bazli: gercek gating _price_change icinde yapilir
     # (MIN_ISLEM_GUNU islem gunu gecmediyse None doner). Burada yalniz bugun/gelecek
@@ -308,6 +466,35 @@ def run(verbose: bool = True) -> int:
 
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} karar sonucu guncellendi.")
+
+    # ALPHA BACKFILL: benchmark o an bos donduysa piyasa_farki NULL kalir. Eskiden
+    # bu KALICIYDI (karar bir daha ele alinmazdi) -> alpha olcumu sessizce kayboldu.
+    # Artik her kosuda tekrar denenir; benchmark sonradan gelince geriye donuk dolar.
+    try:
+        bf = alpha_backfill(verbose=verbose)
+        if verbose and bf["dolduruldu"]:
+            print(f"  [alpha] {bf['dolduruldu']} karar geriye donuk dolduruldu "
+                  f"({bf['hukum_degisti']} hukum degisti)")
+    except Exception as e:
+        if verbose:
+            print(f"  [alpha] backfill atlandi: {type(e).__name__}: {str(e)[:80]}")
+
+    # ALPHA OLCUM SAGLIGI: NULL orani esigi asarsa benchmark yine bozuk demektir.
+    try:
+        s = alpha_olcum_sagligi()
+        if verbose:
+            print(f"  [alpha] olcum sagligi (7g): dolu={s['dolu']}/{s['toplam']} "
+                  f"| bos %{s['bos_oran']*100:.0f} | {'OK' if s['saglikli'] else 'BOZUK'}")
+        if not s["saglikli"] and s["toplam"] >= 10:
+            from src.notify import telegram
+            telegram.notify_admins(
+                f"Alpha ölçümü bozuk: son {s['gun']} günde {s['bos']}/{s['toplam']} "
+                f"kararda piyasa_farkı boş (%{s['bos_oran']*100:.0f} > "
+                f"%{ALPHA_BOS_ESIK*100:.0f}). Benchmark (XU100.IS/SPY) çekimi "
+                f"başarısız — alpha başarı oranları güvenilmez.", prefix="🔴")
+    except Exception as e:
+        if verbose:
+            print(f"  [alpha] saglik kontrolu atlandi: {type(e).__name__}")
 
     # GUN VERI KALITESI: son 14 gunu damgala (yeni KIRLI gun -> admin Telegram) +
     # temiz karne ozeti (KIRLI gunler basari hesabina KATILMAZ). Karar kurallarina

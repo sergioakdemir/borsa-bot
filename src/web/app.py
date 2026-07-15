@@ -5620,10 +5620,19 @@ def api_saglik_logout():
 
 
 def _saglik_al_performansi() -> dict:
-    """AL karnesi: v2 kapanis sayisi (30-50 hedefi) + TEMIZ gun basari orani.
-    Alpha kriteri (update_decisions.py): degisim>0 VE piyasa_farki>=0.
-    NOT: iki alan da NULL olabiliyor -> 'olculebilir' payda ayrica raporlanir,
-    yoksa basari orani yaniltici cikar."""
+    """AL karnesi: v2 kapanis sayisi (30-50 hedefi) + TEMIZ gun alpha basari orani.
+
+    ALPHA KRITERI = update_decisions._verdict'in AL dali: degisim>0 VE
+    piyasa_farki>=0. Burada 'degisim' DEGERLENDIRME PENCERESI degisimidir (AL=5
+    islem gunu) — mini_update'in doldurdugu ilk_gun_degisim (1 gunluk hizli geri
+    bildirim) DEGILDIR. Bu ikisi 15 Tem 2026'ya kadar karistirilmisti ve oran
+    yanlis (dusuk) raporlaniyordu.
+    AL icin motorun DOGRU bayragi bu kriterin TA KENDISI oldugundan (_verdict),
+    dogru sayim = sonuc'ta 'DOGRU' gecen AL kararlari. Boylece kriter tek yerde
+    (_verdict) tanimli kalir ve panel onunla asla ayrisamaz.
+    'olculebilir' = piyasa_farki dolu olanlar; bos ise _verdict alpha'yi
+    uygulayamaz (mutlak yone duser) -> ayri raporlanir.
+    """
     from src.db import database as db
     bitti = ("sonuc IS NOT NULL AND sonuc <> '' "
              "AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%'")
@@ -5638,13 +5647,14 @@ def _saglik_al_performansi() -> dict:
             "SELECT COUNT(*) FROM decisions WHERE karar='AL'").fetchone()[0]
         r = c.execute(
             f"""SELECT COUNT(*),
-                       SUM(CASE WHEN ilk_gun_degisim>0 AND piyasa_farki>=0
-                                THEN 1 ELSE 0 END)
+                       SUM(CASE WHEN piyasa_farki IS NOT NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN piyasa_farki IS NOT NULL
+                                 AND sonuc LIKE '%DOGRU%' THEN 1 ELSE 0 END)
                   FROM decisions
-                 WHERE karar='AL' AND gun_kalitesi='TEMIZ' AND {bitti}
-                   AND piyasa_farki IS NOT NULL AND ilk_gun_degisim IS NOT NULL"""
+                 WHERE karar='AL' AND gun_kalitesi='TEMIZ' AND {bitti}"""
         ).fetchone()
-    olculebilir, basarili = r[0] or 0, r[1] or 0
+    degerlendirilmis, olculebilir, basarili = r[0] or 0, r[1] or 0, r[2] or 0
+    out["temiz_degerlendirilmis"] = degerlendirilmis
     out["temiz_olculebilir"] = olculebilir
     out["temiz_basarili"] = basarili
     out["temiz_oran"] = (100.0 * basarili / olculebilir) if olculebilir else None
@@ -5703,6 +5713,7 @@ def api_saglik_veri():
                    "kap_basari": m["kap_basari"], "cache_yas": m["cache_yas"],
                    "mcp": m["mcp"], "ai_hata": m["ai_hata"], "olu": m["olu"]},
         "al": _saglik_al_performansi(),
+        "alpha_saglik": m.get("alpha"),
         "alarmlar": _saglik_alarmlar(),
         "kirmizi": m["kirmizi"], "sari": m["sari"],
     })

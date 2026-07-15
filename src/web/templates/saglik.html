@@ -216,6 +216,22 @@
      + 'piyasa_farkı&ge;0. Payda yalnız iki alanı da dolu kararlar — örneklem '
      + 'küçükken oran yanıltıcıdır.</div></div>';
 
+    // Alpha OLCUM sagligi: benchmark cekilemezse piyasa_farki NULL kalir ve
+    // yukaridaki oranlar anlamsizlasir -> olcumun kendi sagligi ayri gosterilir.
+    const asg=d.alpha_saglik;
+    h+='<div class="kart"><h2>Alpha Ölçüm Sağlığı</h2>';
+    if(asg && asg.toplam){
+      h+=satir('Pencere', `son ${asg.gun} gün`, 'sonuk');
+      h+=satir('Durum', asg.saglikli?'🟢 ölçüm çalışıyor':'🔴 ÖLÇÜM BOZUK',
+               asg.saglikli?'ok':'kotu');
+      h+=satir('piyasa_farkı dolu', `${asg.dolu} / ${asg.toplam}`, asg.saglikli?'ok':'uyari');
+      h+=satir('Boş (ölçülemeyen)', `${asg.bos} (%${(asg.bos_oran*100).toFixed(0)})`,
+               asg.bos_oran>0.20?'kotu':'ok');
+      h+='<div class="etiket" style="margin-top:8px">Eşik: boş oranı %20&apos;yi geçerse '
+       + 'benchmark (XU100.IS/SPY) çekimi bozuk demektir — başarı oranlarına güvenme.</div>';
+    } else h+='<div class="bos">Son 7 günde değerlendirilmiş karar yok.</div>';
+    h+='</div>';
+
     // Alarmlar
     h+='<div class="kart"><h2>Son 24 Saat Alarmları</h2>';
     if((d.alarmlar||[]).length){

@@ -232,6 +232,14 @@ def topla(tarih=None) -> dict:
     kredi = kredi_durumu(tarih)
     motor = motor_durumu()
     motorlar_ok = _motorlar_ok(motor)
+    # ALPHA OLCUM SAGLIGI (15 Tem 2026): benchmark cekimi bos donerse piyasa_farki
+    # NULL kalir ve alpha basari oranlari olculemez. 26 Haz-15 Tem arasi bu sessizce
+    # oldu (39 AL kararinin 23'u olcusuz) -> artik karnede gorunur ve alarm verir.
+    try:
+        from src.ops.update_decisions import alpha_olcum_sagligi
+        alpha = alpha_olcum_sagligi()   # varsayilan 14g (degerlendirme gecikmesi)
+    except Exception:
+        alpha = None
     hafta_ici = datetime.now(_TZ).weekday() < 5   # brifing yalniz hafta ici (cron 1-5)
 
     # --- KIRMIZI kosullar ---
@@ -242,6 +250,10 @@ def topla(tarih=None) -> dict:
     if not motorlar_ok:
         kopuk = [a for a, v in motor.items() if v.get("bagli") is False]
         kirmizi.append(f"motor kod yolu KOPUK: {', '.join(kopuk)}")
+    # Alpha olculemiyorsa basari oranlari anlamsiz -> kirmizi (sessiz kalmasin).
+    if alpha and alpha["toplam"] >= 10 and not alpha["saglikli"]:
+        kirmizi.append(f"alpha olcumu bozuk: {alpha['bos']}/{alpha['toplam']} "
+                       f"kararda piyasa_farki bos (%{alpha['bos_oran']*100:.0f})")
     if taranan and atlanan / taranan > 0.10:
         kirmizi.append(f"watchlist'in %{atlanan/taranan*100:.0f}'i atlandi (>%10)")
     # BIST karar sayisi: yalniz brifing BEKLENEN gunlerde (hafta ici) alarm ver;
@@ -294,7 +306,16 @@ def topla(tarih=None) -> dict:
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
+        "alpha": alpha,
     }
+
+
+def _alpha_txt(a) -> str:
+    """Alpha olcum sagligi satiri: kac kararda piyasa_farki dolu / bos."""
+    if not a or not a["toplam"]:
+        return "veri yok (degerlendirilmis karar yok)"
+    return (f"{a['dolu']}/{a['toplam']} dolu, {a['bos']} bos "
+            f"(%{a['bos_oran']*100:.0f}) — {'OK' if a['saglikli'] else '🔴 BOZUK'}")
 
 
 def _mesaj(m: dict) -> str:
@@ -332,6 +353,7 @@ def _mesaj(m: dict) -> str:
         f"yukselis hafizasi {ok(g['yukselis_hafizasi']=='ok')}",
         f"AI hatalari: {m['ai_hata']}",
         f"Olu sembol: {m['olu']}",
+        f"Alpha olcumu ({(m.get('alpha') or {}).get('gun', 14)}g): {_alpha_txt(m.get('alpha'))}",
         "─────",
         f"DURUM: {m['durum']}",
     ]
