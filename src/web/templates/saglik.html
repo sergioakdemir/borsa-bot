@@ -215,8 +215,22 @@
 
     // ─── Bugünün Haber Sinyalleri (GÖLGE — canlı karara etki etmez) ───
     const hs2=d.haber_sinyaller||[];
+    const hd=d.haber_denetim||{}, gi=d.golge_isabet||{};
     h+='<div class="kart"><h2>📰 Bugünün Haber Sinyalleri '
      + '<span style="text-transform:none;font-weight:400;color:var(--sonuk)">· gölge, karara etki etmez</span></h2>';
+    // IS 4a: gunun eslesme denetimi (deger kaybi gorunur olsun)
+    if(hd.havuz!=null)
+      h+=satir('Haber eşleşmesi (bugün)',
+        `${hd.havuz} havuz · ${hd.konu_esles} konu · ${hd.isim_esles} isim`,
+        (hd.havuz>=20&&hd.konu_esles===0)?'kotu':'sonuk');
+    // IS 4b: golge isabet karnesi (canliya deger mi? — AL sinyalleri asil olcu)
+    const ga=gi.al||{};
+    if(ga.toplam)
+      h+=satir('Gölge AL isabeti',
+        ga.isabet_oran!=null
+          ? `%${ga.isabet_oran.toFixed(0)} (${ga.isabet}/${ga.isabet+ga.iskalama}) · ort %${(ga.ort_getiri>=0?'+':'')+ga.ort_getiri}`
+          : `${ga.toplam} sinyal, henüz sonuçlanmadı`,
+        ga.isabet_oran==null?'sonuk':(ga.isabet_oran>=50?'ok':'uyari'));
     if(hs2.length){
       for(const s of hs2){
         const rz = s.golge_karar==='AL'

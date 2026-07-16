@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS haber_sinyal (
     golge_karar   TEXT,
     gerekce       TEXT,
     fiyat_hareket REAL,
+    fiyat_sinyal  REAL,
     sonuc         TEXT,
+    getiri_yuzde  REAL,
     olusturma     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_haber_sinyal_tarih ON haber_sinyal(tarih);
@@ -419,6 +421,13 @@ def _migrate(c) -> None:
             c.execute("ALTER TABLE haber_etki ADD COLUMN kaynak TEXT")
         if "etki_yorumu" not in cols_he:
             c.execute("ALTER TABLE haber_etki ADD COLUMN etki_yorumu TEXT")
+    # haber_sinyal (GOLGE): isabet takibi icin sinyal-ani fiyati + getiri (IS 4).
+    if "haber_sinyal" in tbls:
+        cols_hs = {r["name"] for r in c.execute("PRAGMA table_info(haber_sinyal)")}
+        if "fiyat_sinyal" not in cols_hs:
+            c.execute("ALTER TABLE haber_sinyal ADD COLUMN fiyat_sinyal REAL")
+        if "getiri_yuzde" not in cols_hs:
+            c.execute("ALTER TABLE haber_sinyal ADD COLUMN getiri_yuzde REAL")
     # decisions: her (ticker, tarih) icin TEK kayit. Index yoksa once mukerrerleri
     # temizle (en yuksek id = en son karar kalir), sonra UNIQUE index'i kur. Index
     # varken bu blok atlanir; record_decision INSERT OR REPLACE ile tekrar olusturmaz.

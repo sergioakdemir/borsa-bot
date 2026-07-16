@@ -5698,6 +5698,24 @@ def _saglik_haber_sinyaller() -> list[dict]:
         return []
 
 
+def _saglik_haber_denetim() -> dict:
+    """IS 4a — gunun haber eslesme denetimi (havuz/konu/isim)."""
+    try:
+        from src.news import haber_sinyal
+        return haber_sinyal.denetim_ozeti()
+    except Exception:
+        return {}
+
+
+def _saglik_golge_isabet() -> dict:
+    """IS 4b — golge sinyal isabet karnesi (sonuclanmis sinyaller)."""
+    try:
+        from src.news import haber_sinyal
+        return haber_sinyal.isabet_ozeti()
+    except Exception:
+        return {}
+
+
 @app.route("/api/saglik/veri")
 def api_saglik_veri():
     """Panelin tek veri ucu. SALT OKUNUR — hicbir sey degistirmez."""
@@ -5721,6 +5739,8 @@ def api_saglik_veri():
         "haber": {"havuz": m["havuz"], "eslesme": m["haber_eslesme"],
                   "watchlist": saglik_karnesi.BIST_BEKLENEN},
         "haber_sinyaller": _saglik_haber_sinyaller(),
+        "haber_denetim": _saglik_haber_denetim(),
+        "golge_isabet": _saglik_golge_isabet(),
         "kredi": m["kredi"],
         "motor": m["motor"],
         "kaynak": {"kap_canli": m["kap_canli"], "kap_n": m["kap_n"],

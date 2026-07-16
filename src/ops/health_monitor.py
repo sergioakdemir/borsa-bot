@@ -205,6 +205,28 @@ def _kontrol_ai_hata():
     return None
 
 
+def _kontrol_haber_eslesme():
+    """IS 4a — HABER ICERIK DENETIMI: RSS havuzu SAGLAM (>=20 haber) ama konu-bazli
+    eslesme SIFIR mi? Bu, degerli haberin (petrol/faiz/savunma) hisseye baglanmadan
+    kaybolmaya basladigini gosterir (feed bozuldu veya eslestirme kirildi). Sadece
+    'bot calisiyor mu'ya degil 'bot dogru mu goruyor'a bakar. Snapshot'i golge
+    tarama yazar (haber_denetim:<gun>); yoksa sessiz (henuz tarama olmamis)."""
+    try:
+        from src.news import haber_sinyal
+        d = haber_sinyal.denetim_ozeti()
+    except Exception:
+        return None
+    havuz = d.get("havuz")
+    konu = d.get("konu_esles")
+    if havuz is None or konu is None:
+        return None                          # bugun henuz golge tarama kosmadi
+    if havuz >= 20 and konu == 0:
+        return ("haber_eslesme_yok",
+                f"RSS havuzu saglam ({havuz} haber) ama konu-bazli eslesme SIFIR — "
+                "degerli haber (petrol/faiz/savunma) hisseye baglanmiyor olabilir.")
+    return None
+
+
 def _kontrol_kap():
     """KAP bugun erisilemez olup ORNEK (sahte) kaynaga dusuldu mu? service.py
     fallback'te 'kap_ornek:<gun>' bayragini yazar; burada okunur -> gunde 1 uyari."""
@@ -350,7 +372,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     # gunde 1 kez yeter (kritikler 2 saatte bir tekrarlar; bu henuz ariza degil).
     core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_kredi_azaliyor,
             _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
-            _kontrol_heartbeat, _kontrol_risk_det,
+            _kontrol_heartbeat, _kontrol_risk_det, _kontrol_haber_eslesme,
             _kontrol_test_donemi)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":

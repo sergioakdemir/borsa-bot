@@ -50,6 +50,9 @@ CRON_TZ=Europe/Istanbul
 # ETKI ETMEZ (yalniz haber_sinyal tablosu + panel). Gunluk dedup -> her kosu
 # yalniz YENI eslesmeyi AI'a sorar (ucuz). Brifing oncesi 08:00 + oglen + aksam.
 0 8,13,18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal tara >> /root/borsa-bot/logs/haber_sinyal.log 2>&1
+# GOLGE isabet takibi (IS 4b): olgunlasmis (>=1 gun) sinyalleri guncel fiyatla
+# degerlendir -> isabet karnesi (katmani canliya almaya deger mi?). Aksam 19:30.
+30 19 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal sonuclandir >> /root/borsa-bot/logs/haber_sinyal.log 2>&1
 # Sistem saglik monitoru CORE (servis + DB): 7/24 her 30 dk
 */30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor core >> /root/borsa-bot/logs/health_monitor.log 2>&1
 # Sistem saglik monitoru MARKET (fiyat cache + ABD fiyatlari): hafta ici 9-19 her 30 dk

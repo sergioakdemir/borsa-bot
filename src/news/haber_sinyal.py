@@ -146,18 +146,21 @@ def _watchlist() -> set:
         return set()
 
 
-def _fiyat_hareket(ticker: str) -> float | None:
-    """Hissenin gunluk % hareketi (fiyat_cache) — fiyatlanmis teyidi icin.
-    Ag cagrisi yok; cache yoksa None."""
+def _fiyat_bilgi(ticker: str) -> tuple:
+    """(gunluk_%, mutlak_fiyat) fiyat_cache'ten. Ag cagrisi yok; yoksa (None,None).
+    gunluk: fiyatlanmis teyidi icin; mutlak: golge isabet takibi (IS 4) icin."""
     try:
         with _CACHE.open(encoding="utf-8") as f:
             d = json.load(f)
         kayit = d.get(ticker) or d.get(ticker + ".IS")
-        if kayit and isinstance(kayit.get("gunluk"), (int, float)):
-            return float(kayit["gunluk"])
+        if kayit:
+            g = kayit.get("gunluk")
+            fi = kayit.get("fiyat")
+            return (float(g) if isinstance(g, (int, float)) else None,
+                    float(fi) if isinstance(fi, (int, float)) else None)
     except Exception:
         pass
-    return None
+    return (None, None)
 
 
 def _haber_hash(baslik: str) -> str:
@@ -264,7 +267,7 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 40) -> dict:
             if _kayit_var(c, tarih, g["ticker"], g["hash"]):
                 continue                     # bugun zaten islendi
             islenen += 1
-            hareket = _fiyat_hareket(g["ticker"])
+            hareket, mutlak = _fiyat_bilgi(g["ticker"])
             etki = _ai_etki(g["ticker"], g["baslik"], g["ozet"], g["konu"], hareket)
             if not etki:
                 continue
@@ -272,18 +275,138 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 40) -> dict:
             c.execute(
                 "INSERT OR IGNORE INTO haber_sinyal "
                 "(tarih,ticker,konu,baslik,link,haber_hash,yon,guc,fiyatlanmis,"
-                " golge_karar,gerekce,fiyat_hareket,sonuc,olusturma) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " golge_karar,gerekce,fiyat_hareket,fiyat_sinyal,sonuc,getiri_yuzde,"
+                " olusturma) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tarih, g["ticker"], g["konu"], g["baslik"][:300], g["link"],
                  g["hash"], etki["yon"], etki["guc"], etki["fiyatlanmis"],
-                 karar, etki["gerekce"][:300], hareket, None,
+                 karar, etki["gerekce"][:300], hareket, mutlak, None, None,
                  datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")))
             yeni += 1
+    # IS 4a: gunluk icerik denetimi — havuz/eslesme snapshot (ayar tablosuna).
+    try:
+        _denetim_kaydet(entries, tarih)
+    except Exception:
+        pass
     if verbose:
         print(f"[haber_sinyal] GÖLGE tarama: {len(gorevler)} eslesme, "
               f"{islenen} yeni islendi, {yeni} sinyal yazildi (tarih={tarih})")
     return {"yeni": yeni, "islenen": islenen, "eslesme": len(gorevler),
             "tarih": tarih}
+
+
+# ---------------------------------------------------------------------------
+# IS 4a: GUNLUK ICERIK DENETIMI — "kac haber eslesti / kac cope gitti"
+# ---------------------------------------------------------------------------
+def _denetim_kaydet(entries, tarih):
+    """Gunun eslesme snapshot'ini ayar tablosuna yazar: havuz, isim-bazli eslesen,
+    konu-bazli eslesen. health_monitor bunu okuyup deger kaybini alarma cevirir."""
+    from src.db import database as db
+    from src.news.rss_source import mentions
+    watch = _watchlist()
+    havuz = len(entries)
+    konu_esles = isim_esles = 0
+    for e in entries:
+        text = f"{e.get('baslik','')} {e.get('ozet','')}"
+        if _konular(text):
+            konu_esles += 1
+        if watch and any(mentions(text, t) for t in watch):
+            isim_esles += 1
+    snap = {"havuz": havuz, "konu_esles": konu_esles, "isim_esles": isim_esles}
+    db.set_setting(f"haber_denetim:{tarih}", json.dumps(snap))
+
+
+def denetim_ozeti(tarih: str = None) -> dict:
+    """Gunun eslesme snapshot'i (panel/karne icin). Yoksa canli hesaplar."""
+    from src.db import database as db
+    tarih = tarih or _bugun()
+    try:
+        ham = db.get_setting(f"haber_denetim:{tarih}")
+        if ham:
+            return json.loads(ham)
+    except Exception:
+        pass
+    return {"havuz": None, "konu_esles": None, "isim_esles": None}
+
+
+# ---------------------------------------------------------------------------
+# IS 4b: GOLGE ISABET TAKIBI — sinyaller sonradan dogru mu cikti?
+# ---------------------------------------------------------------------------
+_ISABET_ESIK = 1.5     # AL icin: bu %'den fazla YUKARI -> isabet; asagi -> iskalama
+_KACIRMA_ESIK = 3.0    # BEKLE icin: bu %'den fazla YUKARI kacirdiysa -> iskalama
+
+
+def _gun_farki(t1: str, t2: str) -> int:
+    from datetime import date
+    try:
+        a = date.fromisoformat(t1); b = date.fromisoformat(t2)
+        return (a - b).days
+    except Exception:
+        return 0
+
+
+def sonuclandir(min_gun: int = 1, verbose: bool = True) -> dict:
+    """`min_gun` (takvim gunu) once uretilmis, henuz sonuclanmamis golge sinyalleri
+    guncel fiyatla degerlendirir. getiri = (guncel-sinyal_ani)/sinyal_ani.
+      AL   : getiri >= +%1.5 -> isabet | <= -%1.5 -> iskalama | arasi notr
+      BEKLE: getiri <= +%1.5 -> isabet (dogru bekledi) | >= +%3 -> iskalama (kacirdi)
+    CANLI KARARA ETKI ETMEZ — yalniz golge tablosunu doldurur."""
+    from src.db import database as db
+    bugun = _bugun()
+    guncel_fiyat = {}
+    n = 0
+    with db.get_conn() as c:
+        rows = list(c.execute(
+            "SELECT id,ticker,tarih,golge_karar,fiyat_sinyal FROM haber_sinyal "
+            "WHERE sonuc IS NULL AND fiyat_sinyal IS NOT NULL"))
+        for r in rows:
+            if _gun_farki(bugun, r["tarih"]) < min_gun:
+                continue                     # henuz olgunlasmadi
+            tic = r["ticker"]
+            if tic not in guncel_fiyat:
+                _, guncel_fiyat[tic] = _fiyat_bilgi(tic)
+            gf = guncel_fiyat[tic]
+            if not gf or not r["fiyat_sinyal"]:
+                continue
+            getiri = (gf - r["fiyat_sinyal"]) / r["fiyat_sinyal"] * 100
+            if r["golge_karar"] == "AL":
+                sonuc = ("isabet" if getiri >= _ISABET_ESIK else
+                         ("iskalama" if getiri <= -_ISABET_ESIK else "notr"))
+            else:   # BEKLE
+                sonuc = ("iskalama" if getiri >= _KACIRMA_ESIK else "isabet")
+            c.execute("UPDATE haber_sinyal SET sonuc=?, getiri_yuzde=? WHERE id=?",
+                      (sonuc, round(getiri, 2), r["id"]))
+            n += 1
+    if verbose:
+        print(f"[haber_sinyal] {n} golge sinyal sonuclandirildi (>= {min_gun} gun)")
+    return {"sonuclanan": n}
+
+
+def isabet_ozeti() -> dict:
+    """Sonuclanmis golge sinyallerin isabet karnesi (golge katman canliya deger mi?).
+    AL sinyalleri asil olcu — 'haber-AL dedi, sonra yukseldi mi?'."""
+    from src.db import database as db
+    out = {"al": {}, "bekle": {}, "toplam_sonuclanan": 0}
+    try:
+        with db.get_conn() as c:
+            rows = list(c.execute(
+                "SELECT golge_karar,sonuc,getiri_yuzde FROM haber_sinyal "
+                "WHERE sonuc IS NOT NULL"))
+    except Exception:
+        return out
+    for grup, karar in (("al", "AL"), ("bekle", "BEKLE")):
+        g = [r for r in rows if r["golge_karar"] == karar]
+        isabet = sum(1 for r in g if r["sonuc"] == "isabet")
+        iskalama = sum(1 for r in g if r["sonuc"] == "iskalama")
+        notr = sum(1 for r in g if r["sonuc"] == "notr")
+        degerli = isabet + iskalama       # notr disi (yon netlesen)
+        ort_getiri = (sum(r["getiri_yuzde"] or 0 for r in g) / len(g)) if g else None
+        out[grup] = {
+            "toplam": len(g), "isabet": isabet, "iskalama": iskalama, "notr": notr,
+            "isabet_oran": (isabet / degerli * 100) if degerli else None,
+            "ort_getiri": round(ort_getiri, 2) if ort_getiri is not None else None,
+        }
+    out["toplam_sonuclanan"] = len(rows)
+    return out
 
 
 def bugun_sinyaller(tarih: str = None) -> list[dict]:
@@ -320,6 +443,16 @@ def main(argv) -> int:
     komut = argv[1] if len(argv) > 1 else "tara"
     if komut == "goster":
         _goster()
+    elif komut == "sonuclandir":       # IS 4b: olgunlasmis sinyalleri degerlendir
+        sonuclandir()
+        import json as _j
+        print("Isabet karnesi:", _j.dumps(isabet_ozeti(), ensure_ascii=False))
+    elif komut == "isabet":
+        import json as _j
+        print(_j.dumps(isabet_ozeti(), ensure_ascii=False, indent=2))
+    elif komut == "denetim":
+        import json as _j
+        print(_j.dumps(denetim_ozeti(), ensure_ascii=False, indent=2))
     else:
         tara()
         _goster()

@@ -271,6 +271,13 @@ def topla(tarih=None) -> dict:
         alpha = alpha_olcum_sagligi()   # varsayilan 14g (degerlendirme gecikmesi)
     except Exception:
         alpha = None
+    # IS 4: GOLGE haber sinyali denetim + isabet (canliya deger mi izleme).
+    try:
+        from src.news import haber_sinyal
+        golge_denetim = haber_sinyal.denetim_ozeti(tarih)
+        golge_isabet = haber_sinyal.isabet_ozeti()
+    except Exception:
+        golge_denetim, golge_isabet = {}, {}
     hafta_ici = datetime.now(_TZ).weekday() < 5   # brifing yalniz hafta ici (cron 1-5)
 
     # --- KIRMIZI kosullar ---
@@ -346,6 +353,7 @@ def topla(tarih=None) -> dict:
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
         "alpha": alpha,
+        "golge_denetim": golge_denetim, "golge_isabet": golge_isabet,
     }
 
 
@@ -355,6 +363,25 @@ def _alpha_txt(a) -> str:
         return "veri yok (degerlendirilmis karar yok)"
     return (f"{a['dolu']}/{a['toplam']} dolu, {a['bos']} bos "
             f"(%{a['bos_oran']*100:.0f}) — {'OK' if a['saglikli'] else '🔴 BOZUK'}")
+
+
+def _golge_satiri(m: dict) -> str:
+    """GOLGE haber sinyali karne satiri: gunun eslesmesi + AL isabet karnesi.
+    Golge katman canliya alinmaya deger mi sorusunu 1-2 hafta sonra cevaplar."""
+    gd = m.get("golge_denetim") or {}
+    gi = m.get("golge_isabet") or {}
+    ga = gi.get("al") or {}
+    if gd.get("havuz") is not None:
+        esl = (f"Gölge haber sinyali: {gd['havuz']} havuz -> {gd['konu_esles']} "
+               f"konu / {gd['isim_esles']} isim eslesme")
+    else:
+        esl = "Gölge haber sinyali: bugün tarama yok"
+    if ga.get("toplam") and ga.get("isabet_oran") is not None:
+        esl += (f" | AL isabet: %{ga['isabet_oran']:.0f} "
+                f"({ga['isabet']}/{ga['isabet']+ga['iskalama']})")
+    elif ga.get("toplam"):
+        esl += f" | AL: {ga['toplam']} sinyal (henüz sonuçlanmadı)"
+    return esl
 
 
 def _mesaj(m: dict) -> str:
@@ -387,6 +414,7 @@ def _mesaj(m: dict) -> str:
         f"KAP basari orani: {kap_basari_txt}",
         f"Fiyat cache: {cache_txt}",
         f"Haber: {haber_txt}",
+        _golge_satiri(m),
         "─────",
         f"Gece isleri: trades {ok(g['trades']=='ok')} | karne {ok(g['karne']=='ok')} | "
         f"yukselis hafizasi {ok(g['yukselis_hafizasi']=='ok')}",
