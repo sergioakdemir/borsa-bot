@@ -81,17 +81,76 @@ KONU_KURALLARI = [
      "hisseler": ["EREGL", "KRDMD"]},
 ]
 
-_ETKI_SCHEMA = {
+# ANA OYUNCU sektor-alaka (kalibrasyon 3): bir hisse KENDI ana sektorunun
+# haberinde "etkisi sinirli/dolayli" diye zayiflatilamaz. Ana oyuncuysa alaka
+# GUCLU'dur. (17 Tem 2026: AI, ASELS'i (savunma ana oyuncusu) IHA ihalesinde
+# "dolayli, guc=zayif" damgaladi -> yanlis.)
+ANA_OYUNCULAR = {
+    "ASELS": "Türkiye'nin ANA savunma elektroniği ve İHA/SİHA sistemleri üreticisi",
+    "OTKAR": "ana askeri kara aracı üreticisi",
+    "TUPRS": "Türkiye'nin ANA petrol rafinericisi",
+    "PETKM": "ana petrokimya üreticisi",
+    "AYGAZ": "ana LPG dağıtıcısı",
+    "GARAN": "büyük ölçekli özel mevduat bankası",
+    "AKBNK": "büyük ölçekli özel mevduat bankası",
+    "YKBNK": "büyük ölçekli özel mevduat bankası",
+    "ISCTR": "büyük ölçekli özel mevduat bankası",
+    "HALKB": "büyük kamu mevduat bankası",
+    "VAKBN": "büyük kamu mevduat bankası",
+    "QNBTR": "büyük ölçekli mevduat bankası",
+    "SKBNK": "orta ölçekli mevduat bankası",
+    "EREGL": "Türkiye'nin ANA yassı çelik üreticisi",
+    "KRDMD": "ana uzun çelik üreticisi",
+    "KOZAL": "ana altın madencisi",
+    "KOZAA": "ana madencilik şirketi",
+    "THYAO": "Türkiye'nin ANA havayolu taşıyıcısı",
+    "PGSUS": "ana düşük maliyetli havayolu",
+    "TAVHL": "ana havalimanı işletmecisi",
+    "FROTO": "ana otomotiv üreticisi (ihracat ağırlıklı)",
+    "TOASO": "ana otomotiv üreticisi (ihracat ağırlıklı)",
+}
+
+
+# Sektor-bazli etki: TEK AI cagrisiyla hem SEKTOR yonu hem her hisse degerlendirilir
+# (kalibrasyon 2: ayni haber ayni sektoru keyfi bolmesin; kalibrasyon 3: ana
+# oyuncu zayiflatilmasin; kalibrasyon 1: TUPRS gibi cift-etkili hisselerde baskin
+# mekanizma sorulur + yon-gerekce tutarli olsun).
+_SEKTOR_ETKI_SCHEMA = {
     "type": "object",
     "properties": {
-        "yon": {"type": "string", "enum": ["yukari", "asagi", "belirsiz"]},
-        "guc": {"type": "string", "enum": ["zayif", "orta", "guclu"]},
-        "fiyatlanmis": {"type": "string", "enum": ["evet", "kismen", "hayir"]},
-        "gerekce": {"type": "string"},
+        "sektor_yon": {"type": "string", "enum": ["yukari", "asagi", "karisik"]},
+        "sektor_gerekce": {"type": "string"},
+        "hisseler": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "yon": {"type": "string", "enum": ["yukari", "asagi", "belirsiz"]},
+                    "guc": {"type": "string", "enum": ["zayif", "orta", "guclu"]},
+                    "fiyatlanmis": {"type": "string",
+                                    "enum": ["evet", "kismen", "hayir"]},
+                    "baskin_mekanizma": {"type": "string"},
+                    "gerekce": {"type": "string"},
+                },
+                "required": ["ticker", "yon", "guc", "fiyatlanmis", "gerekce"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["yon", "guc", "fiyatlanmis", "gerekce"],
+    "required": ["sektor_yon", "sektor_gerekce", "hisseler"],
     "additionalProperties": False,
 }
+
+# Yon-gerekce tutarlilik kontrolu (kalibrasyon 1): gerekce baskin olumsuz dil
+# tasirken yon=yukari (veya tersi) ise -> CELISKILI, dusuk guven.
+_OLUMSUZ_IZ = ("sikis", "daral", "baski", "maliyet artir", "maliyet yuksel",
+               "olumsuz", "negatif", "zarar", "dusur", "gerile", "asind",
+               "yuk artir", "borc yuk", "marj dus", "kar dus", "karlilik dus",
+               "kar azal", "aleyhine", "baskila")
+_OLUMLU_IZ = ("artar", "iyiles", "olumlu", "pozitif", "destekl", "kazanc",
+              "yukselt", "kar artir", "karlilik artir", "marj iyiles",
+              "fayda", "guclen", "lehine", "prim")
 
 
 def _load_dotenv():
@@ -168,45 +227,88 @@ def _haber_hash(baslik: str) -> str:
     return hashlib.sha256(_norm(baslik).encode("utf-8")).hexdigest()[:16]
 
 
-def _golge_karar(yon: str, guc: str, fiyatlanmis: str) -> str:
+def _golge_karar(yon: str, guc: str, fiyatlanmis: str, guven: str = "normal") -> str:
     """Gölge karar (yalniz kayit — CANLI KARARA ETKI ETMEZ).
     Panik AL'i onlemek icin muhafazakar: yon yukari VE guc>=orta VE tam
-    fiyatlanmamis olmali; aksi halde BEKLE."""
+    fiyatlanmamis VE guven dusuk degil. Aksi halde BEKLE. Celiskili (yon-gerekce
+    tutarsiz) sinyal AL veremez."""
+    if guven == "dusuk":
+        return "BEKLE"
     if yon == "yukari" and guc in ("orta", "guclu") and fiyatlanmis != "evet":
         return "AL"
     return "BEKLE"
 
 
-def _ai_etki(ticker: str, baslik: str, ozet: str, konu: str,
-             hareket: float | None, client=None) -> dict | None:
-    """Bir haberin bu hisseye etkisini AI ile etiketle. Hata -> None."""
+def _celiski_mi(yon: str, gerekce: str) -> bool:
+    """Yon ile gerekce metni celisiyor mu? (kalibrasyon 1 emniyet agi)
+    gerekce baskin OLUMSUZ dil tasirken yon=yukari, veya baskin OLUMLU dil
+    tasirken yon=asagi -> celiskili (dusuk guven damgasi)."""
+    n = _norm(gerekce or "")
+    olumsuz = sum(1 for k in _OLUMSUZ_IZ if k in n)
+    olumlu = sum(1 for k in _OLUMLU_IZ if k in n)
+    if yon == "yukari" and olumsuz > olumlu:
+        return True
+    if yon == "asagi" and olumlu > olumsuz:
+        return True
+    return False
+
+
+def _ai_sektor_etki(konu: str, baslik: str, ozet: str, hisseler: list,
+                    hareketler: dict, client=None) -> dict | None:
+    """TEK AI cagrisiyla bir haberin bir SEKTORDEKI hisselere etkisi.
+
+    Kalibrasyon:
+      2) Once SEKTOR yonu belirlenir; ayni sektordeki hisseler keyfi bolunmez
+         (hisse-ozel fark ancak SOMUT sebeple).
+      3) Ana oyuncu hisse KENDI sektorunun haberinde zayiflatilamaz (alaka guclu).
+      1) Rafineri gibi CIFT-ETKILI hisselerde baskin mekanizma sorulur ve yon
+         gerekce ile tutarli olur.
+    """
     try:
         import anthropic
         client = client or anthropic.Anthropic()
     except Exception:
         return None
-    hareket_txt = (f"Hissenin bugünkü fiyat hareketi: %{hareket:+.1f}. "
-                   "Haber bu hareketle zaten fiyatlanmış olabilir mi değerlendir."
-                   if hareket is not None else
-                   "Güncel fiyat hareketi verisi yok.")
+    hisse_satir = []
+    for t in hisseler:
+        rol = ANA_OYUNCULAR.get(t, "sektör oyuncusu")
+        hrk = hareketler.get(t)
+        hrk_txt = f"bugün %{hrk:+.1f}" if hrk is not None else "hareket verisi yok"
+        hisse_satir.append(f"  - {t}: {rol} ({hrk_txt})")
+    petrol_not = ""
+    if konu.startswith("Petrol"):
+        petrol_not = (
+            "\nÖNEMLI — RAFINERI ÇIFT ETKISI: Petrol fiyatı yükselişi rafineri/dağıtıcı "
+            "(TUPRS, AYGAZ) için ÇIFT yönlüdür: (a) jeopolitik/fiyat primi ve stok değer "
+            "artışı YUKARI iter, (b) ham madde maliyeti/marj sıkışması AŞAĞI iter. Her "
+            "rafineri hissesi için HANGISININ BASKIN olduğunu 'baskin_mekanizma'da belirt "
+            "ve 'yon'u ona göre ver. gerekce ile yon ÇELİŞMESİN.")
     sys_p = (
-        "Sen bir finans-haberi etki analistisin. Verilen haberin BELİRTİLEN HİSSE "
-        "üzerindeki olası etkisini değerlendir. Abartma; dolaylı/zayıf ilişkide "
-        "'zayif' ve 'belirsiz' kullan. FIYATLANMIS: haber çıktığında hisse o yönde "
-        "çoktan hareket ettiyse 'evet' (geç kalınmış), kısmen hareket ettiyse "
-        "'kismen', daha hareket etmediyse 'hayir'. gerekce TEK KISA cümle olsun.")
-    kullanici = (f"Hisse: {ticker}\nKonu: {konu}\nHaber başlığı: {baslik}\n"
-                 f"Özet: {(ozet or '')[:400]}\n{hareket_txt}")
+        "Sen bir finans-haberi etki analistisin. Bir haber ve etkilediği SEKTÖRdeki "
+        "hisseler verilir.\n"
+        "1) Önce haberin bu SEKTÖR üzerindeki BASKIN yönünü belirle (sektor_yon: "
+        "yukari/asagi/karisik) ve tek cümle gerekçele.\n"
+        "2) Sonra her hisse için yon/guc/fiyatlanmis/gerekce ver. Net bir haberse "
+        "aynı sektördeki hisseler AYNI yönde olmalı; bir hisseyi farklı yöne koyacaksan "
+        "gerekçede SOMUT sebebini yaz (yoksa sektör yönünü uygula). Yönü hissenin "
+        "günlük fiyat hareketine göre DEĞİL, haberin mekanizmasına göre belirle.\n"
+        "3) ANA OYUNCU olarak tanımlanan hisse KENDI sektörünün haberinde 'etkisi "
+        "sınırlı/dolaylı' diye zayıflatılamaz — ana oyuncuysa alaka GÜÇLÜdür.\n"
+        "FIYATLANMIS: haberdeki hareket zaten olduysa 'evet', kısmen 'kismen', "
+        "olmadıysa 'hayir'. Her gerekce TEK KISA cümle." + petrol_not)
+    kullanici = (f"Haber başlığı: {baslik}\nÖzet: {(ozet or '')[:400]}\n"
+                 f"Sektör/konu: {konu}\nEtkilenen hisseler ve rolleri:\n"
+                 + "\n".join(hisse_satir))
     try:
         resp = client.messages.create(
-            model=_MODEL, max_tokens=250, system=sys_p,
+            model=_MODEL, max_tokens=1500, system=sys_p,
             messages=[{"role": "user", "content": kullanici}],
             output_config={"format": {"type": "json_schema",
-                                      "schema": _ETKI_SCHEMA}})
+                                      "schema": _SEKTOR_ETKI_SCHEMA}})
         text = next((b.text for b in resp.content if b.type == "text"), "")
         return json.loads(text)
     except Exception as e:
-        print(f"  [haber_sinyal] {ticker}: AI etki alinamadi "
+        print(f"  [haber_sinyal] {konu}: AI sektör etkisi alinamadi "
               f"({type(e).__name__}: {str(e)[:120]})")
         return None
 
@@ -256,8 +358,11 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
                 konu_say[(r["ticker"], r["konu"])] = r["n"]
     except Exception:
         pass
-    gorevler = []
+    # (haber, konu) grupla: ayni haber+sektordeki TUM hisseler TEK AI cagrisina
+    # girsin -> sektor yon tutarliligi (kalibrasyon 2). Cap yine hisse+konu bazinda.
+    gruplar = {}                             # (hash, konu) -> {baslik,ozet,link,tickerlar}
     seen = set()
+    toplam_cift = 0
     for e in entries[:200]:
         text = f"{e.get('baslik','')} {e.get('ozet','')}"
         konular = _konular(text)
@@ -276,45 +381,60 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
                     continue                 # hisse+konu gunluk cap doldu
                 seen.add(anahtar)
                 konu_say[ck] = konu_say.get(ck, 0) + 1
-                gorevler.append({"ticker": tic, "konu": kural["konu"],
-                                 "baslik": e.get("baslik", ""),
-                                 "ozet": e.get("ozet", ""),
-                                 "link": e.get("link"), "hash": h})
-        if len(gorevler) >= limit_haber:
+                g = gruplar.setdefault((h, kural["konu"]), {
+                    "baslik": e.get("baslik", ""), "ozet": e.get("ozet", ""),
+                    "link": e.get("link"), "tickerlar": []})
+                g["tickerlar"].append(tic)
+                toplam_cift += 1
+        if toplam_cift >= limit_haber:
             break
 
     yeni = 0
     islenen = 0
     with db.get_conn() as c:
-        for g in gorevler:
-            if _kayit_var(c, tarih, g["ticker"], g["hash"]):
-                continue                     # bugun zaten islendi
-            islenen += 1
-            hareket, mutlak = _fiyat_bilgi(g["ticker"])
-            etki = _ai_etki(g["ticker"], g["baslik"], g["ozet"], g["konu"], hareket)
-            if not etki:
+        for (h, konu), g in gruplar.items():
+            kalan = [t for t in g["tickerlar"] if not _kayit_var(c, tarih, t, h)]
+            if not kalan:
+                continue                     # bu haber+sektor bugun zaten islendi
+            hareketler, fiyatlar = {}, {}
+            for t in kalan:
+                hareketler[t], fiyatlar[t] = _fiyat_bilgi(t)
+            islenen += len(kalan)
+            sonuc = _ai_sektor_etki(konu, g["baslik"], g["ozet"], kalan, hareketler)
+            if not sonuc:
                 continue
-            karar = _golge_karar(etki["yon"], etki["guc"], etki["fiyatlanmis"])
-            c.execute(
-                "INSERT OR IGNORE INTO haber_sinyal "
-                "(tarih,ticker,konu,baslik,link,haber_hash,yon,guc,fiyatlanmis,"
-                " golge_karar,gerekce,fiyat_hareket,fiyat_sinyal,sonuc,getiri_yuzde,"
-                " olusturma) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (tarih, g["ticker"], g["konu"], g["baslik"][:300], g["link"],
-                 g["hash"], etki["yon"], etki["guc"], etki["fiyatlanmis"],
-                 karar, etki["gerekce"][:300], hareket, mutlak, None, None,
-                 datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")))
-            yeni += 1
+            per = {d.get("ticker"): d for d in sonuc.get("hisseler", [])}
+            zaman = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            for t in kalan:
+                d = per.get(t)
+                if not d:
+                    continue                 # AI bu hisseyi dondurmedi
+                yon, guc, fy = d["yon"], d["guc"], d["fiyatlanmis"]
+                gerekce = d.get("gerekce", "")
+                guven = "dusuk" if _celiski_mi(yon, gerekce) else "normal"
+                karar = _golge_karar(yon, guc, fy, guven)
+                c.execute(
+                    "INSERT OR IGNORE INTO haber_sinyal "
+                    "(tarih,ticker,konu,baslik,link,haber_hash,yon,guc,fiyatlanmis,"
+                    " golge_karar,gerekce,fiyat_hareket,fiyat_sinyal,guven,"
+                    " baskin_mekanizma,sonuc,getiri_yuzde,olusturma) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (tarih, t, konu, g["baslik"][:300], g["link"], h,
+                     yon, guc, fy, karar, gerekce[:300], hareketler.get(t),
+                     fiyatlar.get(t), guven, (d.get("baskin_mekanizma") or "")[:200],
+                     None, None, zaman))
+                yeni += 1
     # IS 4a: gunluk icerik denetimi — havuz/eslesme snapshot (ayar tablosuna).
     try:
         _denetim_kaydet(entries, tarih)
     except Exception:
         pass
     if verbose:
-        print(f"[haber_sinyal] GÖLGE tarama: {len(gorevler)} eslesme, "
-              f"{islenen} yeni islendi, {yeni} sinyal yazildi (tarih={tarih})")
-    return {"yeni": yeni, "islenen": islenen, "eslesme": len(gorevler),
-            "tarih": tarih}
+        print(f"[haber_sinyal] GÖLGE tarama: {toplam_cift} eslesme ({len(gruplar)} "
+              f"haber-sektör grubu), {islenen} yeni islendi, {yeni} sinyal yazildi "
+              f"(tarih={tarih})")
+    return {"yeni": yeni, "islenen": islenen, "eslesme": toplam_cift,
+            "gruplar": len(gruplar), "tarih": tarih}
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +560,8 @@ def bugun_sinyaller(tarih: str = None) -> list[dict]:
         with db.get_conn() as c:
             rows = c.execute(
                 "SELECT ticker,konu,baslik,link,yon,guc,fiyatlanmis,golge_karar,"
-                "gerekce,fiyat_hareket,sonuc FROM haber_sinyal WHERE tarih=? "
+                "gerekce,fiyat_hareket,guven,baskin_mekanizma,sonuc FROM haber_sinyal "
+                "WHERE tarih=? "
                 "ORDER BY CASE golge_karar WHEN 'AL' THEN 0 ELSE 1 END, ticker",
                 (tarih,)).fetchall()
         return [dict(r) for r in rows]

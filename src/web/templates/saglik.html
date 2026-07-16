@@ -178,14 +178,18 @@
     const dg=k.dagilim||{}, hb=d.haber||{};
     const kararN=(k.bist||0)+(k.us||0);
     const taranan=k.taranan||kararN;
-    const sorunVar=!!(kr.bitti||(d.durum||'').startsWith('🔴')||(d.kirmizi||[]).length);
+    const bekleniyor=!!d.brifing_bekleniyor;
+    const sorunVar=!bekleniyor && !!(kr.bitti||(d.durum||'').startsWith('🔴')||(d.kirmizi||[]).length);
     const iyiTarama=k.bist>=k.bist_beklenen*0.9;
     const osat=(e,v,s='')=>`<div class="osat"><span class="oe">${E(e)}</span><span class="od ${s}">${v}</span></div>`;
-    let oz=`<div class="ozet ${sorunVar?'sorun':'iyi'}">`;
-    oz+=`<div class="baslik">${sorunVar?'🔴 Bugün bir sorun var':'🟢 Bot bugün iyi çalıştı'}</div>`;
+    const ozSinif = bekleniyor?'':(sorunVar?'sorun':'iyi');
+    let oz=`<div class="ozet ${ozSinif}">`;
+    oz+=`<div class="baslik">${bekleniyor?'⏳ Bugünün brifingi henüz koşmadı (09:00 bekleniyor)'
+        :(sorunVar?'🔴 Bugün bir sorun var':'🟢 Bot bugün iyi çalıştı')}</div>`;
     // 1) tarama & karar
-    oz+=osat('Taranan / karar üretilen', `${taranan} hisse · ${kararN} karar`,
-             iyiTarama?'ok':(kararN>0?'uyari':'kotu'));
+    oz+=osat('Taranan / karar üretilen',
+             bekleniyor?'brifing bekleniyor':`${taranan} hisse · ${kararN} karar`,
+             bekleniyor?'sonuk':(iyiTarama?'ok':(kararN>0?'uyari':'kotu')));
     // 2) karar dağılımı
     oz+=osat('Kararların dağılımı',
              `${dg.al||0} AL · ${dg.uzak_dur||0} UZAK DUR · ${dg.bekle||0} BEKLE · ${(dg.tut||0)+(dg.azalt||0)} TUT/AZALT`,
@@ -208,8 +212,9 @@
     oz+=osat('Kredi durumu', krTxt, krSinif);
     // 5) sorun var mı
     const ilkSorun=(d.kirmizi&&d.kirmizi[0])||(kr.bitti?'AI kredisi bitti':'');
-    oz+=osat('Bugün bir sorun oldu mu', sorunVar?('Evet — '+E(ilkSorun)):'Hayır',
-             sorunVar?'kotu':'ok');
+    oz+=osat('Bugün bir sorun oldu mu',
+             bekleniyor?'brifing bekleniyor':(sorunVar?('Evet — '+E(ilkSorun)):'Hayır'),
+             bekleniyor?'sonuk':(sorunVar?'kotu':'ok'));
     oz+='</div>';
     h+=oz;
 
@@ -237,10 +242,13 @@
           ? '<span class="rozetAL">AL</span>' : '<span class="rozetBEKLE">BEKLE</span>';
         const fy = s.fiyatlanmis==='evet' ? '<span class="uyari">zaten fiyatlanmış</span>'
           : (s.fiyatlanmis==='kismen' ? 'kısmen fiyatlanmış' : 'fiyatlanmamış');
+        const dg = s.guven==='dusuk'
+          ? ' <span class="kotu" title="yön ile gerekçe çelişiyor">⚠️ düşük güven</span>' : '';
         h+=`<div class="sinyal"><div class="sbas"><b>${E(s.ticker)}</b> ← ${E(s.konu)}`
-         + ` · gölge: ${rz} <span class="sonuk">(${E(s.yon)}/${E(s.guc)} · ${fy})</span></div>`;
+         + ` · gölge: ${rz} <span class="sonuk">(${E(s.yon)}/${E(s.guc)} · ${fy})</span>${dg}</div>`;
         h+=`<div class="sbaslik sonuk">${E(s.baslik)}</div>`;
         if(s.gerekce) h+=`<div class="sger">${E(s.gerekce)}</div>`;
+        if(s.baskin_mekanizma) h+=`<div class="sger sonuk">baskın mekanizma: ${E(s.baskin_mekanizma)}</div>`;
         h+='</div>';
       }
     } else h+='<div class="bos">Bugün gölge haber sinyali yok.</div>';

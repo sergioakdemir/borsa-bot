@@ -26,6 +26,8 @@ CACHE_PATH = ROOT / "data" / "fiyat_cache.json"
 BIST_BEKLENEN = 92          # watchlist bist_endeks
 US_BEKLENEN = 16            # instruments market='US' aktif
 BIST_ALT_ESIK = 0.70        # beklenenin %70 alti -> kirmizi
+BRIFING_BEKLEME_SAAT = 10   # bu saatten ONCE 0 karar = brifing henuz kosmadi (normal),
+                            # SONRA 0 karar = gercek sorun (kirmizi)
 
 
 def _bugun():
@@ -278,7 +280,13 @@ def topla(tarih=None) -> dict:
         golge_isabet = haber_sinyal.isabet_ozeti()
     except Exception:
         golge_denetim, golge_isabet = {}, {}
-    hafta_ici = datetime.now(_TZ).weekday() < 5   # brifing yalniz hafta ici (cron 1-5)
+    simdi = datetime.now(_TZ)
+    hafta_ici = simdi.weekday() < 5               # brifing yalniz hafta ici (cron 1-5)
+    # Gun-basi yanlis alarm onleme: bugun VE brifing saati (09:00) daha gecmediyse,
+    # 0/az karar NORMALDIR (brifing henuz kosmadi) -> kirmizi verme, "bekleniyor" de.
+    brifing_bekleniyor = (tarih == _bugun() and hafta_ici
+                          and simdi.hour < BRIFING_BEKLEME_SAAT
+                          and bist < BIST_BEKLENEN * BIST_ALT_ESIK)
 
     # --- KIRMIZI kosullar ---
     kirmizi = []
@@ -294,9 +302,9 @@ def topla(tarih=None) -> dict:
                        f"kararda piyasa_farki bos (%{alpha['bos_oran']*100:.0f})")
     if taranan and atlanan / taranan > 0.10:
         kirmizi.append(f"watchlist'in %{atlanan/taranan*100:.0f}'i atlandi (>%10)")
-    # BIST karar sayisi: yalniz brifing BEKLENEN gunlerde (hafta ici) alarm ver;
-    # hafta sonu 0 karar normaldir.
-    if hafta_ici and bist < BIST_BEKLENEN * BIST_ALT_ESIK:
+    # BIST karar sayisi: yalniz brifing BEKLENEN gunlerde (hafta ici) VE brifing
+    # saati gectiyse alarm ver; hafta sonu 0 karar ve brifing-oncesi 0 karar normaldir.
+    if hafta_ici and not brifing_bekleniyor and bist < BIST_BEKLENEN * BIST_ALT_ESIK:
         kirmizi.append(f"BIST karari {bist}/{BIST_BEKLENEN} (beklenenin %70 alti)")
     # Gunluk gece isleri (trades, karne) her gece calisir -> bayat/yok ise kirmizi.
     for etiket in ("trades", "karne"):
@@ -352,7 +360,7 @@ def topla(tarih=None) -> dict:
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
-        "alpha": alpha,
+        "alpha": alpha, "brifing_bekleniyor": brifing_bekleniyor,
         "golge_denetim": golge_denetim, "golge_isabet": golge_isabet,
     }
 

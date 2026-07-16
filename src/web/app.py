@@ -5750,6 +5750,7 @@ def api_saglik_veri():
         "alpha_saglik": m.get("alpha"),
         "alarmlar": _saglik_alarmlar(),
         "kirmizi": m["kirmizi"], "sari": m["sari"],
+        "brifing_bekleniyor": m.get("brifing_bekleniyor", False),
     })
 
 
