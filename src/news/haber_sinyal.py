@@ -217,7 +217,15 @@ def _kayit_var(c, tarih: str, ticker: str, h: str) -> bool:
     return r is not None
 
 
-def tara(rss=None, verbose: bool = True, limit_haber: int = 40) -> dict:
+# Hisse+konu basina GUNLUK sinyal cap'i. Ayni banka icin 5 ayri "faiz" haberi ayni
+# temayi tekrarlar -> gurultu; ayni hisse+konu icin gunde en fazla bu kadar sinyal
+# tutulur. Boylece banka faiz tekrari, petrol/Hurmuz/savunma gibi DIGER konularin
+# sinyal butcesini yemez (17 Tem 2026: 40'lik global cap banka faiziyle dolup
+# Hurmuz+Iran petrol haberlerini dusuruyordu).
+_KONU_BASINA_MAX = 3
+
+
+def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
     """GÖLGE tarama: RSS havuzu -> konu eslestirme -> AI etki -> haber_sinyal.
     CANLI KARARA DOKUNMAZ. Yeni yazilan sinyal sayisini + ozet doner."""
     from src.db import database as db
@@ -236,7 +244,18 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 40) -> dict:
             print(f"[haber_sinyal] RSS havuzu alinamadi: {type(e).__name__}")
         return {"yeni": 0, "islenen": 0, "hata": str(e)}
 
-    # (hisse, haber) ciftlerini topla (dedup: ayni gun ayni haber+hisse bir kez).
+    # (hisse, haber) ciftlerini topla. Dedup: (1) ayni gun ayni haber+hisse bir kez,
+    # (2) hisse+konu basina gunluk _KONU_BASINA_MAX cap (banka faiz tekrari digerlerini
+    # ezmesin). Cap'e MEVCUT DB kayitlari da katilir -> gun ici tekrar kosu sismesin.
+    from src.db import database as _dbm
+    konu_say = {}                            # (ticker, konu) -> bugunku sinyal sayisi
+    try:
+        with _dbm.get_conn() as _c:
+            for r in _c.execute("SELECT ticker,konu,COUNT(*) n FROM haber_sinyal "
+                                "WHERE tarih=? GROUP BY ticker,konu", (tarih,)):
+                konu_say[(r["ticker"], r["konu"])] = r["n"]
+    except Exception:
+        pass
     gorevler = []
     seen = set()
     for e in entries[:200]:
@@ -252,7 +271,11 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 40) -> dict:
                 anahtar = (tic, h)
                 if anahtar in seen:
                     continue
+                ck = (tic, kural["konu"])
+                if konu_say.get(ck, 0) >= _KONU_BASINA_MAX:
+                    continue                 # hisse+konu gunluk cap doldu
                 seen.add(anahtar)
+                konu_say[ck] = konu_say.get(ck, 0) + 1
                 gorevler.append({"ticker": tic, "konu": kural["konu"],
                                  "baslik": e.get("baslik", ""),
                                  "ozet": e.get("ozet", ""),
