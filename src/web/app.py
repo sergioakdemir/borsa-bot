@@ -5688,6 +5688,16 @@ def _saglik_alarmlar(saat=24) -> list[dict]:
     return out
 
 
+def _saglik_haber_sinyaller() -> list[dict]:
+    """GÖLGE haber sinyalleri (bugun) — panelde gosterilir. CANLI KARARA
+    ETKI ETMEZ; yalniz haber_sinyal tablosundan okur."""
+    try:
+        from src.news import haber_sinyal
+        return haber_sinyal.bugun_sinyaller()
+    except Exception:
+        return []
+
+
 @app.route("/api/saglik/veri")
 def api_saglik_veri():
     """Panelin tek veri ucu. SALT OKUNUR — hicbir sey degistirmez."""
@@ -5710,6 +5720,7 @@ def api_saglik_veri():
                   "gun_sinif": m["gun_sinif"], "gun_sebep": m["gun_sebep"]},
         "haber": {"havuz": m["havuz"], "eslesme": m["haber_eslesme"],
                   "watchlist": saglik_karnesi.BIST_BEKLENEN},
+        "haber_sinyaller": _saglik_haber_sinyaller(),
         "kredi": m["kredi"],
         "motor": m["motor"],
         "kaynak": {"kap_canli": m["kap_canli"], "kap_n": m["kap_n"],

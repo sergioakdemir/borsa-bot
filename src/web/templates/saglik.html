@@ -51,6 +51,13 @@
   details.teknik[open]>summary{margin-bottom:10px}
   .kart{background:var(--kart);border:1px solid var(--cizgi);border-radius:12px;
         padding:12px 14px;margin-bottom:10px}
+  .sinyal{padding:9px 0;border-bottom:1px solid var(--cizgi)}
+  .sinyal:last-child{border-bottom:0}
+  .sinyal .sbas{font-size:14px}
+  .sinyal .sbaslik{font-size:12px;margin:2px 0}
+  .sinyal .sger{font-size:12px;color:var(--yazi);opacity:.85}
+  .rozetAL{color:var(--yesil);font-weight:700}
+  .rozetBEKLE{color:var(--sonuk);font-weight:600}
   .kart h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
            color:var(--sonuk);margin:0 0 10px;font-weight:600}
   .satir{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
@@ -205,6 +212,25 @@
              sorunVar?'kotu':'ok');
     oz+='</div>';
     h+=oz;
+
+    // ─── Bugünün Haber Sinyalleri (GÖLGE — canlı karara etki etmez) ───
+    const hs2=d.haber_sinyaller||[];
+    h+='<div class="kart"><h2>📰 Bugünün Haber Sinyalleri '
+     + '<span style="text-transform:none;font-weight:400;color:var(--sonuk)">· gölge, karara etki etmez</span></h2>';
+    if(hs2.length){
+      for(const s of hs2){
+        const rz = s.golge_karar==='AL'
+          ? '<span class="rozetAL">AL</span>' : '<span class="rozetBEKLE">BEKLE</span>';
+        const fy = s.fiyatlanmis==='evet' ? '<span class="uyari">zaten fiyatlanmış</span>'
+          : (s.fiyatlanmis==='kismen' ? 'kısmen fiyatlanmış' : 'fiyatlanmamış');
+        h+=`<div class="sinyal"><div class="sbas"><b>${E(s.ticker)}</b> ← ${E(s.konu)}`
+         + ` · gölge: ${rz} <span class="sonuk">(${E(s.yon)}/${E(s.guc)} · ${fy})</span></div>`;
+        h+=`<div class="sbaslik sonuk">${E(s.baslik)}</div>`;
+        if(s.gerekce) h+=`<div class="sger">${E(s.gerekce)}</div>`;
+        h+='</div>';
+      }
+    } else h+='<div class="bos">Bugün gölge haber sinyali yok.</div>';
+    h+='</div>';
 
     // ─── Teknik detaylar: katlanabilir (sahibi için gerekli değil) ───
     h+='<details class="teknik"><summary>Teknik detaylar</summary>';

@@ -84,6 +84,29 @@ CREATE TABLE IF NOT EXISTS eq_golge (
     sonuc         TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_eq_golge_tarih ON eq_golge(tarih);
+-- GOLGE haber sinyali (17 Tem 2026): haber->hisse->etki katmani. CANLI KARARA
+-- ETKI ETMEZ; yalniz kaydedilir ve panelde gosterilir (decisions'a hic yazmaz).
+-- IS 4 icin 'sonuc' sonradan doldurulur (golge isabet takibi).
+CREATE TABLE IF NOT EXISTS haber_sinyal (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    tarih         TEXT NOT NULL,
+    ticker        TEXT NOT NULL,
+    konu          TEXT,
+    baslik        TEXT,
+    link          TEXT,
+    haber_hash    TEXT,
+    yon           TEXT,
+    guc           TEXT,
+    fiyatlanmis   TEXT,
+    golge_karar   TEXT,
+    gerekce       TEXT,
+    fiyat_hareket REAL,
+    sonuc         TEXT,
+    olusturma     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_haber_sinyal_tarih ON haber_sinyal(tarih);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_haber_sinyal_gun
+    ON haber_sinyal(tarih, ticker, haber_hash);
 CREATE TABLE IF NOT EXISTS portfoy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     kullanici_id  INTEGER NOT NULL REFERENCES kullanici(id),

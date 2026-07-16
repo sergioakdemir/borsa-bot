@@ -46,6 +46,10 @@ CRON_TZ=Europe/Istanbul
 30 9 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.foreign_investor >> /root/borsa-bot/logs/yabanci_pay.log 2>&1
 # Proaktif sektor haber taramasi (gece/hafta sonu dahil): her 30 dk
 */30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts sektor >> /root/borsa-bot/logs/alerts.log 2>&1
+# GOLGE haber sinyali (IS 3, 17 Tem 2026): haber->hisse->AI etki, CANLI KARARA
+# ETKI ETMEZ (yalniz haber_sinyal tablosu + panel). Gunluk dedup -> her kosu
+# yalniz YENI eslesmeyi AI'a sorar (ucuz). Brifing oncesi 08:00 + oglen + aksam.
+0 8,13,18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal tara >> /root/borsa-bot/logs/haber_sinyal.log 2>&1
 # Sistem saglik monitoru CORE (servis + DB): 7/24 her 30 dk
 */30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.health_monitor core >> /root/borsa-bot/logs/health_monitor.log 2>&1
 # Sistem saglik monitoru MARKET (fiyat cache + ABD fiyatlari): hafta ici 9-19 her 30 dk
