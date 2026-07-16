@@ -264,11 +264,6 @@ def _ai_sektor_etki(konu: str, baslik: str, ozet: str, hisseler: list,
       1) Rafineri gibi CIFT-ETKILI hisselerde baskin mekanizma sorulur ve yon
          gerekce ile tutarli olur.
     """
-    try:
-        import anthropic
-        client = client or anthropic.Anthropic()
-    except Exception:
-        return None
     hisse_satir = []
     for t in hisseler:
         rol = ANA_OYUNCULAR.get(t, "sektör oyuncusu")
@@ -299,18 +294,13 @@ def _ai_sektor_etki(konu: str, baslik: str, ozet: str, hisseler: list,
     kullanici = (f"Haber başlığı: {baslik}\nÖzet: {(ozet or '')[:400]}\n"
                  f"Sektör/konu: {konu}\nEtkilenen hisseler ve rolleri:\n"
                  + "\n".join(hisse_satir))
-    try:
-        resp = client.messages.create(
-            model=_MODEL, max_tokens=1500, system=sys_p,
-            messages=[{"role": "user", "content": kullanici}],
-            output_config={"format": {"type": "json_schema",
-                                      "schema": _SEKTOR_ETKI_SCHEMA}})
-        text = next((b.text for b in resp.content if b.type == "text"), "")
-        return json.loads(text)
-    except Exception as e:
-        print(f"  [haber_sinyal] {konu}: AI sektör etkisi alinamadi "
-              f"({type(e).__name__}: {str(e)[:120]})")
-        return None
+    # Çift-sağlayıcı yönlendirici: ÖNCE Anthropic; Anthropic hata verirse ve NVIDIA
+    # anahtarı varsa NVIDIA yedeğine düşer (is_tipi="golge" -> yedeğe UYGUN). Ana
+    # AL/SAT kararı bu yoldan GEÇMEZ (o commentary._ai_verdict'te, saf Anthropic).
+    from src.ai import saglayici
+    return saglayici.json_cagir(
+        sys_p, kullanici, _SEKTOR_ETKI_SCHEMA, max_tokens=1500,
+        is_tipi="golge", anthropic_model=_MODEL, client=client)
 
 
 def _kayit_var(c, tarih: str, ticker: str, h: str) -> bool:

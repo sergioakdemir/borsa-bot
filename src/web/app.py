@@ -5744,6 +5744,7 @@ def api_saglik_veri():
         "haber_denetim": _saglik_haber_denetim(),
         "golge_isabet": _saglik_golge_isabet(),
         "kredi": m["kredi"],
+        "nvidia": m.get("nvidia"),
         "motor": m["motor"],
         "kaynak": {"kap_canli": m["kap_canli"], "kap_n": m["kap_n"],
                    "kap_basari": m["kap_basari"], "cache_yas": m["cache_yas"],

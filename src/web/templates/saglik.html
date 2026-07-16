@@ -210,6 +210,10 @@
         krSinif=th.gun_kaldi<=7?'kotu':(th.gun_kaldi<=14?'uyari':'ok'); }
       else krTxt=E(kr.tahmin_txt||'var'); }
     oz+=osat('Kredi durumu', krTxt, krSinif);
+    // NVIDIA acil-durum yedeği: yalnız BUGÜN devreye girdiyse özete koy (girdiyse
+    // Anthropic o gün sorun yaşadı demektir — sahibi görsün).
+    const nv=d.nvidia||{};
+    if(nv.bugun){ oz+=osat('NVIDIA yedek', `bugün ${nv.bugun} kez devreye girdi`, 'uyari'); }
     // 5) sorun var mı
     const ilkSorun=(d.kirmizi&&d.kirmizi[0])||(kr.bitti?'AI kredisi bitti':'');
     oz+=osat('Bugün bir sorun oldu mu',
@@ -273,6 +277,12 @@
     else if(th.uyari) bs='kotu';
     else if(th.gun_kaldi!=null && th.gun_kaldi<=14) bs='uyari';
     h+=satir('Kalan (tahmini)', E(kr.tahmin_txt||'—'), bs);
+    // NVIDIA acil-durum yedeği (Anthropic çökerse yardımcı işler buraya düşer;
+    // ana AL/SAT kararı ASLA düşmez). Anahtar boşsa pasif — sistem Anthropic-only.
+    h+=satir('NVIDIA acil yedek',
+             nv.aktif ? `aktif · bugün ${nv.bugun||0} kez devreye girdi`
+                      : 'pasif (anahtar bekleniyor)',
+             nv.aktif ? (nv.bugun?'uyari':'ok') : 'sonuk');
     h+='</div>';
 
     // Karar uretimi

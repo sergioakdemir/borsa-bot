@@ -224,6 +224,9 @@ def nabiz(m: dict) -> str:
     kap_txt = f"%{kb['oran']:.0f}" if kb.get("oran") is not None else "veri yok"
     motor_txt = "ok" if m.get("motorlar_ok") else "SORUN"
     karar_n = (m.get("bist") or 0) + (m.get("us") or 0)
+    # NVIDIA yedegi bugun devreye girdiyse nabza ekle (Anthropic sorun yasadi demek).
+    nv = m.get("nvidia") or {}
+    nv_txt = f" | NVIDIA yedek: {nv['bugun']} kez" if nv.get("bugun") else ""
     # Rozet: kredi bitti her seyi ezer (karar uretimi tamamen durur).
     if kredi.get("bitti"):
         rozet = "🔴"
@@ -234,7 +237,8 @@ def nabiz(m: dict) -> str:
     else:
         rozet = "✅"
     return (f"{rozet} {m['tarih']}: {karar_n} karar üretildi | kredi: {kredi_txt} | "
-            f"KAP: {kap_txt} | AI hata: {m.get('ai_hata', 0)} | motorlar: {motor_txt}")
+            f"KAP: {kap_txt} | AI hata: {m.get('ai_hata', 0)} | motorlar: {motor_txt}"
+            f"{nv_txt}")
 
 
 def topla(tarih=None) -> dict:
@@ -280,6 +284,12 @@ def topla(tarih=None) -> dict:
         golge_isabet = haber_sinyal.isabet_ozeti()
     except Exception:
         golge_denetim, golge_isabet = {}, {}
+    # NVIDIA acil-durum yedegi: aktif/pasif + bugun kac kez devreye girdi.
+    try:
+        from src.ai import saglayici
+        nvidia = saglayici.yedek_durum(tarih)
+    except Exception:
+        nvidia = {"aktif": False, "bugun": 0, "durum": "bilinmiyor", "model": None}
     simdi = datetime.now(_TZ)
     hafta_ici = simdi.weekday() < 5               # brifing yalniz hafta ici (cron 1-5)
     # Gun-basi yanlis alarm onleme: bugun VE brifing saati (09:00) daha gecmediyse,
@@ -362,6 +372,7 @@ def topla(tarih=None) -> dict:
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
         "alpha": alpha, "brifing_bekleniyor": brifing_bekleniyor,
         "golge_denetim": golge_denetim, "golge_isabet": golge_isabet,
+        "nvidia": nvidia,
     }
 
 
