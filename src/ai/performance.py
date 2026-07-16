@@ -90,43 +90,52 @@ def get_performance_metrics(kullanici_id=None) -> dict:
     }
 
 
-def acik_versiyon_ozet(kullanici_id=None) -> dict:
-    """AÇIK pozisyonları strateji sürümüne göre (v2/v1) kırar.
+# AKTIF strateji surumu = commentary.STRATEGY_VERSION. v2 ve v1 artik ARSIV
+# (17 Tem 2026: v2 hic duzgun test edilemeden kapandi -> v2.1 temiz sayfa).
+AKTIF_SURUM = "v2.1"
 
-    Her sürüm için: açık pozisyon sayısı ve ortalama güncel K/Z (pnl_yuzde). Açık
+
+def acik_versiyon_ozet(kullanici_id=None) -> dict:
+    """AÇIK pozisyonları AKTIF sürüm (v2.1) vs ARŞIV (v1+v2) olarak kırar.
+
+    Her grup için: açık pozisyon sayısı ve ortalama güncel K/Z (pnl_yuzde). Açık
     pozisyonların pnl_yuzde'si her gece update_trades tarafından güncel getiriyle
     yazılır; None olan pozisyon ortalamaya katılmaz ama sayıya girer.
 
-    Döner: {"v2": {"sayi": X, "ort": Y|None}, "v1": {"sayi": Z, "ort": W|None}}.
-    'v2' = 7 Temmuz 2026 paketiyle açılan yeni sistem; 'v1' = önceki (eski yük).
+    Döner: {"yeni": {"sayi","ort","surum"}, "eski": {"sayi","ort"}}.
+    'yeni' = v2.1 (aktif); 'eski' = v1+v2 (arşiv, eski yük).
     """
     from src.db import database as db
 
     trades = db.list_trades(durum="acik", kullanici_id=kullanici_id)
-    ozet = {}
-    for v in ("v2", "v1"):
-        grup = [t for t in trades if (t.get("strategy_version") or "v1") == v]
+
+    def _grup(kosul):
+        grup = [t for t in trades if kosul((t.get("strategy_version") or "v1"))]
         pnls = [t["pnl_yuzde"] for t in grup
                 if isinstance(t.get("pnl_yuzde"), (int, float))]
         ort = round(sum(pnls) / len(pnls), 2) if pnls else None
-        ozet[v] = {"sayi": len(grup), "ort": ort}
-    return ozet
+        return {"sayi": len(grup), "ort": ort}
+
+    return {
+        "yeni": {**_grup(lambda v: v == AKTIF_SURUM), "surum": AKTIF_SURUM},
+        "eski": _grup(lambda v: v != AKTIF_SURUM),
+    }
 
 
 def versiyon_ozet_satiri(kullanici_id=None) -> str | None:
     """acik_versiyon_ozet'ten tek satırlık karşılaştırma metni üretir (brifing/karne):
-    'Yeni sistem (v2): X pozisyon, ort %Y | Eski yük (v1): Z pozisyon, ort %W'.
+    'Yeni sistem (v2.1): X pozisyon, ort %Y | Arşiv (v1/v2): Z pozisyon, ort %W'.
     Hiç açık pozisyon yoksa None."""
     ozet = acik_versiyon_ozet(kullanici_id)
-    v2, v1 = ozet["v2"], ozet["v1"]
-    if not v2["sayi"] and not v1["sayi"]:
+    yeni, eski = ozet["yeni"], ozet["eski"]
+    if not yeni["sayi"] and not eski["sayi"]:
         return None
 
     def _p(g):
         ort_s = f"ort %{g['ort']:+.1f}" if g["ort"] is not None else "ort —"
         return f"{g['sayi']} pozisyon, {ort_s}"
 
-    return f"Yeni sistem (v2): {_p(v2)} | Eski yük (v1): {_p(v1)}"
+    return f"Yeni sistem ({yeni['surum']}): {_p(yeni)} | Arşiv (v1/v2): {_p(eski)}"
 
 
 if __name__ == "__main__":

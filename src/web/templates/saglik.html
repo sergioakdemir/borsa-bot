@@ -228,14 +228,16 @@
       h+=satir('Haber eşleşmesi (bugün)',
         `${hd.havuz} havuz · ${hd.konu_esles} konu · ${hd.isim_esles} isim`,
         (hd.havuz>=20&&hd.konu_esles===0)?'kotu':'sonuk');
-    // IS 4b: golge isabet karnesi (canliya deger mi? — AL sinyalleri asil olcu)
-    const ga=gi.al||{};
-    if(ga.toplam)
-      h+=satir('Gölge AL isabeti',
-        ga.isabet_oran!=null
-          ? `%${ga.isabet_oran.toFixed(0)} (${ga.isabet}/${ga.isabet+ga.iskalama}) · ort %${(ga.ort_getiri>=0?'+':'')+ga.ort_getiri}`
-          : `${ga.toplam} sinyal, henüz sonuçlanmadı`,
-        ga.isabet_oran==null?'sonuk':(ga.isabet_oran>=50?'ok':'uyari'));
+    // IS 4b: golge isabet karnesi (canliya deger mi? — AL sinyalleri asil olcu).
+    // HER ZAMAN goster (kullanici takibin kurulu oldugunu gorsun).
+    const ga=gi.al||{}, gtop=gi.toplam_sonuclanan||0;
+    h+=satir('Haber sinyali isabet (AL)',
+      (ga.isabet_oran!=null)
+        ? `${ga.isabet}/${ga.isabet+ga.iskalama} isabet · %${ga.isabet_oran.toFixed(0)}`
+          + (ga.ort_getiri!=null?` · ort %${(ga.ort_getiri>=0?'+':'')+ga.ort_getiri}`:'')
+        : (gtop>0 ? `${gtop} sinyal sonuçlandı, AL isabeti henüz ölçülmedi`
+                  : 'takip kurulu — sinyaller ertesi gün ölçülür'),
+      ga.isabet_oran==null?'sonuk':(ga.isabet_oran>=50?'ok':'uyari'));
     if(hs2.length){
       for(const s of hs2){
         const rz = s.golge_karar==='AL'
@@ -317,10 +319,10 @@
 
     // AL performansi
     h+='<div class="kart"><h2>AL Performansı</h2>';
-    h+=satir('v2 kapanış', `${al.v2_kapanis} / ${al.hedef} hedef`,
+    h+=satir((al.surum||'v2.1')+' kapanış', `${al.v2_kapanis} / ${al.hedef} hedef`,
              al.v2_kapanis>=30?'ok':'uyari');
     h+=satir('30 hedefine kalan', al.hedefe_kalan, al.hedefe_kalan>0?'uyari':'ok');
-    h+=satir('v2 toplam karar', al.v2_toplam);
+    h+=satir((al.surum||'v2.1')+' toplam karar', al.v2_toplam);
     h+=satir('AL kararı (tüm zaman)', al.al_toplam);
     h+=satir('Temiz gün — ölçülebilir', al.temiz_olculebilir,
              al.temiz_olculebilir>=10?'ok':'uyari');

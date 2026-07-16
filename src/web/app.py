@@ -5620,7 +5620,8 @@ def api_saglik_logout():
 
 
 def _saglik_al_performansi() -> dict:
-    """AL karnesi: v2 kapanis sayisi (30-50 hedefi) + TEMIZ gun alpha basari orani.
+    """AL karnesi: v2.1 kapanis sayisi (30-50 hedefi) + TEMIZ gun alpha basari orani.
+    (17 Tem 2026: v2 arsive alindi, karne artik AKTIF surum v2.1'i izler.)
 
     ALPHA KRITERI = update_decisions._verdict'in AL dali: degisim>0 VE
     piyasa_farki>=0. Burada 'degisim' DEGERLENDIRME PENCERESI degisimidir (AL=5
@@ -5638,11 +5639,12 @@ def _saglik_al_performansi() -> dict:
              "AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%'")
     out = {}
     with db.get_conn() as c:
+        out["surum"] = "v2.1"
         out["v2_kapanis"] = c.execute(
-            f"SELECT COUNT(*) FROM decisions WHERE strategy_version='v2' AND {bitti}"
+            f"SELECT COUNT(*) FROM decisions WHERE strategy_version='v2.1' AND {bitti}"
         ).fetchone()[0]
         out["v2_toplam"] = c.execute(
-            "SELECT COUNT(*) FROM decisions WHERE strategy_version='v2'").fetchone()[0]
+            "SELECT COUNT(*) FROM decisions WHERE strategy_version='v2.1'").fetchone()[0]
         out["al_toplam"] = c.execute(
             "SELECT COUNT(*) FROM decisions WHERE karar='AL'").fetchone()[0]
         r = c.execute(
