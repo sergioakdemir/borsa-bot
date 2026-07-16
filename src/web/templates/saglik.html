@@ -29,6 +29,26 @@
          padding:10px 12px;margin-bottom:12px;font-size:13px;
          font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
          overflow-x:auto;white-space:nowrap}
+  /* Sade ozet — sahibi icin tek bakista "bot iyi mi calisti?" */
+  .ozet{background:var(--kart);border:2px solid var(--cizgi);border-radius:14px;
+        padding:14px 16px;margin-bottom:14px}
+  .ozet.iyi{border-color:rgba(40,192,122,.55)}
+  .ozet.sorun{border-color:rgba(242,84,75,.55)}
+  .ozet .baslik{font-size:16px;font-weight:700;margin:0 0 10px;
+        display:flex;align-items:center;gap:8px}
+  .ozet .osat{display:flex;justify-content:space-between;gap:12px;padding:9px 0;
+        border-bottom:1px solid var(--cizgi);font-size:15px}
+  .ozet .osat:last-child{border-bottom:0}
+  .ozet .osat .oe{color:var(--sonuk)}
+  .ozet .osat .od{text-align:right;font-weight:600;word-break:break-word}
+  details.teknik{margin-bottom:12px}
+  details.teknik>summary{cursor:pointer;padding:11px 14px;background:var(--kart);
+        border:1px solid var(--cizgi);border-radius:10px;font-size:13px;
+        color:var(--sonuk);font-weight:600;list-style:none}
+  details.teknik>summary::-webkit-details-marker{display:none}
+  details.teknik>summary::before{content:'▸  '}
+  details.teknik[open]>summary::before{content:'▾  '}
+  details.teknik[open]>summary{margin-bottom:10px}
   .kart{background:var(--kart);border:1px solid var(--cizgi);border-radius:12px;
         padding:12px 14px;margin-bottom:10px}
   .kart h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
@@ -147,6 +167,48 @@
     const k=d.karar, kr=d.kredi, kn=d.kaynak, al=d.al, mo=d.motor;
     let h='';
 
+    // ─── SADE ÖZET: "bot bugün iyi mi çalıştı?" — sahibi için tek bakış ───
+    const dg=k.dagilim||{}, hb=d.haber||{};
+    const kararN=(k.bist||0)+(k.us||0);
+    const taranan=k.taranan||kararN;
+    const sorunVar=!!(kr.bitti||(d.durum||'').startsWith('🔴')||(d.kirmizi||[]).length);
+    const iyiTarama=k.bist>=k.bist_beklenen*0.9;
+    const osat=(e,v,s='')=>`<div class="osat"><span class="oe">${E(e)}</span><span class="od ${s}">${v}</span></div>`;
+    let oz=`<div class="ozet ${sorunVar?'sorun':'iyi'}">`;
+    oz+=`<div class="baslik">${sorunVar?'🔴 Bugün bir sorun var':'🟢 Bot bugün iyi çalıştı'}</div>`;
+    // 1) tarama & karar
+    oz+=osat('Taranan / karar üretilen', `${taranan} hisse · ${kararN} karar`,
+             iyiTarama?'ok':(kararN>0?'uyari':'kotu'));
+    // 2) karar dağılımı
+    oz+=osat('Kararların dağılımı',
+             `${dg.al||0} AL · ${dg.uzak_dur||0} UZAK DUR · ${dg.bekle||0} BEKLE · ${(dg.tut||0)+(dg.azalt||0)} TUT/AZALT`,
+             (dg.al>0)?'ok':'sonuk');
+    // 3) haberler işlendi mi
+    let haberTxt, haberSinif;
+    if(hb.eslesme==null){ haberTxt='ölçülemedi'; haberSinif='sonuk'; }
+    else{ const almadi=Math.max(0,(hb.watchlist||0)-hb.eslesme);
+      haberTxt=`${hb.eslesme} hisse haber aldı · ${almadi} hisse almadı`;
+      haberSinif=hb.eslesme>0?'ok':'uyari'; }
+    oz+=osat('Haberler işlendi mi', haberTxt, haberSinif);
+    // 4) kredi durumu
+    let krTxt, krSinif='ok';
+    if(kr.bitti){ krTxt='🔴 BİTTİ'; krSinif='kotu'; }
+    else{ const th=kr.tahmin||{};
+      if(!th.kayitli){ krTxt='var (gün hesabı kurulu değil)'; krSinif='sonuk'; }
+      else if(th.gun_kaldi!=null){ krTxt=`~${Math.round(th.gun_kaldi)} iş günü kaldı`;
+        krSinif=th.gun_kaldi<=7?'kotu':(th.gun_kaldi<=14?'uyari':'ok'); }
+      else krTxt=E(kr.tahmin_txt||'var'); }
+    oz+=osat('Kredi durumu', krTxt, krSinif);
+    // 5) sorun var mı
+    const ilkSorun=(d.kirmizi&&d.kirmizi[0])||(kr.bitti?'AI kredisi bitti':'');
+    oz+=osat('Bugün bir sorun oldu mu', sorunVar?('Evet — '+E(ilkSorun)):'Hayır',
+             sorunVar?'kotu':'ok');
+    oz+='</div>';
+    h+=oz;
+
+    // ─── Teknik detaylar: katlanabilir (sahibi için gerekli değil) ───
+    h+='<details class="teknik"><summary>Teknik detaylar</summary>';
+
     // Kredi — en kritik kart, en uste
     h+='<div class="kart"><h2>AI Kredisi</h2>';
     h+=satir('Durum', kr.bitti ? '🔴 BİTTİ — karar üretimi durdu'
@@ -202,7 +264,6 @@
     h+=satir('Fiyat cache yaşı',
              kn.cache_yas!=null ? `${kn.cache_yas.toFixed(0)} dk` : 'yok',
              kn.cache_yas==null?'sonuk':(kn.cache_yas<=20?'ok':(kn.cache_yas<=60?'uyari':'kotu')));
-    h+=satir('Borsa MCP', kn.mcp?'🟢 çalışıyor':'🔴 ölü', kn.mcp?'ok':'kotu');
     h+=satir('Ölü sembol', kn.olu, kn.olu>0?'uyari':'ok');
     h+='</div>';
 
@@ -261,6 +322,7 @@
     }
     h+='</div>';
 
+    h+='</details>';   // teknik detaylar sonu
     document.getElementById('icerik').innerHTML=h;
   }
 

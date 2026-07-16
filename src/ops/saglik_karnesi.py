@@ -2,7 +2,7 @@
 
 Amac: sistem sessizce bozuldugunda ANINDA gorunur olsun. Her aksam TEK bir
 Telegram mesajiyla o gunun tam durumunu admin'lere ozetler: karar uretimi,
-veri hatasiyla atlananlar, gun kalitesi, veri kaynaklari (KAP/fiyat/MCP/haber),
+veri hatasiyla atlananlar, gun kalitesi, veri kaynaklari (KAP/fiyat/haber),
 gece isleri, AI hatalari, olu sembol ve genel DURUM.
 
 Ayrica ANLIK KIRMIZI ALARM esikleri (brifing icindeki run_batch %5 sari / %10
@@ -45,6 +45,27 @@ def _karar_sayilari(tarih):
     return bist, us, kill
 
 
+def _karar_dagilimi(tarih):
+    """Gunun kararlarini tipe gore sayar: AL / BEKLE / UZAK_DUR / TUT / AZALT.
+    Sade panel ozeti icin — sahibi 'kac AL cikti' sorusunu tek bakista gorsun."""
+    from src.db import database as db
+    with db.get_conn() as c:
+        rows = c.execute("SELECT karar FROM decisions WHERE tarih=?", (tarih,)).fetchall()
+    dagilim = {}
+    for (k,) in rows:
+        ad = (k or "").upper()
+        if "KILL" in ad:
+            continue                         # veri freni; karar sayilmaz
+        dagilim[ad] = dagilim.get(ad, 0) + 1
+    return {
+        "al": dagilim.get("AL", 0),
+        "uzak_dur": dagilim.get("UZAK_DUR", 0),
+        "bekle": dagilim.get("BEKLE", 0),
+        "tut": dagilim.get("TUT", 0),
+        "azalt": dagilim.get("AZALT", 0),
+    }
+
+
 def _fiyat_cache_yas_dk():
     if not CACHE_PATH.exists():
         return None
@@ -79,14 +100,6 @@ def _kap_basari(tarih):
     oran = (ok / toplam * 100) if toplam else None
     return {"oran": oran, "ok": ok, "fail": fail, "r429": r429,
             "fallback": fb, "toplam": toplam}
-
-
-def _mcp_calisiyor():
-    try:
-        from src.news import borsa_mcp
-        return bool(borsa_mcp.get_price("THYAO"))
-    except Exception:
-        return False
 
 
 def _haber_istatistik():
@@ -230,6 +243,7 @@ def topla(tarih=None) -> dict:
     db.init_db()
 
     bist, us, kill = _karar_sayilari(tarih)
+    karar_dagilim = _karar_dagilimi(tarih)
     log_ist = gun_kalitesi._log_gun_istatistik().get(tarih, {})
     atlanan = log_ist.get("hata", 0)
     taranan = log_ist.get("taranan", 0)
@@ -238,7 +252,6 @@ def topla(tarih=None) -> dict:
     kap_canli, kap_n = _kap_durum(tarih)
     kap_basari = _kap_basari(tarih)
     cache_yas = _fiyat_cache_yas_dk()
-    mcp = _mcp_calisiyor()
     havuz, haber_eslesme = _haber_istatistik()
     gece = _gece_isleri()
     ai_hata = 0
@@ -287,8 +300,6 @@ def topla(tarih=None) -> dict:
         kirmizi.append("gece isi 'yukselis_hafizasi' calismadi/gecikti")
     if not kap_canli:
         kirmizi.append("KAP kopuk (sahte kaynak)")
-    if not mcp:
-        kirmizi.append("Borsa MCP olu")
     beklenen_cagri = max(1, taranan or (BIST_BEKLENEN + US_BEKLENEN))
     if ai_hata / beklenen_cagri > 0.10:
         kirmizi.append(f"AI hatalari %{ai_hata/beklenen_cagri*100:.0f} (>%10)")
@@ -326,10 +337,11 @@ def topla(tarih=None) -> dict:
 
     return {
         "tarih": tarih, "bist": bist, "us": us, "kill": kill, "atlanan": atlanan,
+        "karar_dagilim": karar_dagilim,
         "test_donemi": test_d, "test_donemi_txt": test_txt,
         "taranan": taranan, "gun_sinif": gk["gun_sinif"], "gun_sebep": gk["sebep"],
         "kap_canli": kap_canli, "kap_n": kap_n, "kap_basari": kap_basari,
-        "cache_yas": cache_yas, "mcp": mcp,
+        "cache_yas": cache_yas,
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
         "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
@@ -374,7 +386,6 @@ def _mesaj(m: dict) -> str:
         f"KAP: {'canli' if m['kap_canli'] else 'KOPUK'} — {m['kap_n']} bildirim",
         f"KAP basari orani: {kap_basari_txt}",
         f"Fiyat cache: {cache_txt}",
-        f"Borsa MCP: {'calisiyor' if m['mcp'] else 'OLU'}",
         f"Haber: {haber_txt}",
         "─────",
         f"Gece isleri: trades {ok(g['trades']=='ok')} | karne {ok(g['karne']=='ok')} | "

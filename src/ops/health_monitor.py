@@ -264,30 +264,11 @@ def _kontrol_risk_det():
     return None
 
 
-def _kontrol_mcp():
-    """Borsa MCP ayakta mi? GUNDE 1 KEZ basit bir fiyat cagrisi (THYAO) yapar;
-    None donerse fiyat/KAP fallback'leri devrede demektir -> admin uyarisi.
-    MCP cagrisi pahalidir (~birkac sn) -> 'mcp_check:<gun>' ile gunde bir kez
-    calisir (30dk'lik core kosularinda tekrar cagirmaz); uyari da run() spam-state
-    ile gunde 1 kez gider. (XU100 yerine THYAO: get_price equity'de guvenilir
-    canlilik sinyali; endeks destegi MCP cokukken dogrulanamaz.)"""
-    try:
-        from src.db import database as db
-    except Exception:
-        return None
-    bugun = datetime.now(_TZ).date().isoformat()
-    if db.get_setting(f"mcp_check:{bugun}"):
-        return None                          # bugun zaten denendi
-    db.set_setting(f"mcp_check:{bugun}", "1")
-    try:
-        from src.news import borsa_mcp
-        px = borsa_mcp.get_price("THYAO")
-    except Exception:
-        px = None
-    if not px:
-        return ("mcp_yanit_yok",
-                "Borsa MCP yanıt vermiyor — fiyat/KAP fallback'leri devrede.")
-    return None
+# NOT (17 Tem 2026): Borsa MCP EMEKLI EDILDI. Artik bir izleme hedefi degil —
+# fiyat=yfinance, KAP=proxy, makro=EVDS/FRED birincil kaynak. MCP yalnizca
+# app.py'de fon/BYF ve yfinance-bos durumlar icin SESSIZ YEDEK olarak durur;
+# olu olmasi bir ariza degil, bu yuzden "mcp_yanit_yok" alarmi kaldirildi
+# (gun boyu gereksiz kirmizi veriyordu). Ayrinti: docs/mcp_emekli.md.
 
 
 # --- spam onleme: gunde 1 kez (KRITIK olanlar haric) ---
@@ -369,7 +350,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     # gunde 1 kez yeter (kritikler 2 saatte bir tekrarlar; bu henuz ariza degil).
     core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_kredi_azaliyor,
             _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
-            _kontrol_heartbeat, _kontrol_risk_det, _kontrol_mcp,
+            _kontrol_heartbeat, _kontrol_risk_det,
             _kontrol_test_donemi)
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":

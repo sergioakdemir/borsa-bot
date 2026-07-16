@@ -22,6 +22,7 @@ import os
 import re
 import statistics
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -188,6 +189,8 @@ def _atlama_alarmi(results, tickers, verbose: bool = True) -> dict:
 # decisions + trades uzerinden yapilir.
 STRATEGY_VERSION = "v2.1"
 HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
+_HABER_ETKI_DENEME = 2               # gecici hatada toplam deneme sayisi
+_HABER_ETKI_BEKLE = 2.0              # denemeler arasi bekleme (sn)
 # Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
 _BATCH_FIYAT_INPUT = 1.50 / 1_000_000
 _BATCH_FIYAT_OUTPUT = 7.50 / 1_000_000
@@ -224,39 +227,64 @@ _HABER_ETKI_SCHEMA = {
 def _haber_etki_analizi(ticker: str, haberler: list, client=None) -> list:
     """Her haberi UCUZ Haiku cagrisiyla bu hisse acisindan etiketler:
     olumlu_mu (bool), etki_buyuklugu (dusuk/orta/yuksek), etki_yonu (yukari/asagi/belirsiz).
-    Alanlar haber dict'lerine eklenir. Hata/anahtar yoksa haberler degismeden doner."""
+    Alanlar haber dict'lerine eklenir. Hata/anahtar yoksa haberler degismeden doner.
+
+    16 Tem 2026: bu fonksiyon hatayi TAMAMEN yutuyordu (sayac artar, log yok).
+    09:00-09:30 arasi 28 cagri patladi ve gerceklesen hata TIPI hicbir yerde
+    kalmadigi icin sonradan teshis EDILEMEDI — tek kanit etiketsiz kalan 27
+    hisseydi. Sessiz yutma yerine: (1) hata tipi+mesaji loga yazilir,
+    (2) gecici hatalarda bir kez tekrar denenir (patlama gecici cikti: ayni
+    veriyle 40 dk sonra hepsi sorunsuz gecti; tek deneme = etiketler bosuna
+    kayip), (3) kredi bittiyse tekrar denenmez (bosa cagri).
+    """
     if not haberler:
         return haberler
-    try:
+    try:                                 # anahtar yoksa/SDK kurulu degilse: sessiz gec
         import anthropic
         client = client or anthropic.Anthropic()
-        ozet_liste = [{"no": i + 1, "baslik": h.get("baslik"),
-                       "ozet": (h.get("ozet") or "")[:300]}
-                      for i, h in enumerate(haberler)]
-        sys_p = (
-            "Sen bir finans-haberi etki siniflandiricisin. Verilen her haberi YALNIZCA "
-            f"{ticker} hissesi acisindan etiketle. Her haber icin: olumlu_mu (true/false), "
-            "etki_buyuklugu (dusuk/orta/yuksek), etki_yonu (yukari/asagi/belirsiz). "
-            "Haberlerin sirasini KORU ve her haber icin bir analiz dondur. Dolayli/zayif "
-            "iliskide 'dusuk' ve 'belirsiz' kullan; abartma.")
-        resp = client.messages.create(
-            model=HABER_MODEL, max_tokens=700, system=sys_p,
-            messages=[{"role": "user",
-                       "content": json.dumps(ozet_liste, ensure_ascii=False)}],
-            output_config={"format": {"type": "json_schema",
-                                      "schema": _HABER_ETKI_SCHEMA}})
-        text = next((b.text for b in resp.content if b.type == "text"), "")
-        analizler = json.loads(text).get("analizler", [])
-        for h, a in zip(haberler, analizler):
-            h["olumlu_mu"] = a.get("olumlu_mu")
-            h["etki_buyuklugu"] = a.get("etki_buyuklugu")
-            h["etki_yonu"] = a.get("etki_yonu")
-    except Exception:
-        try:                                     # gunluk AI hata sayaci (health_monitor okur)
-            from src.db import database as _db
-            _db.ai_hata_inc()
-        except Exception:
-            pass
+    except Exception as e:
+        print(f"  [haber_etki] {ticker}: AI istemcisi kurulamadi -> etiketsiz "
+              f"({type(e).__name__}: {str(e)[:120]})")
+        return haberler
+    ozet_liste = [{"no": i + 1, "baslik": h.get("baslik"),
+                   "ozet": (h.get("ozet") or "")[:300]}
+                  for i, h in enumerate(haberler)]
+    sys_p = (
+        "Sen bir finans-haberi etki siniflandiricisin. Verilen her haberi YALNIZCA "
+        f"{ticker} hissesi acisindan etiketle. Her haber icin: olumlu_mu (true/false), "
+        "etki_buyuklugu (dusuk/orta/yuksek), etki_yonu (yukari/asagi/belirsiz). "
+        "Haberlerin sirasini KORU ve her haber icin bir analiz dondur. Dolayli/zayif "
+        "iliskide 'dusuk' ve 'belirsiz' kullan; abartma.")
+    for deneme in range(1, _HABER_ETKI_DENEME + 1):
+        try:
+            resp = client.messages.create(
+                model=HABER_MODEL, max_tokens=700, system=sys_p,
+                messages=[{"role": "user",
+                           "content": json.dumps(ozet_liste, ensure_ascii=False)}],
+                output_config={"format": {"type": "json_schema",
+                                          "schema": _HABER_ETKI_SCHEMA}})
+            text = next((b.text for b in resp.content if b.type == "text"), "")
+            analizler = json.loads(text).get("analizler", [])
+            for h, a in zip(haberler, analizler):
+                h["olumlu_mu"] = a.get("olumlu_mu")
+                h["etki_buyuklugu"] = a.get("etki_buyuklugu")
+                h["etki_yonu"] = a.get("etki_yonu")
+            if deneme > 1:
+                print(f"  [haber_etki] {ticker}: {deneme}. denemede basarili")
+            return haberler
+        except Exception as e:
+            son = deneme >= _HABER_ETKI_DENEME or kredi_bitti_mi(e)
+            print(f"  [haber_etki] {ticker}: {len(haberler)} haber etiketlenemedi "
+                  f"({deneme}/{_HABER_ETKI_DENEME}) {type(e).__name__}: {str(e)[:200]}")
+            if not son:
+                time.sleep(_HABER_ETKI_BEKLE)
+                continue
+            try:                                 # gunluk AI hata sayaci (health_monitor okur)
+                from src.db import database as _db
+                _db.ai_hata_inc()
+            except Exception:
+                pass
+            return haberler
     return haberler
 
 
