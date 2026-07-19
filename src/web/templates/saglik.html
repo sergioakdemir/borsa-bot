@@ -201,15 +201,15 @@
       haberTxt=`${hb.eslesme} hisse haber aldı · ${almadi} hisse almadı`;
       haberSinif=hb.eslesme>0?'ok':'uyari'; }
     oz+=osat('Haberler işlendi mi', haberTxt, haberSinif);
-    // 4) kredi durumu
+    // 4) kredi durumu — GERÇEK harcama (tahmin değil); otomatik yenileme aktif
     let krTxt, krSinif='ok';
     if(kr.bitti){ krTxt='🔴 BİTTİ'; krSinif='kotu'; }
-    else{ const th=kr.tahmin||{};
-      if(!th.kayitli){ krTxt='var (gün hesabı kurulu değil)'; krSinif='sonuk'; }
-      else if(th.gun_kaldi!=null){ krTxt=`~${Math.round(th.gun_kaldi)} iş günü kaldı`;
-        krSinif=th.gun_kaldi<=7?'kotu':(th.gun_kaldi<=14?'uyari':'ok'); }
-      else krTxt=E(kr.tahmin_txt||'var'); }
-    oz+=osat('Kredi durumu', krTxt, krSinif);
+    else{ const hc=kr.harcama||{};
+      if(hc.bugun!=null){
+        krTxt=`bugün $${hc.bugun.toFixed(2)} · bu ay $${hc.ay.toFixed(2)}`;
+        krSinif=hc.anomali?'kotu':'ok';
+      } else { krTxt='🟢 çalışıyor'; krSinif='ok'; } }
+    oz+=osat('AI harcaması', krTxt, krSinif);
     // NVIDIA acil-durum yedeği: yalnız BUGÜN devreye girdiyse özete koy (girdiyse
     // Anthropic o gün sorun yaşadı demektir — sahibi görsün).
     const nv=d.nvidia||{};
@@ -278,14 +278,17 @@
                                 : '🟢 Çalışıyor', kr.bitti?'kotu':'ok');
     h+=satir('Bugünkü AI hatası', kn.ai_hata, kn.ai_hata>5?'kotu':'ok');
     if(kr.bitti && kr.sebep) h+=satir('Sebep', E(kr.sebep), 'sonuk');
-    // Bakiye TAHMINI: Anthropic'te bakiye sorgulama ucu yok -> elle kaydedilen
-    // yukleme eksi log'lardan okunan gercek harcama.
-    const th=kr.tahmin||{};
-    let bs='ok';
-    if(!th.kayitli) bs='sonuk';
-    else if(th.uyari) bs='kotu';
-    else if(th.gun_kaldi!=null && th.gun_kaldi<=14) bs='uyari';
-    h+=satir('Kalan (tahmini)', E(kr.tahmin_txt||'—'), bs);
+    // GERÇEK harcama (loglardan, KESİN). "Kaç dolar kaldı" tahmini KALDIRILDI:
+    // Anthropic bakiye ucu vermez + otomatik yenileme ($5→$20) devrede -> tahmin
+    // hem yanlış hem gereksizdi. Asıl koruma: kredi bitti alarmı (aşağıda).
+    const hc=kr.harcama||{};
+    if(hc.bugun!=null){
+      h+=satir('AI harcaması', `bugün $${hc.bugun.toFixed(2)} · bu ay $${hc.ay.toFixed(2)}`,
+               hc.anomali?'kotu':'ok');
+      if(hc.anomali) h+=satir('⚠️ Anomali',
+        `bugün beklenmedik yüksek (normal ~$${(hc.normal_gunluk||0).toFixed(2)}/gün)`, 'kotu');
+      h+=satir('Otomatik yenileme', 'aktif ($5→$20) — bakiye kendini besler', 'sonuk');
+    } else h+=satir('AI harcaması', 'ölçülemedi', 'sonuk');
     // NVIDIA acil-durum yedeği (Anthropic çökerse yardımcı işler buraya düşer;
     // ana AL/SAT kararı ASLA düşmez). Anahtar boşsa pasif — sistem Anthropic-only.
     h+=satir('NVIDIA acil yedek',

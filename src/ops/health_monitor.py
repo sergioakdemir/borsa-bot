@@ -127,31 +127,45 @@ def _kontrol_kredi():
         from src.db import database as db
         bugun = datetime.now(_TZ).date().isoformat()
         if db.get_setting(f"ai_kredi_bitti:{bugun}"):
+            # Kredi bitti bayragi = bir AI cagrisi "credit balance is too low" (400)
+            # aldi demektir. Otomatik yenileme ($5->$20) devrede oldugu icin bu,
+            # yenilemenin ZAMANINDA CALISMADIGI anlamina gelir -> manuel mudahale.
             return ("ai_kredi_bitti",
-                    "🔴 KREDİ BİTTİ: Anthropic API bakiyesi tükendi. AI çağrıları "
-                    "durduruldu, karar üretilmiyor. Bakiye yükleyin.")
+                    "🔴 KREDİ BİTTİ VE OTOMATİK YENİLEME ÇALIŞMADI: Anthropic API "
+                    "bakiyesi tükendi, AI çağrıları durdu, karar üretilmiyor. "
+                    "Otomatik yenileme ($5→$20) devrede olmasına rağmen bakiye "
+                    "dolmadı — MANUEL KONTROL gerekiyor (ödeme yöntemi/limit?).")
     except Exception:
         return None
     return None
 
 
 def _kontrol_kredi_azaliyor():
-    """ERKEN UYARI: kredi BITMEDEN once haber ver (15 Tem 2026'da kredi bitince
-    gun boyu karar uretilemedi). Anthropic'te bakiye sorgulama ucu olmadigi icin
-    kalan, elle kaydedilen yuklemeden gercek harcama dusulerek TAHMIN edilir
-    (bkz. src/ops/kredi_takip). Yukleme kaydi yoksa alarm URETILMEZ — bunun
-    yerine gunluk nabizda 'takip kurulu degil' satiri gorunur (her gun okunan
-    bir mesajda tek satir; ayri bir alarm gereksiz gurultu olurdu)."""
+    """PASIF (19 Tem 2026): 'kredi azaliyor / ~N gun kaldi' erken uyarisi
+    KALDIRILDI. Dayanagi olan 'kalan bakiye' bir TAHMINDI (Anthropic bakiye ucu
+    vermez) ve otomatik yenileme ($5->$20) devrede oldugu icin hem yanlis hem
+    gereksizdi. Asil koruma _kontrol_kredi (kredi bitti = yenileme calismadi) +
+    _kontrol_maliyet_anormal (kacak harcama). Bilerek None doner."""
+    return None
+
+
+def _kontrol_maliyet_anormal():
+    """GUNLUK MALIYET ANOMALISI: bugunku GERCEK harcama (loglardan) normal
+    ortalamanin cok ustune ciktiysa uyar (kacak/dongu harcamasi yakalar).
+    Ornek: normalde ~$1.4/gun iken bir gun $5+ olursa. Kritik degil (karar
+    uretimini durdurmaz) -> gunde 1 kez bildirilir."""
     try:
         from src.ops import kredi_takip
-        d = kredi_takip.durum()
+        a = kredi_takip.maliyet_anormal_mi()
     except Exception:
         return None
-    if not d.get("uyari"):
+    if not a:
         return None
-    return ("ai_kredi_azaliyor",
-            f"⚠️ API kredisi azalıyor: ~{d['gun_kaldi']:.0f} iş günü kaldı "
-            f"(~${d['kalan']:.2f} bakiye, günlük ~${d['gunluk_ort']:.2f}), yükle.")
+    bugun, normal, esik = a
+    return ("ai_maliyet_anormal",
+            f"⚠️ Bugün beklenmedik yüksek AI maliyeti: ${bugun:.2f} "
+            f"(normalde ~${normal:.2f}/gün, eşik ${esik:.2f}). Kaçak/döngü "
+            f"harcama olabilir — kontrol et.")
 
 
 def _kontrol_test_donemi():
@@ -370,7 +384,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     bugun = now.date().isoformat()
     # Not: _kontrol_kredi_azaliyor KRITIK_ANAHTARLAR'a GIRMEZ — erken uyaridir,
     # gunde 1 kez yeter (kritikler 2 saatte bir tekrarlar; bu henuz ariza degil).
-    core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_kredi_azaliyor,
+    core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_maliyet_anormal,
             _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
             _kontrol_heartbeat, _kontrol_risk_det, _kontrol_haber_eslesme,
             _kontrol_test_donemi)

@@ -156,16 +156,17 @@ def kredi_durumu(tarih=None) -> dict:
         bayrak = db.get_setting(f"ai_kredi_bitti:{tarih}")
     except Exception:
         bayrak = None
-    # Bakiye TAHMINI (Anthropic'te bakiye ucu yok — elle kaydedilen yukleme
-    # eksi gercek harcama). Yukleme kaydi yoksa kayitli=False doner.
+    # GERCEK harcama (loglardan, KESIN). "Kac dolar kaldi" TAHMINI artik
+    # gosterilmez — otomatik yenileme ($5->$20) devrede oldugu icin hem yanlis
+    # hem gereksizdi (19 Tem 2026). Tahmin alanlari geriye-donuk uyum icin
+    # birakildi ama panel/karne artik `harcama`yi kullanir.
     try:
         from src.ops import kredi_takip
-        tahmin = kredi_takip.durum()
-        tahmin_txt = kredi_takip.ozet_satir(tahmin)
+        harcama = kredi_takip.harcama_ozeti(tarih)
     except Exception:
-        tahmin, tahmin_txt = {"kayitli": False}, "hesaplanamadi"
+        harcama = {}
     return {"bitti": bool(bayrak), "sebep": str(bayrak or "")[:160],
-            "tahmin": tahmin, "tahmin_txt": tahmin_txt}
+            "harcama": harcama}
 
 
 def motor_durumu() -> dict:
@@ -213,13 +214,12 @@ def nabiz(m: dict) -> str:
     if kredi.get("bitti"):
         kredi_txt = "BİTTİ"
     else:
-        t = kredi.get("tahmin") or {}
-        if not t.get("kayitli"):
-            kredi_txt = "var (takip kurulu değil)"
-        elif t.get("gun_kaldi") is None:
-            kredi_txt = f"var (~${t['kalan']:.0f})"
+        h = kredi.get("harcama") or {}
+        if h:
+            kredi_txt = (f"bugün ${h['bugun']:.2f} · ay ${h['ay']:.2f}"
+                         + (" ⚠️" if h.get("anomali") else ""))
         else:
-            kredi_txt = f"var (~{t['gun_kaldi']:.0f} iş günü)"
+            kredi_txt = "var"
     kb = m.get("kap_basari") or {}
     kap_txt = f"%{kb['oran']:.0f}" if kb.get("oran") is not None else "veri yok"
     motor_txt = "ok" if m.get("motorlar_ok") else "SORUN"
@@ -403,6 +403,17 @@ def _golge_satiri(m: dict) -> str:
     return esl
 
 
+def _maliyet_satiri(m: dict) -> str:
+    """Aksam karnesi icin GERCEK AI maliyeti (loglardan). Anomali varsa uyari."""
+    h = (m.get("kredi") or {}).get("harcama") or {}
+    if not h:
+        return "ölçülemedi"
+    s = f"${h['bugun']:.2f} (bu ay ${h['ay']:.2f})"
+    if h.get("anomali"):
+        s += f" ⚠️ BEKLENMEDİK YÜKSEK — normal ~${h['normal_gunluk']:.2f}/gün"
+    return s
+
+
 def _mesaj(m: dict) -> str:
     ok = lambda b: "✅" if b else "❌"
     cache_txt = (f"taze — {m['cache_yas']:.0f} dk" if (m["cache_yas"] is not None
@@ -438,6 +449,8 @@ def _mesaj(m: dict) -> str:
         f"Gece isleri: trades {ok(g['trades']=='ok')} | karne {ok(g['karne']=='ok')} | "
         f"yukselis hafizasi {ok(g['yukselis_hafizasi']=='ok')}",
         f"AI hatalari: {m['ai_hata']}",
+        # GERCEK AI maliyeti (loglardan, tahmin degil). Otomatik yenileme devrede.
+        f"Bugünkü AI maliyeti: {_maliyet_satiri(m)}",
         f"Olu sembol: {m['olu']}",
         f"Alpha olcumu ({(m.get('alpha') or {}).get('gun', 14)}g): {_alpha_txt(m.get('alpha'))}",
         "─────",

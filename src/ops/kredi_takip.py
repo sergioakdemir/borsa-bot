@@ -79,8 +79,10 @@ def maliyet_gecmisi() -> dict:
     return gecmis
 
 
-def gunluk_ortalama(gun: int = ORTALAMA_GUN) -> float:
-    """Son `gun` TAM calisma gununun ortalama maliyeti.
+def gunluk_ortalama(gun: int = ORTALAMA_GUN, haric: str = None) -> float:
+    """Son `gun` TAM calisma gununun ortalama maliyeti. `haric` verilirse o gun
+    (or. bugun) ortalamadan DISLANIR — anomali tespitinde bugunku sicramanin
+    kendi normal-esigini sismesini onler.
 
     'Tam gun' = penceredeki en pahali gunun >=%50'si. Sabit bir dolar esigi ise
     yaramaz: maliyet profili zamanla degisti (Haziran ~$0.30/gun, Temmuz
@@ -91,6 +93,8 @@ def gunluk_ortalama(gun: int = ORTALAMA_GUN) -> float:
     uyum saglar ve tahmini guvenli (temkinli) tarafta tutar.
     """
     gecmis = maliyet_gecmisi()
+    if haric:
+        gecmis = {g: v for g, v in gecmis.items() if g != haric}
     if not gecmis:
         return 0.0
     pencere = sorted(gecmis.items())[-PENCERE_GUN:]
@@ -107,6 +111,74 @@ def gunluk_ortalama(gun: int = ORTALAMA_GUN) -> float:
 def harcama(baslangic: str) -> float:
     """`baslangic` gunu DAHIL bugune kadarki toplam maliyet."""
     return sum(v for g, v in maliyet_gecmisi().items() if g >= baslangic)
+
+
+# ---------------------------------------------------------------------------
+# GERÇEK HARCAMA TAKİBİ (loglardan, KESİN — tahmin DEĞİL) — 19 Tem 2026
+# ---------------------------------------------------------------------------
+# "Kac dolar kaldi" bir TAHMINDI (Anthropic bakiye ucu vermez) ve otomatik
+# yenileme ($5->$20) devrede oldugu icin hem YANLIS hem GEREKSIZ. Onun yerine
+# loglardan KESIN gunluk + aylik harcama raporlanir (her cagrinin gercek
+# maliyeti "TOKEN OZET ... tahmini_maliyet=$X" satirlarinda zaten var).
+ANOMALI_KAT = 3.0        # gunluk maliyet normal ortalamanin bu katini asarsa uyari
+ANOMALI_MIN = 3.0        # ...ve en az bu kadar $ ise (dusuk-hacim gunde yanlis alarm olmasin)
+
+
+def _ay(tarih: str = None) -> str:
+    return (tarih or _bugun())[:7]
+
+
+def bugun_maliyet(tarih: str = None) -> float:
+    """Bugunku (veya verilen gunun) GERCEK $ maliyeti — loglardan."""
+    return round(maliyet_gecmisi().get(tarih or _bugun(), 0.0), 4)
+
+
+def ay_maliyet(ay: str = None) -> float:
+    """Bu ayin (YYYY-MM) GERCEK toplam $ maliyeti — loglardan."""
+    ay = ay or _ay()
+    return round(sum(v for g, v in maliyet_gecmisi().items() if g.startswith(ay)), 4)
+
+
+def maliyet_anormal_mi(tarih: str = None):
+    """Bugunku harcama normalin COK ustune cikti mi (kacak/dongu harcamasi)?
+    Doner: None (normal) veya (bugun$, normal_ort$, esik$). Esik = normal
+    ortalamanin ANOMALI_KAT kati VE en az ANOMALI_MIN — boylece hem oransal
+    sicrama hem mutlak taban aranir (dusuk-hacim gunde yanlis alarm olmaz)."""
+    tarih = tarih or _bugun()
+    bugun = maliyet_gecmisi().get(tarih, 0.0)
+    normal = gunluk_ortalama(haric=tarih)     # bugun haric -> kendi esigini sisirmesin
+    if normal <= 0:
+        return None
+    esik = max(ANOMALI_KAT * normal, ANOMALI_MIN)
+    if bugun > esik:
+        return (round(bugun, 2), round(normal, 2), round(esik, 2))
+    return None
+
+
+def harcama_ozeti(tarih: str = None) -> dict:
+    """GERCEK harcama ozeti (loglardan). 'kac dolar kaldi' TAHMINI DEGIL.
+    otomatik_yenileme: $5->$20 Anthropic tarafinda aktif (bot dogrudan goremez;
+    asil koruma kredi-bitti alarmidir — bkz. health_monitor._kontrol_kredi)."""
+    tarih = tarih or _bugun()
+    anomali = maliyet_anormal_mi(tarih)
+    return {
+        "bugun": bugun_maliyet(tarih),
+        "ay": ay_maliyet(_ay(tarih)),
+        "ay_etiket": _ay(tarih),
+        "normal_gunluk": round(gunluk_ortalama(haric=tarih), 2),
+        "anomali": bool(anomali),
+        "anomali_detay": anomali,         # (bugun, normal, esik) veya None
+        "otomatik_yenileme": True,
+    }
+
+
+def harcama_satir(d: dict = None) -> str:
+    """Panel/karne icin tek satir GERCEK harcama."""
+    d = d if d is not None else harcama_ozeti()
+    s = f"bugün ${d['bugun']:.2f} · bu ay ${d['ay']:.2f}"
+    if d.get("anomali"):
+        s += f"  ⚠️ beklenmedik yüksek (normal ~${d['normal_gunluk']:.2f}/gün)"
+    return s
 
 
 def yukle(tutar: float, tarih: str = None) -> dict:
@@ -175,12 +247,14 @@ def main(argv) -> int:
         tarih = argv[3] if len(argv) > 3 else None
         d = yukle(float(argv[2]), tarih)
         print(f"Kaydedildi: ${d['bakiye']:.2f} @ {d['tarih']}")
+    elif komut == "harcama":                 # GERCEK harcama (loglardan)
+        h = harcama_ozeti()
+        print(f"AI harcaması: {harcama_satir(h)}")
+        print(f"  (normal ~${h['normal_gunluk']:.2f}/gün · otomatik yenileme aktif)")
+        return 0
     else:
         d = durum()
-    print(f"Kredi: {ozet_satir(d)}")
-    if d["kayitli"]:
-        print(f"  yukleme: ${d['bakiye']:.2f} @ {d['tarih']} | "
-              f"harcanan: ${d['harcanan']:.2f}")
+    print(f"AI harcaması (gerçek): {harcama_satir()}")
     return 0
 
 

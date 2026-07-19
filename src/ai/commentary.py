@@ -97,9 +97,11 @@ def kredi_freni_koy(sebep: str = "") -> None:
     try:
         from src.notify import telegram
         telegram.notify_admins(
-            "KREDİ BİTTİ: Anthropic API bakiyesi tükendi — AI çağrıları gün "
-            "sonuna kadar DURDURULDU (boşa deneme yapılmayacak). Karar "
-            "üretimi durdu. Bakiye yüklenince otomatik devam eder.",
+            "KREDİ BİTTİ VE OTOMATİK YENİLEME ÇALIŞMADI: Anthropic API bakiyesi "
+            "tükendi — AI çağrıları gün sonuna kadar DURDURULDU (boşa deneme "
+            "yapılmayacak), karar üretimi durdu. Otomatik yenileme ($5→$20) "
+            "devrede olmasına rağmen bakiye dolmadı — MANUEL KONTROL gerekiyor "
+            "(ödeme yöntemi/limit?). Bakiye yüklenince otomatik devam eder.",
             prefix="🔴")
     except Exception as e:
         print(f"  [kredi] admin bildirimi gonderilemedi: {type(e).__name__}: "
