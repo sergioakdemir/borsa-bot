@@ -239,6 +239,83 @@ def _golge_karar(yon: str, guc: str, fiyatlanmis: str, guven: str = "normal") ->
     return "BEKLE"
 
 
+# ---------------------------------------------------------------------------
+# İŞ 2: DETERMİNİSTİK FİYATLANMIŞLIK ÖLÇÜMÜ
+# ---------------------------------------------------------------------------
+# "Fiyatlanmis mi" artik yalniz AI'in oznel yorumu degil; hissenin son 1-3
+# gundeki fiyat hareketi + hacmi SAYISAL olculur ve AI'i DESTEKLER (ezmez):
+#   - Haberle AYNI yonde zaten BUYUK hareket olduysa -> "fiyatlanmis"
+#     (gec kalindi) -> guven dusurulur.
+#   - Hisse AZ LIKIT ve hareket henuz KUCUK ise -> "erken_drift"
+#     (drift potansiyeli, fiyatlanmamis say) -> guven dokunulmaz.
+#   - Aksi halde "notr".
+# Arastirma dayanagi: piyasa haberi onceden fiyatlar AMA kucuk/likit-olmayan
+# hisselerde drift (haber yonunde suren hareket) gunlerce surebilir.
+_FIYATLANMIS_ESIK = 6.0      # ayni-yon 1-3g kumulatif hareket bu %'yi astiysa fiyatlanmis
+_DRIFT_ESIK = 3.0            # az-likit + |hareket| bu %'nin altindaysa erken_drift
+_LIKIDITE_ESIK_TL = 50_000_000   # gunluk ort. TL ciro < bu -> "az_likit"
+_OLCUM_GUN = 3              # kumulatif hareket penceresi (takvim degil, islem bari)
+
+
+def _index_seti() -> set:
+    """Ana BIST endeks hisseleri (likit kabul edilir)."""
+    try:
+        from src.watchlist import load_index
+        return {t.upper().replace(".IS", "") for t in load_index()}
+    except Exception:
+        return set()
+
+
+def _fiyat_hareket_ham(ticker: str) -> dict:
+    """yfinance ~20 islem gunu ile ham olcum: 1-3g kumulatif %, hacim kati,
+    likidite. Ag cagrisi; hata/veri yoksa alanlar None. (tara() ici memolanir.)"""
+    out = {"hareket": None, "hacim_kati": None, "likidite": None}
+    try:
+        from datetime import timedelta as _td
+        from src.markets.bist import BIST
+        from src.data.factory import get_data_source
+        sym = BIST().to_symbol(ticker)
+        start = (datetime.now(_TZ).date() - _td(days=20)).isoformat()
+        df = get_data_source().get_history(sym, start=start)
+        if df is None or getattr(df, "empty", True) or len(df) < 3:
+            return out
+        closes = [float(x) for x in df["Close"].tolist() if x == x and x]
+        vols = [float(x) for x in df["Volume"].tolist() if x == x]
+        if len(closes) < 3:
+            return out
+        n = min(_OLCUM_GUN, len(closes) - 1)
+        baz = closes[-1 - n]
+        if baz:
+            out["hareket"] = round((closes[-1] - baz) / baz * 100, 2)
+        onceki = vols[:-1] or vols
+        avg_vol = (sum(onceki) / len(onceki)) if onceki else None
+        if avg_vol and vols:
+            out["hacim_kati"] = round(vols[-1] / avg_vol, 2)
+        ciro = (avg_vol * closes[-1]) if avg_vol else None
+        likit = (ticker in _index_seti()) or (ciro is not None and ciro >= _LIKIDITE_ESIK_TL)
+        out["likidite"] = "likit" if likit else "az_likit"
+    except Exception:
+        return out
+    return out
+
+
+def _fiyatlanmislik_etiket(ham: dict, yon: str) -> str:
+    """Ham olcumu + haber yonunu birlestirip deterministik etiket uretir.
+      fiyatlanmis  : haberle AYNI yonde zaten >=_FIYATLANMIS_ESIK hareket (gec kalindi)
+      erken_drift  : az-likit + |hareket| < _DRIFT_ESIK (drift potansiyeli, erken)
+      notr         : arada
+      veri_yok     : olcum alinamadi"""
+    hareket = ham.get("hareket")
+    if hareket is None:
+        return "veri_yok"
+    ayni_yon = (yon == "yukari" and hareket > 0) or (yon == "asagi" and hareket < 0)
+    if ayni_yon and abs(hareket) >= _FIYATLANMIS_ESIK:
+        return "fiyatlanmis"
+    if ham.get("likidite") == "az_likit" and abs(hareket) < _DRIFT_ESIK:
+        return "erken_drift"
+    return "notr"
+
+
 def _celiski_mi(yon: str, gerekce: str) -> bool:
     """Yon ile gerekce metni celisiyor mu? (kalibrasyon 1 emniyet agi)
     gerekce baskin OLUMSUZ dil tasirken yon=yukari, veya baskin OLUMLU dil
@@ -350,15 +427,26 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
         pass
     # (haber, konu) grupla: ayni haber+sektordeki TUM hisseler TEK AI cagrisina
     # girsin -> sektor yon tutarliligi (kalibrasyon 2). Cap yine hisse+konu bazinda.
+    from src.news.temizle import haber_temizle, karantina_logla
     gruplar = {}                             # (hash, konu) -> {baslik,ozet,link,tickerlar}
     seen = set()
     toplam_cift = 0
+    karantina_say = 0
     for e in entries[:200]:
-        text = f"{e.get('baslik','')} {e.get('ozet','')}"
+        # İŞ 1: adversarial temizleme — haber golge sinyale girmeden ONCE.
+        # (rss_source girişte zaten temizliyor; burada da savunma-derinligi icin
+        # yeniden dogrulanir, boylece kaynak degisse de katman izole korunur.)
+        tr = haber_temizle(e.get("baslik", ""), e.get("ozet", ""), e.get("kaynak"))
+        if tr["karantina"]:
+            karantina_logla(e.get("kaynak"), tr["nedenler"], e.get("baslik", ""))
+            karantina_say += 1
+            continue                         # supheli haber GOLGE SINYALE GIRMEZ
+        baslik_t, ozet_t = tr["baslik"], tr["ozet"]
+        text = f"{baslik_t} {ozet_t}"
         konular = _konular(text)
         if not konular:
             continue
-        h = _haber_hash(e.get("baslik", ""))
+        h = _haber_hash(baslik_t)
         for kural in konular:
             for tic in kural["hisseler"]:
                 if watch and tic not in watch:
@@ -372,7 +460,7 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
                 seen.add(anahtar)
                 konu_say[ck] = konu_say.get(ck, 0) + 1
                 g = gruplar.setdefault((h, kural["konu"]), {
-                    "baslik": e.get("baslik", ""), "ozet": e.get("ozet", ""),
+                    "baslik": baslik_t, "ozet": ozet_t,
                     "link": e.get("link"), "tickerlar": []})
                 g["tickerlar"].append(tic)
                 toplam_cift += 1
@@ -381,6 +469,7 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
 
     yeni = 0
     islenen = 0
+    olcum_cache = {}                         # İŞ 2: ticker -> ham fiyat olcumu (memo)
     with db.get_conn() as c:
         for (h, konu), g in gruplar.items():
             kalan = [t for t in g["tickerlar"] if not _kayit_var(c, tarih, t, h)]
@@ -401,38 +490,50 @@ def tara(rss=None, verbose: bool = True, limit_haber: int = 120) -> dict:
                     continue                 # AI bu hisseyi dondurmedi
                 yon, guc, fy = d["yon"], d["guc"], d["fiyatlanmis"]
                 gerekce = d.get("gerekce", "")
+                # İŞ 2: deterministik fiyatlanmislik olcumu (AI'i DESTEKLER, ezmez).
+                ham = olcum_cache.get(t)
+                if ham is None:
+                    ham = _fiyat_hareket_ham(t)
+                    olcum_cache[t] = ham
+                fs = _fiyatlanmislik_etiket(ham, yon)
                 guven = "dusuk" if _celiski_mi(yon, gerekce) else "normal"
+                if fs == "fiyatlanmis":
+                    guven = "dusuk"          # buyuk olcude fiyatlanmis -> guveni dusur
                 karar = _golge_karar(yon, guc, fy, guven)
                 c.execute(
                     "INSERT OR IGNORE INTO haber_sinyal "
                     "(tarih,ticker,konu,baslik,link,haber_hash,yon,guc,fiyatlanmis,"
                     " golge_karar,gerekce,fiyat_hareket,fiyat_sinyal,guven,"
-                    " baskin_mekanizma,sonuc,getiri_yuzde,olusturma) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " baskin_mekanizma,fiyat_hareket_yuzde,hacim_kati,"
+                    " fiyatlanmislik_sayisal,sonuc,getiri_yuzde,olusturma) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (tarih, t, konu, g["baslik"][:300], g["link"], h,
                      yon, guc, fy, karar, gerekce[:300], hareketler.get(t),
                      fiyatlar.get(t), guven, (d.get("baskin_mekanizma") or "")[:200],
+                     ham.get("hareket"), ham.get("hacim_kati"), fs,
                      None, None, zaman))
                 yeni += 1
     # IS 4a: gunluk icerik denetimi — havuz/eslesme snapshot (ayar tablosuna).
     try:
-        _denetim_kaydet(entries, tarih)
+        _denetim_kaydet(entries, tarih, karantina_say)
     except Exception:
         pass
     if verbose:
+        kt = f", {karantina_say} karantina" if karantina_say else ""
         print(f"[haber_sinyal] GÖLGE tarama: {toplam_cift} eslesme ({len(gruplar)} "
-              f"haber-sektör grubu), {islenen} yeni islendi, {yeni} sinyal yazildi "
-              f"(tarih={tarih})")
+              f"haber-sektör grubu), {islenen} yeni islendi, {yeni} sinyal yazildi"
+              f"{kt} (tarih={tarih})")
     return {"yeni": yeni, "islenen": islenen, "eslesme": toplam_cift,
-            "gruplar": len(gruplar), "tarih": tarih}
+            "gruplar": len(gruplar), "karantina": karantina_say, "tarih": tarih}
 
 
 # ---------------------------------------------------------------------------
 # IS 4a: GUNLUK ICERIK DENETIMI — "kac haber eslesti / kac cope gitti"
 # ---------------------------------------------------------------------------
-def _denetim_kaydet(entries, tarih):
+def _denetim_kaydet(entries, tarih, karantina=0):
     """Gunun eslesme snapshot'ini ayar tablosuna yazar: havuz, isim-bazli eslesen,
-    konu-bazli eslesen. health_monitor bunu okuyup deger kaybini alarma cevirir."""
+    konu-bazli eslesen, karantina (İŞ 1 supheli haber). health_monitor bunu
+    okuyup deger kaybini alarma cevirir."""
     from src.db import database as db
     from src.news.rss_source import mentions
     watch = _watchlist()
@@ -444,7 +545,8 @@ def _denetim_kaydet(entries, tarih):
             konu_esles += 1
         if watch and any(mentions(text, t) for t in watch):
             isim_esles += 1
-    snap = {"havuz": havuz, "konu_esles": konu_esles, "isim_esles": isim_esles}
+    snap = {"havuz": havuz, "konu_esles": konu_esles, "isim_esles": isim_esles,
+            "karantina": karantina}
     db.set_setting(f"haber_denetim:{tarih}", json.dumps(snap))
 
 
@@ -550,8 +652,9 @@ def bugun_sinyaller(tarih: str = None) -> list[dict]:
         with db.get_conn() as c:
             rows = c.execute(
                 "SELECT ticker,konu,baslik,link,yon,guc,fiyatlanmis,golge_karar,"
-                "gerekce,fiyat_hareket,guven,baskin_mekanizma,sonuc FROM haber_sinyal "
-                "WHERE tarih=? "
+                "gerekce,fiyat_hareket,guven,baskin_mekanizma,"
+                "fiyat_hareket_yuzde,hacim_kati,fiyatlanmislik_sayisal,sonuc "
+                "FROM haber_sinyal WHERE tarih=? "
                 "ORDER BY CASE golge_karar WHEN 'AL' THEN 0 ELSE 1 END, ticker",
                 (tarih,)).fetchall()
         return [dict(r) for r in rows]

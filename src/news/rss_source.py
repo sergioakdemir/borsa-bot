@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .base import NewsSource, NewsItem
+from .temizle import haber_temizle           # adversarial temizleme (İŞ 1)
 from ..markets.bist import BIST
 
 _TZ = ZoneInfo("Europe/Istanbul")
@@ -173,16 +174,23 @@ class RSSNewsSource(NewsSource):
                 dt = _parse_dt(e)
                 if dt < cutoff:
                     continue
-                title = (e.get("title") or "").strip()
-                summary = re.sub(r"<[^>]+>", "", e.get("summary") or "").strip()
+                # İŞ 1: adversarial temizleme — gorunmez/homoglyph/gizli-HTML
+                # metin AI'a girmeden ONCE ayiklanir; supheli bayragi tasinir
+                # (karantina karari golge katmanda, haber_sinyal'de verilir).
+                tr = haber_temizle(e.get("title") or "", e.get("summary") or "",
+                                   kaynak=feed["ad"])
+                title = tr["baslik"]
                 if not title:
                     continue
                 out.append({
                     "kaynak": feed["ad"],
                     "baslik": title,
-                    "ozet": summary,
+                    "ozet": tr["ozet"],
                     "link": e.get("link"),
                     "tarih": dt,
+                    "supheli": tr["supheli"],
+                    "karantina": tr["karantina"],
+                    "temiz_nedenler": tr["nedenler"],
                 })
         self._entries = out
         return out

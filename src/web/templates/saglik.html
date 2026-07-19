@@ -255,6 +255,15 @@
         h+=`<div class="sbaslik sonuk">${E(s.baslik)}</div>`;
         if(s.gerekce) h+=`<div class="sger">${E(s.gerekce)}</div>`;
         if(s.baskin_mekanizma) h+=`<div class="sger sonuk">baskın mekanizma: ${E(s.baskin_mekanizma)}</div>`;
+        // İŞ 2: deterministik fiyatlanmışlık ölçümü (sayısal — AI'ı destekler)
+        const fss = s.fiyatlanmislik_sayisal;
+        if(fss && fss!=='veri_yok'){
+          const et = fss==='fiyatlanmis' ? '<span class="uyari">büyük ölçüde fiyatlanmış (geç kalındı)</span>'
+            : (fss==='erken_drift' ? '<span class="ok">erken · drift potansiyeli</span>' : 'nötr');
+          const hr = (s.fiyat_hareket_yuzde!=null) ? ` · 1-3g %${(s.fiyat_hareket_yuzde>=0?'+':'')+s.fiyat_hareket_yuzde}` : '';
+          const hk = (s.hacim_kati!=null) ? ` · hacim ${s.hacim_kati}×` : '';
+          h+=`<div class="sger sonuk">sayısal fiyatlanmışlık: ${et}${hr}${hk}</div>`;
+        }
         h+='</div>';
       }
     } else h+='<div class="bos">Bugün gölge haber sinyali yok.</div>';

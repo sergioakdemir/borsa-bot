@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS haber_sinyal (
     fiyat_sinyal  REAL,
     guven         TEXT,
     baskin_mekanizma TEXT,
+    fiyat_hareket_yuzde REAL,   -- İŞ 2: 1-3 gunluk kumulatif fiyat hareketi %
+    hacim_kati    REAL,         -- İŞ 2: son gun hacim / ortalama hacim
+    fiyatlanmislik_sayisal TEXT,-- İŞ 2: fiyatlanmis / erken_drift / notr / veri_yok
     sonuc         TEXT,
     getiri_yuzde  REAL,
     olusturma     TEXT
@@ -434,6 +437,12 @@ def _migrate(c) -> None:
             c.execute("ALTER TABLE haber_sinyal ADD COLUMN guven TEXT")
         if "baskin_mekanizma" not in cols_hs:   # cift-etkili hisse (TUPRS) mekanizmasi
             c.execute("ALTER TABLE haber_sinyal ADD COLUMN baskin_mekanizma TEXT")
+        if "fiyat_hareket_yuzde" not in cols_hs:  # İŞ 2: deterministik fiyatlanmislik
+            c.execute("ALTER TABLE haber_sinyal ADD COLUMN fiyat_hareket_yuzde REAL")
+        if "hacim_kati" not in cols_hs:
+            c.execute("ALTER TABLE haber_sinyal ADD COLUMN hacim_kati REAL")
+        if "fiyatlanmislik_sayisal" not in cols_hs:
+            c.execute("ALTER TABLE haber_sinyal ADD COLUMN fiyatlanmislik_sayisal TEXT")
     # decisions: her (ticker, tarih) icin TEK kayit. Index yoksa once mukerrerleri
     # temizle (en yuksek id = en son karar kalir), sonra UNIQUE index'i kur. Index
     # varken bu blok atlanir; record_decision INSERT OR REPLACE ile tekrar olusturmaz.
