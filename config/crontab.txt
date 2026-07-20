@@ -44,12 +44,21 @@ CRON_TZ=Europe/Istanbul
 */5 9-18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.ops.update_fiyat_cache >> /root/borsa-bot/logs/fiyat_cache.log 2>&1
 # Yabanci pay (watchlist geneli): her Pazartesi 09:30
 30 9 * * 1 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.foreign_investor >> /root/borsa-bot/logs/yabanci_pay.log 2>&1
-# Proaktif sektor haber taramasi (gece/hafta sonu dahil): her 30 dk
+# AL pozisyonu kademeli takip (gece/ABD seansi dahil): her 30 dk.
+# [20 Tem 2026] Bu kosu ESKIDEN proaktif sektor haber taramasini da yapiyordu;
+# o katman EMEKLI edildi (run_alerts.SEKTOR_HABER_EMEKLI) — yerini asagidaki
+# `haber_sinyal bildir` aldi. Kosu yalniz pozisyon takibi icin duruyor.
 */30 * * * * cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.alerts.run_alerts sektor >> /root/borsa-bot/logs/alerts.log 2>&1
-# GOLGE haber sinyali (IS 3, 17 Tem 2026): haber->hisse->AI etki, CANLI KARARA
-# ETKI ETMEZ (yalniz haber_sinyal tablosu + panel). Gunluk dedup -> her kosu
-# yalniz YENI eslesmeyi AI'a sorar (ucuz). Brifing oncesi 08:00 + oglen + aksam.
+# HABER SINYALI TARAMA (IS 3, 17 Tem 2026): haber->hisse->AI etki. Gunluk dedup ->
+# her kosu yalniz YENI eslesmeyi AI'a sorar (ucuz). Brifing oncesi 08:00 + oglen
+# + aksam. Tarama gece de calisir; GONDERIM ayri (bkz. bildir) ve gece susturulur.
 0 8,13,18 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal tara >> /root/borsa-bot/logs/haber_sinyal.log 2>&1
+# HABER SINYALI BILDIRIM (20 Tem 2026): eski sektor-haber sisteminin YERINE.
+# Yalniz guven=normal/yuksek sinyaller gider; karantina + celiski + fiyatlanmislik
+# korumalari tara() asamasinda uygulanmistir. Borsa kapaliyken bildir() kendisi
+# susar (istisna yok) — cron da zaten seans saatlerine kisitli. Dedup: sinyal
+# basina kullaniciya gunde 1. AI cagrisi YOK (sadece DB okur), ucuz.
+15,45 10-17 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal bildir >> /root/borsa-bot/logs/haber_sinyal.log 2>&1
 # GOLGE isabet takibi (IS 4b): olgunlasmis (>=1 gun) sinyalleri guncel fiyatla
 # degerlendir -> isabet karnesi (katmani canliya almaya deger mi?). Aksam 19:30.
 30 19 * * 1-5 cd /root/borsa-bot && /root/borsa-bot/venv/bin/python -m src.news.haber_sinyal sonuclandir >> /root/borsa-bot/logs/haber_sinyal.log 2>&1

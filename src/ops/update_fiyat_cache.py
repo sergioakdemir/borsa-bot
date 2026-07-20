@@ -69,13 +69,12 @@ _MAKUL_GUNLUK_LIMIT = 30.0
 
 
 def _piyasa_acik(market: str, now: datetime) -> bool:
-    """O an ilgili borsa acik mi? BIST 10:00-18:00, ABD ~16:30-23:00 (IST), hafta ici."""
-    if now.weekday() >= 5:               # Cumartesi/Pazar
-        return False
-    hm = now.hour * 60 + now.minute
-    if market == "abd":
-        return 16 * 60 + 30 <= hm <= 23 * 60     # NYSE ~16:30-23:00 Istanbul saati
-    return 10 * 60 <= hm <= 18 * 60              # BIST 10:00-18:00
+    """O an ilgili borsa acik mi? (BIST 10:00-18:00 + resmi tatil, ABD 16:30-23:00 IST)
+
+    Mantik src.piyasa_takvim'de TEK kaynakta; burasi ince sarmalayici. Tatil
+    takvimi 20 Tem 2026'da baglandi (once yalniz hafta sonu bakiliyordu)."""
+    from src.piyasa_takvim import borsa_acik
+    return borsa_acik(now, market)
 
 
 def _semboller() -> dict:

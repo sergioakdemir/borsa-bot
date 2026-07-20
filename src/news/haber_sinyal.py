@@ -1,13 +1,16 @@
-"""GÖLGE haber→hisse→etki katmanı (17 Tem 2026).
+"""Haber→hisse→etki katmanı (17 Tem 2026 gölge · 20 Tem 2026 canlı bildirim).
 
 BOTUN VARLIK SEBEBI: haberi önden yakalayıp aksiyona çevirmek. Ama yanlış
-kurulursa tehlikeli (her "savaş" kelimesine panik AL). Bu yüzden bu katman
-GÖLGE MODDA çalışır:
+kurulursa tehlikeli (her "savaş" kelimesine panik AL). Bu yüzden katman önce
+GÖLGE modda çalıştı; korumaları doğrulandıktan sonra (20 Tem 2026) eski
+`run_alerts._sektor_haber_tarama` sisteminin YERİNE kullanıcıya bildirim
+göndermeye başladı.
 
-  * CANLI KARARA ETKI ETMEZ. decisions tablosuna hiçbir şey yazmaz, sabah
-    brifingini/karar akışını değiştirmez, v2.1 test dönemini bozmaz.
-  * Yalnız `haber_sinyal` tablosuna kaydeder ve panelde "Bugünün Haber
-    Sinyalleri" olarak gösterir; kullanıcı doğru/yanlış kendisi değerlendirir.
+  * KARAR MOTORUNA HÂLÂ ETKI ETMEZ. decisions tablosuna hiçbir şey yazmaz,
+    sabah brifingini/karar akışını değiştirmez, v2.1 karar motorunu bozmaz.
+    Değişen tek şey ÇIKTI: artık panelin yanında Telegram'a da gidiyor.
+  * `haber_sinyal` tablosuna kaydeder, panelde "Bugünün Haber Sinyalleri"
+    olarak gösterir ve `bildir()` ile seans saatlerinde Telegram'a yollar.
 
 NASIL ÇALIŞIR (kural tablosu + AI etki):
   1. RSS havuzu (24s) taranır.
@@ -21,9 +24,10 @@ NASIL ÇALIŞIR (kural tablosu + AI etki):
   4. Gölge karar deterministik türetilir: yön=yukarı + güç>=orta + fiyatlanmamış
      -> gölge AL; aksi halde BEKLE.
 
-Çalıştırma (gölge — canlıyı etkilemez):
+Çalıştırma:
     python -m src.news.haber_sinyal tara          # bugünün haberlerini işle
     python -m src.news.haber_sinyal goster        # bugünün sinyallerini yaz
+    python -m src.news.haber_sinyal bildir        # CANLI: Telegram'a gönder
 """
 import json
 import sys
@@ -662,6 +666,156 @@ def bugun_sinyaller(tarih: str = None) -> list[dict]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# CANLI BILDIRIM (20 Tem 2026) — golge katman kullaniciya cikti veriyor
+# ---------------------------------------------------------------------------
+# Bu katman 17 Tem'e kadar GOLGE'ydi (yalniz DB + panel). Eski canli sistem
+# (run_alerts._sektor_haber_tarama) duzeltilmemis oldugu icin EMEKLI edildi ve
+# yerini burasi aldi. Golgede dogrulanmis korumalar bildirimde de gecerli:
+#   * karantina  : supheli haber zaten tara()'da elenir, sinyale hic girmez.
+#   * guven      : celiskili (yon-gerekce tutarsiz) VEYA buyuk olcude
+#                  fiyatlanmis sinyaller "dusuk" damgalidir -> GONDERILMEZ.
+#   * ana oyuncu : ASELS gibi sektor ana oyuncusu kendi haberinde zayiflatilmaz.
+#   * gece       : borsa kapaliyken (hafta sonu/resmi tatil/seans disi) HIC
+#                  bildirim gitmez — PORTFOY ISTISNASI YOK. Eski sistemin
+#                  portfoy istisnasi 03:30'da mesaj siziyordu.
+# Kritik sistem alarmlari (kredi/cokme) bu yoldan GECMEZ; onlar
+# telegram.notify_admins uzerinden gece de gidebilir.
+
+# Yalniz bu guven seviyeleri kullaniciya gider ("dusuk" ve NULL disarida).
+BILDIRIM_GUVEN = ("normal", "yuksek")
+
+# Tek mesajda en fazla kac sinyal blogu (mesaj sismesin).
+_BILDIRIM_MAX_BLOK = 8
+
+_YON_IKON = {"yukari": "🟢", "asagi": "🔴", "belirsiz": "⚪"}
+
+
+def _bildirim_blogu(s: dict) -> str:
+    """Bir sinyal kaydini Telegram HTML blogu haline getirir."""
+    baslik = s["baslik"] or ""
+    if s.get("link"):
+        baslik = f'<a href="{s["link"]}">{baslik}</a>'
+    ikon = _YON_IKON.get(s.get("yon"), "⚪")
+    blok = (f"{ikon} <b>{s['ticker']}</b> — {s['konu']}\n{baslik}")
+    if s.get("gerekce"):
+        blok += f"\n{s['gerekce']}"
+    # Fiyatlanmislik: deterministik olcum (AI'in oznel yorumu degil).
+    fs = s.get("fiyatlanmislik_sayisal")
+    hrk = s.get("fiyat_hareket_yuzde")
+    if fs == "erken_drift":
+        blok += f"\n<i>Hareket henüz küçük (%{hrk:+.1f}) — erken.</i>" if hrk is not None \
+            else "\n<i>Hareket henüz küçük — erken.</i>"
+    elif fs == "notr" and hrk is not None:
+        blok += f"\n<i>Son 3 gün: %{hrk:+.1f}</i>"
+    return blok
+
+
+def bildir(now=None, verbose: bool = True) -> int:
+    """Bugunun haber sinyallerini Telegram'a gonderir. Kac kullaniciya gitti doner.
+
+    Gonderim kapilari (sirayla): borsa acik mi -> Telegram yapili mi ->
+    guven normal/yuksek mi -> kullanici bu hisseyi izliyor mu (filtre.should_notify)
+    -> bu sinyal bu kullaniciya bugun gonderildi mi (dedup).
+    """
+    now = now or datetime.now(_TZ)
+    _load_dotenv()
+    from src.piyasa_takvim import borsa_acik
+
+    # KAPI 1 — GECE SUSTURMA: borsa kapaliysa (hafta sonu, resmi tatil, seans
+    # disi saat) hicbir haber bildirimi gitmez. Istisna YOK.
+    if not borsa_acik(now, "bist"):
+        if verbose:
+            print(f"[{now:%Y-%m-%d %H:%M}] [haber-bildir] borsa kapali — "
+                  f"bildirim yok (sinyaller kayitli, panelde gorunur).")
+        return 0
+
+    from src.notify import telegram
+    if not telegram.is_configured():
+        if verbose:
+            print(f"[{now:%Y-%m-%d %H:%M}] [haber-bildir] Telegram yapilandirilmamis.")
+        return 0
+
+    from src.db import database as db
+    from src.notify import filtre
+    tarih = _bugun()
+
+    # KAPI 2 — GUVEN: celiskili/fiyatlanmis (guven=dusuk) sinyaller elenir.
+    try:
+        with db.get_conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT id,ticker,konu,baslik,link,yon,guc,gerekce,guven,"
+                "       golge_karar,fiyat_hareket_yuzde,fiyatlanmislik_sayisal "
+                "FROM haber_sinyal WHERE tarih=? "
+                "ORDER BY CASE golge_karar WHEN 'AL' THEN 0 ELSE 1 END, ticker",
+                (tarih,))]
+    except Exception as e:
+        print(f"[haber-bildir] DB okuma hatasi: {type(e).__name__}")
+        return 0
+    sinyaller = [s for s in rows if (s.get("guven") or "") in BILDIRIM_GUVEN]
+    elenen = len(rows) - len(sinyaller)
+    if not sinyaller:
+        if verbose:
+            print(f"[{now:%Y-%m-%d %H:%M}] [haber-bildir] gonderilecek sinyal yok "
+                  f"({len(rows)} kayit, {elenen} dusuk-guven elendi).")
+        return 0
+
+    try:
+        from src.watchlist import load_watchlist
+        watch = {(t or "").upper().replace(".IS", "") for t in load_watchlist()}
+    except Exception:
+        watch = set()
+    try:
+        users = db.list_users()
+    except Exception:
+        users = []
+
+    gonderim = 0
+    for u in users:
+        tg = u.get("telegram_id")
+        if not tg:
+            continue
+        uid = u["id"]
+        try:
+            pf = {(p.get("ticker") or "").upper().replace(".IS", "")
+                  for p in db.list_portfolio(uid) if p.get("ticker")}
+        except Exception:
+            pf = set()
+        izlenen = pf | watch
+        bloklar, kayitlar = [], []
+        for s in sinyaller:
+            tic = s["ticker"]
+            if tic not in izlenen:
+                continue
+            # KAPI 3 — BILDIRIM GECIDI: portfoy disi hisseler icin genel kural.
+            if not filtre.should_notify(tic, uid, "haber", portfoy=pf):
+                continue
+            # KAPI 4 — DEDUP: ayni sinyal ayni kullaniciya gun icinde bir kez.
+            tok = f"HABERSINYAL:{uid}:{s['id']}"
+            if tok in db.alert_levels_today(tic, tarih):
+                continue
+            bloklar.append(_bildirim_blogu(s))
+            kayitlar.append((tic, tok))
+            if len(bloklar) >= _BILDIRIM_MAX_BLOK:
+                break
+        if not bloklar:
+            continue
+        bas = f"<b>HABER SİNYALİ</b> — {now:%H:%M}"
+        try:
+            telegram.send_message(bas + "\n\n" + "\n\n".join(bloklar), chat_id=str(tg))
+        except Exception as e:
+            print(f"[haber-bildir] gonderim hatasi ({tg}): {type(e).__name__}")
+            continue          # dedup YAZILMAZ -> sonraki kosuda yeniden denenir
+        for tic, tok in kayitlar:
+            db.record_alert(tic, tarih, tok, 0)
+        gonderim += 1
+
+    if verbose:
+        print(f"[{now:%Y-%m-%d %H:%M}] [haber-bildir] {len(sinyaller)} uygun sinyal "
+              f"({elenen} dusuk-guven elendi) -> {gonderim} kullaniciya bildirildi.")
+    return gonderim
+
+
 def _goster(tarih: str = None) -> None:
     sinyaller = bugun_sinyaller(tarih)
     if not sinyaller:
@@ -680,6 +834,8 @@ def main(argv) -> int:
     komut = argv[1] if len(argv) > 1 else "tara"
     if komut == "goster":
         _goster()
+    elif komut == "bildir":            # CANLI: bugunun sinyallerini Telegram'a gonder
+        bildir()
     elif komut == "sonuclandir":       # IS 4b: olgunlasmis sinyalleri degerlendir
         sonuclandir()
         import json as _j

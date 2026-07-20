@@ -63,11 +63,13 @@ CACHE_BAYAT_DK = 20                   # cache bu kadar dakikadan eskiyse (borsa 
 
 
 def _bist_acik(now: datetime) -> bool:
-    """O an BIST acik mi? (hafta ici 10:00-18:00, Istanbul saati)."""
-    if now.weekday() >= 5:
-        return False
-    hm = now.hour * 60 + now.minute
-    return 10 * 60 <= hm <= 18 * 60
+    """O an BIST acik mi? (hafta ici 10:00-18:00 + resmi tatil, Istanbul saati)
+
+    Mantik src.piyasa_takvim'de TEK kaynakta. Tatil takvimi 20 Tem 2026'da
+    baglandi: onceden tatil gunu 'acik' sayilip sahte cache-bayat alarmi
+    uretiyordu."""
+    from src.piyasa_takvim import borsa_acik
+    return borsa_acik(now, "bist")
 
 
 # --- kontroller: her biri sorun varsa (anahtar, mesaj) doner, yoksa None ---

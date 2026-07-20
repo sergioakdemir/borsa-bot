@@ -1115,12 +1115,27 @@ def _senaryo_kontrol_ve_bildir(now, basliklar=None):
 
 
 # ---------------------------------------------------------------------------
-# PROAKTIF SEKTOR HABER TARAMASI (cron: her 30 dk)
-# RSS kaynaklarini tarar; sektor haberini etkilenen hisselere baglar ve
-# kullanicinin izledigi (portfoy/watchlist) hisse etkileniyorsa Telegram'a bildirir.
-# Gece (borsa kapali) gelen haberler ayrica sabah brifingine girsin diye
-# data/gece_haberleri.json'a yazilir.
+# [EMEKLI — 20 Tem 2026] PROAKTIF SEKTOR HABER TARAMASI
+#
+# BU SISTEM ARTIK KULLANICIYA MESAJ GONDERMEZ. Yerini src/news/haber_sinyal.py
+# aldi (bkz. haber_sinyal.bildir). Emekli etme gerekcesi — bu katman asagidaki
+# duzeltmelerin HICBIRINI icermiyordu:
+#   * SEKTOR_HABER_KURALLARI yanlis/eksik esleme yapiyordu ("namlu" -> petrol;
+#     Hurmuz/altin/havacilik/celik konulari yok; ROKET/STFA gecersiz kodlar).
+#   * ANA OYUNCU sektor-alakasi yok -> ASELS savunma haberinde "dolayli/zayif"
+#     damgalanabiliyordu (27 Haz 2026 hatali bildirimi).
+#   * Deterministik fiyatlanmislik olcumu yok (yalniz AI'in oznel yorumu).
+#   * Adversarial haber temizleme/karantina yok (supheli kaynak suzulmuyordu).
+#   * Gece susturmasinin portfoy istisnasi siziyordu (03:30'da bildirim).
+#
+# KOD ARSIV OLARAK DURUYOR (kural tablosu + esleme mantigi referans); GONDERIM
+# OLDU. _sektor_haber_tarama() basindaki emeklilik kapisi her cagriyi durdurur
+# ve __main__ 'sektor' kolu artik bu fonksiyonu hic cagirmaz.
 # ---------------------------------------------------------------------------
+
+# Emeklilik kapisi: True kaldigi surece eski sektor-haber gonderimi calismaz.
+# (Testlerin eski davranisi dogrulayabilmesi icin degisken; uretimde ELLENMEZ.)
+SEKTOR_HABER_EMEKLI = True
 
 # konu -> tetik anahtar kelimeler + etkilenen hisseler. Kelimeler NORMALIZE yazilir
 # (kucuk + tr->ascii) ve metinde KELIME BASINA cengellenir (bkz. _haber_konulari):
@@ -1150,11 +1165,12 @@ _GECE_HABER_PATH = Path(__file__).resolve().parents[2] / "data" / "gece_haberler
 
 
 def _borsa_acik(now) -> bool:
-    """BIST o an acik mi? (hafta ici 10:00-18:00 Istanbul). Gece/hafta sonu False."""
-    if now.weekday() >= 5:
-        return False
-    hm = now.hour * 60 + now.minute
-    return 10 * 60 <= hm <= 18 * 60
+    """BIST o an acik mi? (hafta ici 10:00-18:00 Istanbul + resmi tatil).
+
+    Mantik src.piyasa_takvim'de TEK kaynakta. Tatil takvimi 20 Tem 2026'da
+    baglandi; oncesinde yalniz hafta sonu bakiliyordu."""
+    from src.piyasa_takvim import borsa_acik
+    return borsa_acik(now, "bist")
 
 
 def _haber_konulari(text: str) -> list:
@@ -1266,6 +1282,13 @@ def _sektor_haber_tarama(now=None, within_hours: float = 2.0):
     sabah brifingine girsin diye data/gece_haberleri.json'a yazilir.
     """
     now = now or datetime.now(_TZ)
+    # EMEKLILIK KAPISI (20 Tem 2026): bu katman kullaniciya mesaj GONDERMEZ.
+    # Yerini src/news/haber_sinyal.bildir aldi. Hicbir cagri yolu -- cron, main(),
+    # elle calistirma -- buradan Telegram'a ulasamaz.
+    if SEKTOR_HABER_EMEKLI:
+        print(f"[{now:%Y-%m-%d %H:%M}] [sektor-haber] EMEKLI — gonderim yok "
+              f"(yerini haber_sinyal.bildir aldi).")
+        return 0
     today = now.date().isoformat()
     gece = not _borsa_acik(now)
 
@@ -1699,10 +1722,12 @@ def check_price_alarms(now=None) -> int:
 if __name__ == "__main__":
     arg = sys.argv[1].lower() if len(sys.argv) > 1 else ""
     if arg == "sektor":
-        # proaktif sektor haber taramasi (30 dk'da bir, gece dahil)
-        rc = 0 if _sektor_haber_tarama() >= 0 else 1
-        # AL pozisyonu kademeli takip de bu */30 kosusunda (gece/ABD seansi dahil).
-        # main() ile cakissa bile gunde-bir-kez spam korumasi yineleme yapmaz.
+        # [20 Tem 2026] Eski sektor-haber gonderimi EMEKLI — bu kolda artik
+        # _sektor_haber_tarama() CAGRILMIYOR. Haber bildirimi
+        # `python -m src.news.haber_sinyal bildir` ile gidiyor.
+        # Bu */30 kosusu YALNIZ AL pozisyonu kademeli takibi icin duruyor
+        # (gece/ABD seansi dahil; gunde-bir-kez spam korumasi yineleme yapmaz).
+        rc = 0
         try:
             check_pozisyon_takip()
         except Exception as e:

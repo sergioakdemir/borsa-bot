@@ -636,24 +636,12 @@ def _volume_signal(pct):
     return "yuksek" if pct > 25 else ("dusuk" if pct < -25 else "normal")
 
 
-# Turkiye sabit tarihli resmi tatilleri (ay, gun) - borsa kapali
-_TR_SABIT_TATIL = ((1, 1), (4, 23), (5, 1), (5, 19), (7, 15), (8, 30), (10, 29))
-# Degisken tarihli dini bayramlar: her yil resmi ilan sonrasi MANUEL eklenir.
-_TR_BAYRAM = {
-    2026: ((3, 20), (3, 21), (3, 22),                 # Ramazan Bayrami
-           (6, 5), (6, 6), (6, 7), (6, 8), (6, 9)),   # Kurban Bayrami
-}
-
-
-def _tr_tatilleri(start, end) -> set:
-    """BIST tatilleri: sabit resmi gunler + manuel dini bayram listesi."""
-    hols = set()
-    for yil in range(start.year, end.year + 1):
-        for ay, gun in _TR_SABIT_TATIL:
-            hols.add(date(yil, ay, gun))
-        for ay, gun in _TR_BAYRAM.get(yil, ()):
-            hols.add(date(yil, ay, gun))
-    return hols
+# Tatil tablolari 20 Tem 2026'da src/piyasa_takvim.py'ye TASINDI (tek kaynak):
+# ayni liste hem bu KILL_SWITCH'te hem borsa acik/kapali kontrolunde kullaniliyor.
+# Asagidaki adlar geriye donuk uyumluluk icin korunuyor.
+from src.piyasa_takvim import TR_BAYRAM as _TR_BAYRAM      # noqa: E402
+from src.piyasa_takvim import TR_SABIT_TATIL as _TR_SABIT_TATIL  # noqa: E402
+from src.piyasa_takvim import tr_tatilleri as _tr_tatilleri      # noqa: E402
 
 
 def _piyasa_tatilleri(market: str, start, end) -> set:
