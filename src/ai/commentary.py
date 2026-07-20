@@ -351,6 +351,14 @@ SYSTEM = (
     "alanina hangi "
     "somut kosul olusunca tekrar bakilmasi gerektigini yaz (orn. 'fiyat 50 gunluk "
     "ortalamayi yukari gecerse' veya 'bilanco aciklaninca'). Diger kararlarda bu alan bos.\n\n"
+    "SEKTOR/JEOPOLITIK HABER SINYALI: Veride 'sektor_jeopolitik_haber_sinyali' varsa, "
+    "haber katmaninin bu hisse icin yakaladigi guncel sektor/jeopolitik haberlerdir "
+    "(konu, yon, guc, haberde_fiyatlanmis, fiyatlanmislik_olcum, son3g_hareket_%). Bunu "
+    "BAGLAM olarak degerlendir; OTOMATIK bir karar dayatmaz, hukum SENIN. Yorumlarken: "
+    "fiyatlanmislik_olcum='fiyatlanmis' VEYA son3g_hareket_% yuksek (>~6) ise hareket "
+    "buyuk olcude gerceklesmis olabilir (gec kalinmis, zirve kovalama riski — TEMKINLI); "
+    "'notr/erken_drift' veya haberde_fiyatlanmis='hayir' ise firsat surebilir. Guclu+taze "
+    "haberi sirket sagligiyla birlikte tart; tek basina ne haber ne bilanco her seyi ezmez.\n\n"
     "JEOPOLITIK/MAKRO HABER YONU: Jeopolitik haberin yonunu analiz et. Olumsuz haber "
     "+ dogrudan etki = riski artir. Olumlu haber + dogrudan fayda = riski azalt. "
     "Haberin icerigini OKU, sadece 'jeopolitik haber var' deme.\n"
@@ -1417,6 +1425,18 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         "kap_bildirimleri_30g": news["bildirimler"],
         "haberler_son": news["haberler"],
     }
+    # CANLI (Is 1, 21 Tem 2026): Haber sinyal katmaninin BUGUN yakaladigi
+    # jeopolitik/makro/sektor haberlerini ANA motora ekle. Sorun: TUPRS petrol/
+    # Iran haberini ana motorda HIC gormedi (yalniz tahvil KAP'i vardi) -> korluk.
+    # KORLUK DUZELTMESI: motor artik haberi GORUR. Karari ZORLAMAZ; SYSTEM bunu
+    # yalniz BAGLAM olarak sunar, AI kendi degerlendirir.
+    try:
+        from src.news import haber_sinyal as _hs
+        _sinyaller = _hs.ticker_sinyalleri(ticker)
+        if _sinyaller:
+            payload["sektor_jeopolitik_haber_sinyali"] = _sinyaller
+    except Exception:
+        pass
     # Sirket sagligi (~%40 agirlik): bilanco metrikleri. Veri yoksa "bilanço verisi eksik".
     _saglik_alanlar = ("fk", "roe_%", "kar_marji_%", "borc_ozsermaye",
                        "gelir_buyume_%", "favok_marji_%")

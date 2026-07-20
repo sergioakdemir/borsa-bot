@@ -648,6 +648,42 @@ def isabet_ozeti() -> dict:
     return out
 
 
+def ticker_sinyalleri(ticker: str, tarih: str = None) -> list[dict]:
+    """CANLI (Is 1, 21 Tem 2026): ANA karar motoruna beslemek icin bir hissenin
+    BUGUNku gölge haber sinyalleri (jeopolitik/makro/sektor). Amac: ana motorun
+    petrol/Iran gibi haberleri GORMESI (korluk duzeltmesi). KARARI ZORLAMAZ —
+    yalniz baglam; AI kendi degerlendirir. Konu basina en yeni kayit, max 4."""
+    from src.db import database as db
+    tarih = tarih or _bugun()
+    tk = (ticker or "").upper().replace(".IS", "")
+    try:
+        with db.get_conn() as c:
+            rows = c.execute(
+                "SELECT konu,baslik,yon,guc,fiyatlanmis,golge_karar,gerekce,"
+                "fiyatlanmislik_sayisal,fiyat_hareket_yuzde "
+                "FROM haber_sinyal WHERE tarih=? AND ticker=? ORDER BY id DESC",
+                (tarih, tk)).fetchall()
+    except Exception:
+        return []
+    out, seen = [], set()
+    for r in rows:
+        d = dict(r)
+        if d["konu"] in seen:
+            continue
+        seen.add(d["konu"])
+        out.append({
+            "konu": d["konu"], "baslik": (d["baslik"] or "")[:140],
+            "yon": d["yon"], "guc": d["guc"],
+            "haberde_fiyatlanmis": d["fiyatlanmis"],
+            "fiyatlanmislik_olcum": d["fiyatlanmislik_sayisal"],
+            "son3g_hareket_%": d["fiyat_hareket_yuzde"],
+            "ozet": (d["gerekce"] or "")[:200],
+        })
+        if len(out) >= 4:
+            break
+    return out
+
+
 def bugun_sinyaller(tarih: str = None) -> list[dict]:
     """Panel/rapor icin: bir gunun gölge haber sinyalleri."""
     from src.db import database as db
