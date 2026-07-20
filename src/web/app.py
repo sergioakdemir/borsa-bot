@@ -5747,6 +5747,16 @@ def _saglik_golge_isabet() -> dict:
         return {}
 
 
+def _saglik_golge_v2() -> dict:
+    """Golge kural v2 (yeni-katalizor) biriken isabet + canliya-alma esigi.
+    CANLI KARARA ETKI ETMEZ — yalniz izleme."""
+    try:
+        from src.news import golge_izleme
+        return golge_izleme.ozet_v2()
+    except Exception:
+        return {}
+
+
 @app.route("/api/saglik/veri")
 def api_saglik_veri():
     """Panelin tek veri ucu. SALT OKUNUR — hicbir sey degistirmez."""
@@ -5772,6 +5782,7 @@ def api_saglik_veri():
         "haber_sinyaller": _saglik_haber_sinyaller(),
         "haber_denetim": _saglik_haber_denetim(),
         "golge_isabet": _saglik_golge_isabet(),
+        "golge_v2": _saglik_golge_v2(),
         "kredi": m["kredi"],
         "nvidia": m.get("nvidia"),
         "motor": m["motor"],

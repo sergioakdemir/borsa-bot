@@ -403,6 +403,16 @@ def _golge_satiri(m: dict) -> str:
     return esl
 
 
+def _golge_v2_satiri() -> str:
+    """Is 4: golge_karar_v2 (yeni-katalizor kurali) biriken isabet + canliya
+    kalan. CANLI DEGIL — yalniz izleme (bkz. golge_izleme)."""
+    try:
+        from src.news import golge_izleme
+        return golge_izleme.kart_satiri()
+    except Exception:
+        return "Gölge haber kuralı v2: ölçüm alınamadı"
+
+
 def _maliyet_satiri(m: dict) -> str:
     """Aksam karnesi icin GERCEK AI maliyeti (loglardan). Anomali varsa uyari."""
     h = (m.get("kredi") or {}).get("harcama") or {}
@@ -445,6 +455,7 @@ def _mesaj(m: dict) -> str:
         f"Fiyat cache: {cache_txt}",
         f"Haber: {haber_txt}",
         _golge_satiri(m),
+        _golge_v2_satiri(),
         "─────",
         f"Gece isleri: trades {ok(g['trades']=='ok')} | karne {ok(g['karne']=='ok')} | "
         f"yukselis hafizasi {ok(g['yukselis_hafizasi']=='ok')}",
@@ -469,6 +480,15 @@ def run(gonder: bool = True, verbose: bool = True) -> dict:
     if verbose:
         print(mesaj)
     if gonder:
+        # Is 2: golge kural v2 otomatik canliya-alma esigi. Durum degistiginde
+        # (hazir/dusuk) admin'e AYRI Telegram atar; ayni durumda tekrarlamaz.
+        # CANLIYA ALMAZ — yalniz haber verir.
+        try:
+            from src.news import golge_izleme
+            golge_izleme.esik_bildir(verbose=verbose)
+        except Exception as e:
+            if verbose:
+                print(f"[karne] golge v2 esik kontrol hatasi: {type(e).__name__}")
         try:
             from src.notify import telegram
             telegram.notify_admins(mesaj, prefix="")
