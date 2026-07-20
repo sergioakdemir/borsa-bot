@@ -32,6 +32,20 @@ class BosHaberKaynagi(NewsSource):
         return []
 
 
+def _kap_bayrak_yaz(deger: str):
+    """KAP son-deneme bayragini yaz ('1' = son deneme basarisiz, '0' = basarili).
+
+    Eskiden bu bayrak bir kez '1' olunca gun sonuna kadar temizlenmiyordu; tek
+    bir gecici hata gun boyu 'KAP erisilemiyor' alarmi uretiyordu (20 Tem 2026:
+    kap_ok=2974 / kap_fail=82 iken 6 saat boyunca yanlis alarm). Artik her
+    deneme bayragi gunceller. Bayrak yazimi haber akisini asla bozmamali."""
+    try:
+        from src.db import database as _db
+        _db.set_setting(f"kap_ornek:{datetime.now(_TZ).date().isoformat()}", deger)
+    except Exception:
+        pass
+
+
 def get_news_source(verbose: bool = True):
     """(source, kap_yok) dondurur. Canli KAP denenir; erisilemezse URETIMDE bos
     kaynak (BosHaberKaynagi), yalniz BORSA_ORNEK_HABER env'i acikken ORNEK kaynak.
@@ -39,17 +53,15 @@ def get_news_source(verbose: bool = True):
     try:
         kap = KAPSource(timeout=12)
         kap.get_news("THYAO", limit=1)
+        _kap_bayrak_yaz("0")          # basarili -> bayrak TEMIZLENIR (yapiskan degil)
         if verbose:
             print("  [haber] KAP CANLI kaynak kullaniliyor.")
         return kap, False
     except NewsSourceUnavailable as e:
-        # Gunluk bayrak: KAP down -> BIST haber akisi kesik. health_monitor bu
-        # bayragi okuyup gunde 1 kez admin'e uyarir.
-        try:
-            from src.db import database as _db
-            _db.set_setting(f"kap_ornek:{datetime.now(_TZ).date().isoformat()}", "1")
-        except Exception:
-            pass
+        # Bayrak SON denemenin durumunu tutar (gun boyu yapismaz). Tek bir gecici
+        # 429/reset gun boyu alarm uretmemeli; health_monitor bu bayragi bugunku
+        # kap_ok/kap_fail oraniyla birlikte degerlendirir.
+        _kap_bayrak_yaz("1")
         if _ornek_izinli():                       # yalniz test/gelistirme
             if verbose:
                 print(f"  [haber] KAP erisilemedi -> ORNEK kaynak (TEST). ({str(e)[:55]})")

@@ -243,18 +243,38 @@ def _kontrol_haber_eslesme():
     return None
 
 
+# KAP hata orani bu esigin ustundeyse gercek kesinti sayilir (altinda kalan
+# gecici 429/reset'ler zaten residential fallback ile telafi ediliyor).
+_KAP_HATA_ESIGI = 0.50
+
+
 def _kontrol_kap():
-    """KAP bugun erisilemez olup ORNEK (sahte) kaynaga dusuldu mu? service.py
-    fallback'te 'kap_ornek:<gun>' bayragini yazar; burada okunur -> gunde 1 uyari."""
+    """KAP bugun GERCEKTEN erisilemez durumda mi?
+
+    Iki kosul birlikte aranir: (1) son deneme basarisiz (service.py'nin yazdigi
+    'kap_ornek:<gun>' bayragi) ve (2) bugunku hata orani esigin ustunde. Tek
+    basina bayrak yeterli degil - tek bir gecici 429 gun boyu alarm uretirdi.
+
+    NOT: KAP dustugunde URETIMDE sahte/ORNEK haber URETILMEZ; haber listesi bos
+    doner (bkz. news/service.py BosHaberKaynagi). Yani risk 'uydurma haber karara
+    girer' degil, 'haber sinyali yok' - alarm metni bunu dogru anlatmali."""
     try:
         from src.db import database as db
         bugun = datetime.now(_TZ).date().isoformat()
-        if str(db.get_setting(f"kap_ornek:{bugun}", "0")) == "1":
-            return ("kap_ornek",
-                    "KAP erişilemiyor, sahte kaynak devrede — BIST haber akışı kesik.")
+        if str(db.get_setting(f"kap_ornek:{bugun}", "0")) != "1":
+            return None
+        ok = db.gunluk_sayac("kap_ok")
+        fail = db.gunluk_sayac("kap_fail")
+        toplam = ok + fail
+        oran = (fail / toplam) if toplam else 1.0
+        if toplam and oran < _KAP_HATA_ESIGI:
+            return None                  # gecici hata; fallback telafi ediyor
+        return ("kap_ornek",
+                f"KAP çağrıları başarısız (bugün {ok} başarılı / {fail} hata, "
+                f"%{oran * 100:.0f} hata) — BIST haber akışı boş dönüyor. "
+                "Sahte içerik ÜRETİLMİYOR, kararlar habersiz veriliyor.")
     except Exception:
         return None
-    return None
 
 
 # Gece isleri: (heartbeat adi, izin verilen azami yas saat). Cron gece ~23:30-23:50
