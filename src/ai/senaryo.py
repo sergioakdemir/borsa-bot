@@ -110,6 +110,11 @@ def uret(notable_tickers, gundem, macro, overview, client=None) -> list:
             model=HABER_MODEL, max_tokens=600, system=sistem,
             messages=[{"role": "user", "content": json.dumps(durum, ensure_ascii=False)}],
             output_config={"format": {"type": "json_schema", "schema": _SENARYO_SCHEMA}})
+        try:                       # maliyet: tahmini_maliyet loglansin (tek kaynak)
+            from src.ai import maliyet
+            maliyet.logla(maliyet.usage_dict(resp.usage), HABER_MODEL, etiket="senaryo")
+        except Exception:
+            pass
         text = next((b.text for b in resp.content if b.type == "text"), "")
         return json.loads(text).get("senaryolar", [])
     except Exception:

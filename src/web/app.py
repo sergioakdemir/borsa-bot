@@ -4544,6 +4544,11 @@ def ask_bot(soru: str, kullanici=None, gecmis=None, image_path=None) -> dict:
             system=sistem_bloklari,
             messages=mesajlar,
         )
+        try:                       # maliyet: Bota Sor sohbeti de loglansin (tek kaynak)
+            from src.ai import maliyet
+            maliyet.logla(maliyet.usage_dict(resp.usage), _model, etiket="bota_sor")
+        except Exception:
+            pass
         cevap = "".join(getattr(b, "text", "") for b in resp.content
                         if getattr(b, "type", "") == "text").strip()
         cevap = re.sub(r"^[#>\-\*\s]*\|.*$", "", cevap, flags=re.M)   # tablo satirlari

@@ -77,7 +77,7 @@ _SCHEMA = {
     "additionalProperties": False
 }
 
-def _haiku_analiz(ticker, degisim, haberler, temel, makro_ozet, client=None):
+def _haiku_analiz(ticker, degisim, haberler, temel, makro_ozet, client=None, acc=None):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None, None
     try:
@@ -100,6 +100,12 @@ def _haiku_analiz(ticker, degisim, haberler, temel, makro_ozet, client=None):
             messages=[{"role": "user", "content": json.dumps(icerik, ensure_ascii=False)}],
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}}
         )
+        if acc is not None:            # maliyet: token'lari toplayiciya ekle
+            try:
+                from src.ai import maliyet
+                maliyet.ekle(acc, resp.usage)
+            except Exception:
+                pass
         text = next((b.text for b in resp.content if b.type == "text"), "")
         d = json.loads(text)
         return d.get("kategori", "belirsiz"), (d.get("sebep") or "").strip()
@@ -164,7 +170,9 @@ def run(verbose=True):
     except Exception:
         pass
     import anthropic
+    from src.ai import maliyet
     client = anthropic.Anthropic()
+    _acc = maliyet.bos_acc()                 # maliyet: tum Haiku cagrilarini topla
     kaydedilen = 0
     for ticker, degisim in yukselenler:
         try:
@@ -189,7 +197,7 @@ def run(verbose=True):
                     temel = {k: t[k] for k in ("fk", "roe_%", "kar_marji_%") if t.get(k)}
             except Exception:
                 pass
-            kategori, sebep = _haiku_analiz(ticker, degisim, haberler, temel, makro_ozet, client=client)
+            kategori, sebep = _haiku_analiz(ticker, degisim, haberler, temel, makro_ozet, client=client, acc=_acc)
             _kaydet(ticker, bugun, degisim, kategori or "belirsiz", sebep or "", rejim_str)
             kaydedilen += 1
             if verbose:
@@ -197,6 +205,7 @@ def run(verbose=True):
         except Exception as e:
             if verbose:
                 print(f"  [{ticker}] hata: {type(e).__name__}: {e}")
+    maliyet.logla(_acc, HAIKU, etiket="yukselis")   # maliyet: tek TOKEN OZET satiri
     if verbose:
         print(f"[{bugun}] Kaydedilen: {kaydedilen}/{len(yukselenler)}")
     try:                                 # heartbeat: gunluk saglik karnesi bunu okur

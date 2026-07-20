@@ -30,12 +30,17 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.ai import maliyet   # ortak maliyet hesabi + TOKEN OZET loglama
+
 _TZ = ZoneInfo("Europe/Istanbul")
 ROOT = Path(__file__).resolve().parents[2]
 OUT_PATH = ROOT / "data" / "ai_commentary.json"
 
 MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 1000
+# 1500: yapisal cikti (Verdict) uzun gerekcede 1000 token'i asip JSON'u kesiyordu
+# -> parse hatasi/sessiz verdict kaybi. Fatura URETILEN token'dan oldugu icin
+# tavani yukseltmek maliyeti degistirmez, yalniz truncation'i onler.
+MAX_TOKENS = 1500
 
 # --- AI cagri hatasi siniflandirmasi (15 Tem 2026) ---------------------------
 # 15 Tem 2026: kredi bitince batch cagrisi BadRequestError verdi, evaluate_all
@@ -193,12 +198,9 @@ STRATEGY_VERSION = "v2.1"
 HABER_MODEL = "claude-haiku-4-5"     # haber etki analizi: ucuz + hizli
 _HABER_ETKI_DENEME = 2               # gecici hatada toplam deneme sayisi
 _HABER_ETKI_BEKLE = 2.0              # denemeler arasi bekleme (sn)
-# Sonnet 4.6 Batch API fiyati ($/1M token): input 1.50, output 7.50
-_BATCH_FIYAT_INPUT = 1.50 / 1_000_000
-_BATCH_FIYAT_OUTPUT = 7.50 / 1_000_000
-# Prompt caching: cache YAZMA = 1.25x input, cache OKUMA (hit) = 0.10x input
-_BATCH_FIYAT_CACHE_WRITE = _BATCH_FIYAT_INPUT * 1.25
-_BATCH_FIYAT_CACHE_READ = _BATCH_FIYAT_INPUT * 0.10
+# NOT: Maliyet/fiyat hesabi src/ai/maliyet.py'ye tasindi (tek kaynak, dogru
+# model + tier). run_batch batch=True, run (senkron fallback) batch=False ile
+# loglar. Eski _BATCH_FIYAT_* sabitleri kaldirildi.
 
 # Her haberin bu hisseye etkisini etiketleyen ucuz Haiku cagrisi semasi
 _HABER_ETKI_SCHEMA = {
@@ -500,8 +502,12 @@ SYSTEM = (
 
 # SYSTEM her cagride tekrar gonderilir; cache_control ile bir kez yazilip
 # sonraki cagrilarda %90 ucuz okunur (cache hit). Batch icinde de gecerlidir.
+# TTL 1 SAAT: batch API 93 hisseyi dakikalar boyunca isler; varsayilan 5 dk TTL
+# batch suresini kapsamadigi icin sonraki istekler cache'i bulamayip YENIDEN
+# yaziyordu (cache_write patlamasi). 1 saatlik TTL cache'i tum batch boyunca
+# canli tutar (yazim 2x ama bir kez yazilip ~92 kez okunur -> net kazanc).
 _SYSTEM_CACHED = [{"type": "text", "text": SYSTEM,
-                   "cache_control": {"type": "ephemeral"}}]
+                   "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
 
 
 # Onboarding yatirim_vadesi -> karar motoru vade kategorisi (kisa/orta/uzun).
@@ -1285,7 +1291,7 @@ def _baglam_blok(context: dict) -> dict:
         "type": "text",
         "text": ("GENEL PIYASA BAGLAMI (tum hisseler icin ortak; 'piyasa_baglami'):\n"
                  + json.dumps({"piyasa_baglami": context}, ensure_ascii=False, indent=2)),
-        "cache_control": {"type": "ephemeral"},
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},  # 1 saat: batch boyunca canli (bkz. _SYSTEM_CACHED notu)
     }
 
 
@@ -2515,14 +2521,11 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
         # TR brifingi -> briefing.log, US brifingi -> briefing_us.log (cron yonlendirmesi).
         # input = cache'siz tam ucretli; cache_read = %90 ucuz okuma (hit);
         # cache_write = ilk yazim (1.25x). Cache sayesinde SYSTEM bir kez yazilir.
-        maliyet = (toplam_input * _BATCH_FIYAT_INPUT
-                   + toplam_output * _BATCH_FIYAT_OUTPUT
-                   + toplam_cache_write * _BATCH_FIYAT_CACHE_WRITE
-                   + toplam_cache_read * _BATCH_FIYAT_CACHE_READ)
-        tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
-        print(f"[{tarih}] TOKEN OZET: input={toplam_input}, output={toplam_output}, "
-              f"cache_hit={toplam_cache_read}, cache_write={toplam_cache_write}, "
-              f"tahmini_maliyet=${maliyet:.4f}")
+        # BATCH yolu -> batch fiyati (%50). Ortak yardimcidan (tek kaynak).
+        maliyet.logla({"input": toplam_input, "output": toplam_output,
+                       "cache_write": toplam_cache_write, "cache_read": toplam_cache_read},
+                      MODEL, batch=True,
+                      tarih=datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"))
 
     # Hala sonuc gelmeyenler (timeout vb.) -> skipped
     for cid, ctx in ctxs.items():
@@ -2628,15 +2631,12 @@ def run(tickers: list[str], save: bool = True, verbose: bool = True,
     if any(not r.get("skipped") for r in results if isinstance(r, dict)):
         kredi_freni_kaldir()
 
-    # TOKEN OZET (batch ile ayni format) — fallback tek-tek cagri yolunda da
-    maliyet = (usage_acc["input"] * _BATCH_FIYAT_INPUT
-               + usage_acc["output"] * _BATCH_FIYAT_OUTPUT
-               + usage_acc["cache_write"] * _BATCH_FIYAT_CACHE_WRITE
-               + usage_acc["cache_read"] * _BATCH_FIYAT_CACHE_READ)
-    tarih = datetime.now(_TZ).strftime("%Y-%m-%d %H:%M")
-    print(f"[{tarih}] TOKEN OZET: input={usage_acc['input']}, output={usage_acc['output']}, "
-          f"cache_hit={usage_acc['cache_read']}, cache_write={usage_acc['cache_write']}, "
-          f"tahmini_maliyet=${maliyet:.4f}")
+    # TOKEN OZET — run() SENKRON tek-tek yol (batch fallback). Bu yol STANDART
+    # fiyata calisir (batch %50 indirimi YOK) -> batch=False ile logla. Boylece
+    # batch'e dusen gunler artik gercek (~2x) maliyetle loglanir, log eksik
+    # gostermez. (Iyilestirme 3c.)
+    maliyet.logla(usage_acc, MODEL, batch=False,
+                  tarih=datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"))
     return results
 
 

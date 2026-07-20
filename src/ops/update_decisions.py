@@ -286,7 +286,7 @@ _YANLIS_SCHEMA = {
 }
 
 
-def _yanlis_analiz(ticker, karar, gerekce, degisim, client=None):
+def _yanlis_analiz(ticker, karar, gerekce, degisim, client=None, acc=None):
     """Yanlis cikan kararin sebebini ucuz Haiku ile kategorize eder.
     Doner: 'kategori: aciklama' veya None (anahtar yok/hata)."""
     import os
@@ -307,6 +307,12 @@ def _yanlis_analiz(ticker, karar, gerekce, degisim, client=None):
             model=HABER_MODEL, max_tokens=200, system=sistem,
             messages=[{"role": "user", "content": icerik}],
             output_config={"format": {"type": "json_schema", "schema": _YANLIS_SCHEMA}})
+        if acc is not None:            # maliyet: token'lari toplayiciya ekle
+            try:
+                from src.ai import maliyet
+                maliyet.ekle(acc, resp.usage)
+            except Exception:
+                pass
         import json
         text = next((b.text for b in resp.content if b.type == "text"), "")
         d = json.loads(text)
@@ -419,7 +425,9 @@ def run(verbose: bool = True) -> int:
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] degerlendirilecek karar: {len(rows)} "
               f"| AL basari esigi: piyasa_farki >= {AL_PIYASA_ESIGI}")
+    from src.ai import maliyet
     guncellenen = 0
+    _acc = maliyet.bos_acc()                 # maliyet: 'neden yanlis' Haiku cagrilarini topla
     for r in rows:
         # KILL_SWITCH kayitlari: veri eksikligiyle (fiyat yok/bayat) AI cagrilmadan
         # uretildi. TUT bandiyla degerlendirilip DOGRU/YANLIS istatistigini kirletmesin;
@@ -455,7 +463,7 @@ def run(verbose: bool = True) -> int:
         yanlis_sebep = None
         if not dogru:
             yanlis_sebep = _yanlis_analiz(r["ticker"], r["karar"],
-                                          r.get("gerekce"), deg)
+                                          r.get("gerekce"), deg, acc=_acc)
         db.set_decision_outcome(r["id"], sonuc, yanlis_sebep=yanlis_sebep,
                                 piyasa_farki=piyasa_farki)
         guncellenen += 1
@@ -464,6 +472,7 @@ def run(verbose: bool = True) -> int:
             print(f"  {r['ticker']:7} {r['karar']:11} {r['tarih']} "
                   f"({kg}ig) -> {sonuc}{ek}")
 
+    maliyet.logla(_acc, HABER_MODEL, etiket="update_decisions")   # maliyet: tek TOKEN OZET
     if verbose:
         print(f"[{datetime.now(_TZ):%Y-%m-%d %H:%M}] {guncellenen} karar sonucu guncellendi.")
 

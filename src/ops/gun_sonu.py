@@ -111,6 +111,12 @@ def _temiz_yorumlar(tickers, kmap):
             messages=[{"role": "user", "content":
                        "Hisseler:\n" + _json.dumps(girdi, ensure_ascii=False)}],
         )
+        try:                       # maliyet: tahmini_maliyet loglansin (tek kaynak)
+            from src.ai import maliyet
+            maliyet.logla(maliyet.usage_dict(resp.usage), "claude-haiku-4-5",
+                          etiket="gun_sonu")
+        except Exception:
+            pass
         metin = "".join(getattr(b, "text", "") for b in resp.content
                         if getattr(b, "type", "") == "text").strip()
         import re
