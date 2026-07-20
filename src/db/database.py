@@ -138,6 +138,26 @@ CREATE TABLE IF NOT EXISTS decisions (
     yanlis_sebep TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_ticker_tarih ON decisions(ticker, tarih);
+-- KARAR SEFFAFLIGI (20 Tem 2026): "bu karar NEDEN boyle verildi" tam izi.
+-- decisions tablosu yalniz NIHAI karari tutuyordu; hangi motorun hangi degeri
+-- urettigi, hangi esige takildigi ve AI'in HAM karari kayboluyordu (yalnizca
+-- gerekce metnine yari-gomulu kaliyordu). Bu tablo her hisse icin -- sadece AL
+-- degil, HEPSI -- motor motor izi tutar. `motorlar` alani JSON listesidir:
+--   [{"motor","deger","esik","sonuc","aciklama"}, ...]
+--   sonuc: gecti | takildi | uygulanmadi | bilgi
+CREATE TABLE IF NOT EXISTS karar_denetim (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker        TEXT NOT NULL,
+    tarih         TEXT NOT NULL,
+    kullanici_id  INTEGER DEFAULT 0,
+    karar_ham     TEXT,        -- AI'in filtrelerden ONCEKI ham karari
+    karar_final   TEXT,        -- tum filtrelerden SONRAKI nihai karar
+    degistiren    TEXT,        -- ham karari degistiren motor (yoksa NULL)
+    strategy_version TEXT,
+    motorlar      TEXT,        -- JSON: motor motor deger/esik/sonuc izi
+    olusturma     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_karar_denetim ON karar_denetim(ticker, tarih, kullanici_id);
 CREATE TABLE IF NOT EXISTS paper_trades (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker          TEXT NOT NULL,
@@ -1189,6 +1209,51 @@ def record_decision(ticker, karar, puan=None, risk=None, eminlik=None,
              eminlik, gerekce, tarih, sonuc, tahmini_sure, kullanici_id, strategy_version,
              veri_guveni, eksik_veriler, gun_kalitesi))
         return cur.lastrowid
+
+
+def karar_denetim_kaydet(ticker, tarih, karar_ham, karar_final, motorlar,
+                         degistiren=None, kullanici_id=0,
+                         strategy_version=None) -> int:
+    """KARAR SEFFAFLIGI: bir kararin motor motor izini yazar (bkz. karar_denetim).
+
+    motorlar: [{"motor","deger","esik","sonuc","aciklama"}, ...] listesi; JSON'a
+    cevrilerek saklanir. OR REPLACE -> gun ici yeniden uretimde mukerrer olmaz
+    (UNIQUE ux_karar_denetim).
+    """
+    init_db()
+    tarih = tarih or datetime.now(_TZ).date().isoformat()
+    with get_conn() as c:
+        cur = c.execute(
+            """INSERT OR REPLACE INTO karar_denetim
+               (ticker, tarih, kullanici_id, karar_ham, karar_final, degistiren,
+                strategy_version, motorlar, olusturma)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (str(ticker).upper().replace(".IS", ""), tarih, kullanici_id,
+             karar_ham, karar_final, degistiren, strategy_version,
+             json.dumps(motorlar or [], ensure_ascii=False),
+             datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")))
+        return cur.lastrowid
+
+
+def karar_denetim_getir(ticker, tarih=None, kullanici_id=0) -> dict | None:
+    """Bir hissenin karar denetim izi (varsayilan: en son gun). motorlar coz."""
+    init_db()
+    tic = str(ticker).upper().replace(".IS", "")
+    with get_conn() as c:
+        if tarih:
+            r = c.execute("SELECT * FROM karar_denetim WHERE ticker=? AND tarih=? "
+                          "AND kullanici_id=?", (tic, tarih, kullanici_id)).fetchone()
+        else:
+            r = c.execute("SELECT * FROM karar_denetim WHERE ticker=? AND kullanici_id=? "
+                          "ORDER BY tarih DESC LIMIT 1", (tic, kullanici_id)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    try:
+        d["motorlar"] = json.loads(d.get("motorlar") or "[]")
+    except Exception:
+        d["motorlar"] = []
+    return d
 
 
 def set_decision_ilk_gun(decision_id, ilk_gun_degisim) -> None:

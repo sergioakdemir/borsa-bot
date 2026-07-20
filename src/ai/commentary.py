@@ -1524,6 +1524,69 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
     return None, payload, ctx
 
 
+# ---------------------------------------------------------------------------
+# KARAR SEFFAFLIGI (20 Tem 2026)
+# ---------------------------------------------------------------------------
+# "Bu karar neden boyle verildi?" sorusunun cevabi eskiden hicbir yerde
+# saklanmiyordu: decisions tablosu yalniz NIHAI karari tutuyor, hangi motorun
+# hangi degeri urettigi ve hangi esige takildigi yalnizca gerekce METNINE
+# yari-gomulu kaliyordu; AI'in HAM karari ise tamamen kayboluyordu (_al_to_bekle
+# r["karar"]'i yerinde eziyor). Artik her karar icin -- AL olsun olmasin --
+# motor motor iz tutulur ve db.karar_denetim'e yazilir.
+#
+# sonuc degerleri:
+#   gecti        : motor calisti, karar esigi asti
+#   takildi      : motor calisti, karari DEGISTIRDI (AL -> BEKLE/VETO)
+#   uygulanmadi  : motor bu karar icin calismadi (or. karar AL degil, veri yok)
+#   bilgi        : esik kontrolu degil, olculen deger (AI puani, EV, stop/hedef)
+
+# Motor izinde beklenen sira (panelde bu sirayla gosterilir; eksikler
+# "uygulanmadi" olarak tamamlanir -> bkz. _denetim_tamamla).
+_DENETIM_MOTORLARI = [
+    "AI kararı", "Risk vetosu", "Haber akışı", "AL puan eşiği",
+    "Market breadth", "Giriş kalitesi (EQ)", "Bilanço freni",
+    "Tekrarlı sinyal", "Sektör tavanı",
+    "Beklenen değer (EV)", "Stop/hedef motoru",
+]
+
+
+def _dn(iz, motor, deger=None, esik=None, sonuc="bilgi", aciklama=None) -> None:
+    """Motor izine bir satir ekler (ayni motor tekrar gelirse gunceller)."""
+    kayit = {"motor": motor, "deger": deger, "esik": esik,
+             "sonuc": sonuc, "aciklama": aciklama}
+    for i, mevcut in enumerate(iz):
+        if mevcut.get("motor") == motor:
+            iz[i] = kayit
+            return
+    iz.append(kayit)
+
+
+def _dn_r(r, motor, **kw) -> None:
+    """_dn'in kayit (r) uzerinde calisan hali; iz yoksa olusturur."""
+    if r.get("_denetim") is None:
+        r["_denetim"] = []
+    _dn(r["_denetim"], motor, **kw)
+
+
+def _denetim_tamamla(r) -> list:
+    """Izde hic gecmeyen motorlari 'uygulanmadi' olarak tamamlar ve
+    _DENETIM_MOTORLARI sirasina dizer (sonda listede olmayan ek motorlar)."""
+    iz = list(r.get("_denetim") or [])
+    var = {k.get("motor") for k in iz}
+    ham = r.get("karar_ham")
+    for motor in _DENETIM_MOTORLARI:
+        if motor in var:
+            continue
+        # Neden calismadi? AL disi kararlarda AL filtreleri hic devreye girmez.
+        neden = ("Karar AL değil; bu filtre yalnız AL kararlarına uygulanır."
+                 if ham != "AL" else
+                 "Önceki bir filtre kararı zaten düşürdüğü için çalışmadı.")
+        iz.append({"motor": motor, "deger": None, "esik": None,
+                   "sonuc": "uygulanmadi", "aciklama": neden})
+    sira = {m: i for i, m in enumerate(_DENETIM_MOTORLARI)}
+    return sorted(iz, key=lambda k: sira.get(k.get("motor"), 99))
+
+
 def _finalize_record(ctx: dict, v: "Verdict") -> dict:
     """AI verdict'ini (tek-cagri veya batch) web uyumlu kayda donusturur."""
     ticker = ctx["ticker"]
@@ -1674,10 +1737,53 @@ def _finalize_record(ctx: dict, v: "Verdict") -> dict:
         _eksik.append("analist")
     eksik_veriler = ",".join(_eksik) or None
 
+    # --- KARAR SEFFAFLIGI (20 Tem 2026): motor motor iz ---
+    # Bu asamada calisan motorlar buraya yazilir; esik kontrollu filtreler
+    # _apply_karar_filtreleri icinde kendi satirlarini ekler. Iz HER hisse icin
+    # tutulur (yalniz AL degil) — bkz. db.karar_denetim.
+    denetim = []
+    _dn(denetim, "AI kararı", deger=v.karar, sonuc="bilgi",
+        aciklama=f"puan {v.puan}/10, risk {v.risk}/10, eminlik {v.eminlik}")
+    _dn(denetim, "Risk vetosu",
+        deger=f"AI {v.risk}/10, deterministik "
+              f"{risk_det_skor if risk_det_skor is not None else 'yok'}/10",
+        esik="≥9 (yalnız AL)",
+        sonuc=("takildi" if vetoed else
+               ("gecti" if v.karar == "AL" else "uygulanmadi")),
+        aciklama=(final_label if vetoed else
+                  ("Risk eşiğin altında." if v.karar == "AL"
+                   else "Karar AL değil; veto yalnız AL'a uygulanır.")))
+    if risk_det_durum != "OK":
+        _dn(denetim, "Deterministik risk", deger=None, sonuc="uygulanmadi",
+            aciklama="risk.py skoru hesaplanamadı (yalnız AI riski kullanıldı).")
+    _dn(denetim, "Haber akışı",
+        deger=f"{len(news.get('haberler') or [])} taze haber, "
+              f"{len(news.get('bildirimler') or [])} KAP",
+        sonuc="bilgi",
+        aciklama=f"AI bağlamına girdi; fiyatlanmış_mı={v.fiyatlanmis_mi}")
+    if final_decision == "AL":
+        # Not: esik kontrolu _apply_karar_filtreleri'nde; burasi olculen ham skor
+        # (filtre ayni motor adiyla bu satiri gunceller).
+        _dn(denetim, "Giriş kalitesi (EQ)",
+            deger=(entry_quality or {}).get("skor"), sonuc="bilgi",
+            aciklama=f"ölçüldü — yıldız: {(entry_quality or {}).get('yildiz')}")
+        _dn(denetim, "Beklenen değer (EV)",
+            deger=(expected_value or {}).get("ev"), sonuc="bilgi",
+            aciklama=f"pozisyon önerisi: {position_size_oneri}")
+        _dn(denetim, "Stop/hedef motoru",
+            deger=(f"stop {sh['stop']:g} (-%{sh['stop_pct']:g}), "
+                   f"hedef {sh['hedef1']:g} (+%{sh['hedef1_pct']:g})" if sh else None),
+            sonuc="bilgi",
+            aciklama=("fail-safe varsayılan (%4 vol) kullanıldı"
+                      if (sh or {}).get("_fallback") else "volatilite×2, %3-5 kırpma"))
+
     return {
         "ticker": ticker,
         "symbol": sig["sembol"],
         "market": "abd" if is_us else "bist",
+        # KARAR SEFFAFLIGI: ham karar + motor izi (filtreler bunlari gunceller)
+        "karar_ham": v.karar,
+        "_denetim": denetim,
         # veri guveni damgasi (record_decision/open_trade bunlari yazar)
         "veri_guveni": veri_guveni,
         "eksik_veriler": eksik_veriler,
@@ -1970,8 +2076,11 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
         if not _aktif_al(r):
             continue
         esik = _al_puan_esigi_ad(r)
+        mk = "BIST" if esik == _AL_PUAN_ESIGI["bist"] else "ABD"
+        _dn_r(r, "AL puan eşiği", deger=r.get("score"), esik=f"≥{esik} ({mk})",
+              sonuc=("takildi" if (r.get("score") or 0) < esik else "gecti"),
+              aciklama=f"{mk} pazarında AL için minimum puan {esik}.")
         if (r.get("score") or 0) < esik:
-            mk = "BIST" if _al_puan_esigi_ad(r) == _AL_PUAN_ESIGI["bist"] else "ABD"
             _al_to_bekle(
                 r, f"{mk} AL eşiği puan {esik}; puan {r.get('score')} yetersiz.",
                 verbose=verbose)
@@ -1982,12 +2091,21 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
         breadth = market_breadth()
     except Exception:
         breadth = None
-    if breadth and breadth.get("durum") == "zayıf":
-        for r in results or []:
-            if not _aktif_al(r):
-                continue
-            if (r.get("market") or "bist").lower() in ("us", "abd"):
-                continue                          # breadth BIST metrigi; ABD'yi etkileme
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        abd = (r.get("market") or "bist").lower() in ("us", "abd")
+        zayif = bool(breadth and breadth.get("durum") == "zayıf")
+        _dn_r(r, "Market breadth",
+              deger=(f"%{breadth.get('oran')} ({breadth.get('durum')})"
+                     if breadth else None),
+              esik="SMA20 üstü oranı ≥%30",
+              sonuc=("uygulanmadi" if (abd or not breadth)
+                     else ("takildi" if zayif else "gecti")),
+              aciklama=("Breadth BIST metriği; ABD kararlarına uygulanmaz." if abd
+                        else ("Breadth hesaplanamadı." if not breadth
+                              else "İzleme listesi geneli.")))
+        if zayif and not abd:
             _al_to_bekle(
                 r, f"Piyasa geneli zayıf (breadth %{breadth.get('oran')}); "
                    "yeni AL BEKLE'ye çekildi.", verbose=verbose)
@@ -2000,6 +2118,13 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
         if not _aktif_al(r):
             continue
         eq_skor = (r.get("entry_quality") or {}).get("skor")
+        _dn_r(r, "Giriş kalitesi (EQ)", deger=eq_skor, esik=f"≥{EQ_ESIK}",
+              sonuc=("takildi" if (eq_skor is None or eq_skor < EQ_ESIK) else "gecti"),
+              aciklama=("Hesaplanamadı — güvenli tarafta BEKLE (fail-safe)."
+                        if eq_skor is None else
+                        ("Daha iyi giriş noktası bekleniyor." if eq_skor < EQ_ESIK
+                         else ("Yarım pozisyon bandı (60-75)." if eq_skor <= 75
+                               else "Tam pozisyon bandı (>75)."))))
         if eq_skor is None:
             # FAIL-SAFE (6a): giris kalitesi hesaplanamadi -> filtreyi atlayip AL'i
             # geciralamak yerine guvenli tarafta BEKLE'ye cek.
@@ -2050,13 +2175,24 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
         except Exception:
             gun = None
         if gun is None:
+            _dn_r(r, "Bilanço freni", deger=None, esik=">2 işlem günü",
+                  sonuc="uygulanmadi",
+                  aciklama="Bilanço açıklama tarihi bilinmiyor — filtre atlandı.")
             continue                              # bilinmiyor -> filtre atla
         try:
             import numpy as _np
             _ed = bugun + timedelta(days=gun)     # bilanco aciklama tarihi
             islem_gun = int(_np.busday_count(bugun.isoformat(), _ed.isoformat()))
         except Exception:
+            _dn_r(r, "Bilanço freni", deger=f"{gun} takvim günü",
+                  esik=">2 işlem günü", sonuc="uygulanmadi",
+                  aciklama="İşlem günü farkı hesaplanamadı — filtre atlandı.")
             continue
+        _dn_r(r, "Bilanço freni", deger=f"{islem_gun} işlem günü",
+              esik=">2 işlem günü",
+              sonuc=("takildi" if islem_gun <= 2 else "gecti"),
+              aciklama=("Açıklama öncesi sürpriz/volatilite riski." if islem_gun <= 2
+                        else "Bilanço yakın değil."))
         if islem_gun <= 2:
             kala = "bugün" if gun == 0 else f"{gun} gün"
             _al_to_bekle(
@@ -2086,7 +2222,17 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
             if 1 <= fark <= 3:                  # bugun haric, son 3 gun
                 son_al_fark = fark
                 break
-        if son_al_fark is not None and not _yeni_bilgi_var(r):
+        yeni_bilgi = _yeni_bilgi_var(r)
+        dusur = (son_al_fark is not None and not yeni_bilgi)
+        _dn_r(r, "Tekrarlı sinyal",
+              deger=(f"{son_al_fark} gün önce AL var" if son_al_fark is not None
+                     else "son 3 günde AL yok"),
+              esik="son 1-3 günde AL + yeni bilgi yok",
+              sonuc=("takildi" if dusur else "gecti"),
+              aciklama=("Taze haber/KAP yok — aynı sinyal tekrarlanıyor." if dusur
+                        else ("Taze haber/KAP var." if son_al_fark is not None
+                              else "Yakın geçmişte AL verilmemiş.")))
+        if dusur:
             _al_to_bekle(
                 r, f"{ticker} için {son_al_fark} gün önce AL verilmişti, yeni sinyal yok.",
                 verbose=verbose)
@@ -2100,17 +2246,51 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
         if sek in _TAVAN_SEKTORLER:
             sektor_al.setdefault(sek, []).append(r)
     for sek, kayitlar in sektor_al.items():
-        if len(kayitlar) <= _SEKTOR_AL_TAVANI:
-            continue
+        ad = _TAVAN_SEKTORLER[sek]
         # En guclu 2'yi koru: puan desc, esitlikte risk asc
         kayitlar.sort(key=lambda r: (-(r.get("score") or 0),
                                      (r.get("risk") or {}).get("score") or 0))
-        ad = _TAVAN_SEKTORLER[sek]
-        for r in kayitlar[_SEKTOR_AL_TAVANI:]:
-            _al_to_bekle(
-                r, f"{ad} sektöründe bugün zaten {_SEKTOR_AL_TAVANI} AL var.",
-                verbose=verbose)
+        for sira, r in enumerate(kayitlar):
+            asti = sira >= _SEKTOR_AL_TAVANI
+            _dn_r(r, "Sektör tavanı",
+                  deger=f"{ad}: {len(kayitlar)} AL, bu hisse {sira + 1}. sırada",
+                  esik=f"sektör başına ≤{_SEKTOR_AL_TAVANI} AL",
+                  sonuc=("takildi" if asti else "gecti"),
+                  aciklama=("Puan/risk sıralamasında tavanın dışında kaldı." if asti
+                            else "Sektör kotası içinde."))
+            if asti:
+                _al_to_bekle(
+                    r, f"{ad} sektöründe bugün zaten {_SEKTOR_AL_TAVANI} AL var.",
+                    verbose=verbose)
     return results
+
+
+def _denetim_yaz(r, tarih, verbose: bool = False) -> None:
+    """Bir kaydin motor izini db.karar_denetim'e yazar (KILL_SWITCH dahil)."""
+    from src.db import database as db
+    if r.get("kill_switch"):
+        iz = [{"motor": "KILL_SWITCH", "deger": r.get("reason"), "esik": None,
+               "sonuc": "takildi",
+               "aciklama": r.get("mesaj") or "Veri bütünlüğü kill-switch'i devrede."}]
+        db.karar_denetim_kaydet(
+            ticker=r["ticker"], tarih=tarih, karar_ham=None,
+            karar_final="KILL_SWITCH", motorlar=iz, degistiren="KILL_SWITCH",
+            strategy_version=STRATEGY_VERSION)
+        return
+    iz = _denetim_tamamla(r)
+    # Karari fiilen degistiren motor: ize 'takildi' yazan SON motor.
+    degistiren = None
+    for k in iz:
+        if k.get("sonuc") == "takildi":
+            degistiren = k.get("motor")
+    db.karar_denetim_kaydet(
+        ticker=r["ticker"], tarih=tarih,
+        karar_ham=r.get("karar_ham"), karar_final=r.get("final_decision"),
+        motorlar=iz, degistiren=degistiren,
+        strategy_version=STRATEGY_VERSION)
+    if verbose and degistiren and r.get("karar_ham") != r.get("final_decision"):
+        print(f"  [denetim] {r.get('ticker')}: {r.get('karar_ham')} -> "
+              f"{r.get('final_decision')} ({degistiren})")
 
 
 def _persist(results, save: bool, verbose: bool):
@@ -2137,6 +2317,16 @@ def _persist(results, save: bool, verbose: bool):
         except Exception as e:
             if verbose:
                 print(f"  [{r.get('ticker')}] karar kaydi yazilamadi: {type(e).__name__}")
+        # KARAR SEFFAFLIGI: motor izini ayri denetim tablosuna yaz. HER karar icin
+        # (AL olsun olmasin). Denetim yazimi CANLI KARARI BOZMASIN diye ayri
+        # try/except — hata yalniz loglanir.
+        if not r.get("skipped"):
+            try:
+                _denetim_yaz(r, today, verbose=verbose)
+            except Exception as e:
+                if verbose:
+                    print(f"  [{r.get('ticker')}] denetim izi yazilamadi: "
+                          f"{type(e).__name__}")
     _record_trades(results, verbose=verbose, tarih=today)
     if save:
         _save_results(results, verbose=verbose)

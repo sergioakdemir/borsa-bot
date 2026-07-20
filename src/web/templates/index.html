@@ -396,6 +396,24 @@
   .quote{font-size:14.5px;line-height:1.55;color:#D9DEE7}
   .anbox{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px}
 
+  /* ---- karar seffafligi: hangi motor ne dedi (20 Tem 2026) ---- */
+  .dnt{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+  .dnt-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:13px 14px;cursor:pointer;user-select:none}
+  .dnt-flow{font-size:13.5px;font-weight:600}
+  .dnt-caret{color:var(--muted);font-size:12px;transition:transform .18s}
+  .dnt.open .dnt-caret{transform:rotate(180deg)}
+  .dnt-body{display:none;border-top:1px solid var(--border);padding:4px 0}
+  .dnt.open .dnt-body{display:block}
+  .dnt-row{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.04)}
+  .dnt-row:last-child{border-bottom:none}
+  .dnt-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:6px}
+  .dnt-main{flex:1;min-width:0}
+  .dnt-motor{font-size:13px;font-weight:600}
+  .dnt-deger{font-size:12.5px;color:#D9DEE7;margin-top:2px}
+  .dnt-esik{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .dnt-pas{opacity:.45}
+
   /* ---- zaman filtreli grafik (Midas tarzi) ---- */
   .chart-read{display:flex;align-items:baseline;gap:9px;min-height:23px;margin:12px 0 2px}
   .cr-price{font-size:17px;font-weight:700}
@@ -1914,7 +1932,8 @@ async function openStock(k,extra){const s=STOCK_INDEX[k];const ticker=s?s.ticker
       ${botKarti}
       ${d.action?`<div class="anbox" style="margin-top:14px;border-color:rgba(52,211,153,.3)"><b class="c-green">Ne yapmalı?</b> ${esc(d.action)}</div>`:""}
       <div class="sec-title">Bot yorumu</div><div class="quote">${esc(d.reason)}</div>
-      ${d.riskReason&&d.riskReason!=="—"?`<div class="sec-title">Risk · ${esc(d.risk)}</div><div class="quote">${esc(d.riskReason)}</div>`:""}`;
+      ${d.riskReason&&d.riskReason!=="—"?`<div class="sec-title">Risk · ${esc(d.risk)}</div><div class="quote">${esc(d.riskReason)}</div>`:""}
+      ${denetimBox(d.denetim)}`;
     const sev=lvf("Destek",lv.destek,"c-green")+lvf("Direnç",lv.direnc,"c-red")+lvf("Hedef",lv.hedef,"c-green")+lvf("Stop-loss",lv.stop,"c-red");
     if(sev)h+=`<div class="sec-title">Önemli seviyeler</div><div class="lvls">${sev}</div>`;
     if(an&&an.available)h+=`<div class="sec-title">Analist beklentisi</div><div class="anbox">
@@ -1924,6 +1943,35 @@ async function openStock(k,extra){const s=STOCK_INDEX[k];const ticker=s?s.ticker
     if(d.haberler&&d.haberler.length)h+=`<div class="sec-title">Haber etkisi</div>`+d.haberler.map(n=>`<div class="news sm">${newsVisual(n,true)}<div class="body" style="padding:11px 13px"><div class="title" style="font-size:13.5px">${esc(n.baslik)}</div><div class="meta"><span class="chip">${esc(n.kategori)}</span>${n.url?`<a class="kaplink" href="${esc(n.url)}" target="_blank">Kaynak →</a>`:""}</div></div></div>`).join("");
     document.getElementById("ov-body").innerHTML=h;updateReadoutDefault();
   }catch(e){document.getElementById("ov-body").innerHTML=empty("Detay yüklenemedi")}}
+/* ---- KARAR SEFFAFLIGI: "bu karar neden boyle verildi" izi ----
+   Her motorun o karar icin urettigi deger, uyguladigi esik ve sonucu
+   (gecti/takildi/uygulanmadi/bilgi) gosterilir. Veri: /api/stock -> denetim. */
+const DNT_RENK={gecti:"var(--green)",takildi:"var(--red)",
+                uygulanmadi:"var(--muted)",bilgi:"var(--amber)"};
+const DNT_ETIKET={gecti:"geçti",takildi:"takıldı",
+                  uygulanmadi:"uygulanmadı",bilgi:"ölçüm"};
+function denetimBox(dn){
+  if(!dn||!dn.motorlar||!dn.motorlar.length)return"";
+  const akis=dn.degisti
+    ? `<span class="c-amber">${esc(dn.karar_ham)}</span> → <span class="c-red">${esc(dn.karar_final)}</span>`
+    : `<span class="c-green">${esc(dn.karar_final||dn.karar_ham||"—")}</span>`;
+  const alt=dn.degisti?`${esc(dn.degistiren||"bir filtre")} düşürdü`:"filtrelerden geçti";
+  const satirlar=dn.motorlar.map(m=>{
+    const s=m.sonuc||"bilgi",pas=(s==="uygulanmadi")?" dnt-pas":"";
+    return `<div class="dnt-row${pas}"><div class="dnt-dot" style="background:${DNT_RENK[s]||"var(--muted)"}"></div>
+      <div class="dnt-main"><div class="dnt-motor">${esc(m.motor)} <span class="muted" style="font-weight:400">· ${DNT_ETIKET[s]||s}</span></div>
+      ${m.deger!=null&&m.deger!==""?`<div class="dnt-deger">${esc(String(m.deger))}</div>`:""}
+      ${m.esik?`<div class="dnt-esik">eşik: ${esc(String(m.esik))}</div>`:""}
+      ${m.aciklama?`<div class="dnt-esik">${esc(m.aciklama)}</div>`:""}</div></div>`;
+  }).join("");
+  const ver=dn.strategy_version?` · ${esc(dn.strategy_version)}`:"";
+  return `<div class="sec-title">Bu karar nasıl verildi?</div>
+    <div class="dnt" onclick="this.classList.toggle('open')">
+      <div class="dnt-head"><div><div class="dnt-flow">${akis}</div>
+        <div class="muted" style="font-size:11.5px;margin-top:3px">${alt}${ver}${dn.tarih?` · ${esc(dn.tarih)}`:""}</div></div>
+        <div class="dnt-caret">▼</div></div>
+      <div class="dnt-body">${satirlar}</div></div>`;
+}
 function ovShow(html){document.getElementById("ov-body").innerHTML=html;document.getElementById("ov-scrim").classList.add("open");document.getElementById("overlay").classList.add("open")}
 function closeStock(){document.getElementById("ov-scrim").classList.remove("open");document.getElementById("overlay").classList.remove("open")}
 

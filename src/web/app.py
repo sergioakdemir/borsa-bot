@@ -2725,6 +2725,30 @@ def get_stock_detail(ticker: str, market: str = "bist") -> dict:
         "analist": analist if analist.get("available") else None,
         "temel": (rec or {}).get("temel"),
         "benzer_donem": None,
+        # KARAR SEFFAFLIGI (20 Tem 2026): "bu karar neden boyle verildi" izi.
+        # Hangi motor devrede oldu, ne deger uretti, hangi esige takildi.
+        "denetim": _karar_denetim_gorsel(tkr),
+    }
+
+
+def _karar_denetim_gorsel(tkr: str):
+    """Bir hissenin son karar denetim izini panel icin hazirlar (yoksa None)."""
+    try:
+        from src.db import database as db
+        d = db.karar_denetim_getir(tkr)
+    except Exception:
+        return None
+    if not d:
+        return None
+    return {
+        "tarih": d.get("tarih"),
+        "karar_ham": d.get("karar_ham"),
+        "karar_final": d.get("karar_final"),
+        "degistiren": d.get("degistiren"),
+        "degisti": bool(d.get("karar_ham")
+                        and d.get("karar_ham") != d.get("karar_final")),
+        "strategy_version": d.get("strategy_version"),
+        "motorlar": d.get("motorlar") or [],
     }
 
 
