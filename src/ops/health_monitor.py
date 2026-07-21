@@ -308,6 +308,41 @@ def _kontrol_heartbeat():
     return None
 
 
+def _kontrol_beklenti_yedegi(now: datetime = None):
+    """TCMB faiz beklentisi KAC KAYNAKTAN cekilebiliyor? Tek kaynak kaldiysa uyar.
+
+    Neden: 21 Tem 2026'da zincirde "5 kaynak" gorunuyordu ama 4'u sessizce oluydu
+    (EVDS seri kodlari yanlis, EVDS3 kodu tanimsiz, Reuters 401, GNews parser hic
+    eslesmiyor). Tek calisan kaynak (borsagundem) cokunce veri tamamen kesildi ve
+    bot 0 uydurdu. Bu kontrol "yedegimiz var saniyorduk" durumunu ONCEDEN yakalar.
+
+    Tarama pahali (her kaynaga ag istegi) -> GUNDE 1 KEZ calisir; ayni gun icinde
+    tekrar cagrilirsa hemen None doner."""
+    now = now or datetime.now(_TZ)
+    bugun = now.date().isoformat()
+    state = _state_yukle()
+    if state.get("beklenti_kaynak_tarama") == bugun:
+        return None                           # bugun zaten tarandi -> ag istegi yapma
+    try:
+        from src.news.macro import beklenti_kaynak_sagligi
+        d = beklenti_kaynak_sagligi()
+    except Exception:
+        return None                           # tarama yapilamadi -> sessiz gec
+    state = _state_yukle()                    # tarama sirasinda degismis olabilir
+    state["beklenti_kaynak_tarama"] = bugun
+    _state_kaydet(state)
+    calisan = ", ".join(d.get("calisan") or []) or "yok"
+    olu = ", ".join(f"{a} ({s})" for a, s in (d.get("olu") or []))
+    if d.get("sayi", 0) == 0:
+        return ("beklenti_kaynak_yok",
+                f"⛔ TCMB faiz beklentisi HİÇBİR kaynaktan çekilemiyor. Ölü: {olu}")
+    if d.get("tek_nokta"):
+        return ("beklenti_tek_kaynak",
+                f"⚠️ Faiz beklentisi tek kaynağa bağlı, yedek yok — çalışan: {calisan}. "
+                f"Ölü kaynaklar: {olu}")
+    return None
+
+
 def _kontrol_risk_det():
     """Bugun deterministik risk kac hissede hesaplanamadi? commentary.py sayaci
     ('risk_det_fail:<gun>') artirir; >0 ise gunluk ozet olarak admin'e bildir."""
@@ -409,7 +444,7 @@ def run(verbose: bool = True, mode: str = "all") -> dict:
     core = (_kontrol_servis, _kontrol_db, _kontrol_kredi, _kontrol_maliyet_anormal,
             _kontrol_ai_hata, _kontrol_kill_switch, _kontrol_kap,
             _kontrol_heartbeat, _kontrol_risk_det, _kontrol_haber_eslesme,
-            _kontrol_test_donemi)
+            _kontrol_test_donemi, lambda: _kontrol_beklenti_yedegi(now))
     market = (lambda: _kontrol_cache_tazelik(now),)
     if mode == "core":
         kontroller = core

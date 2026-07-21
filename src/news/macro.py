@@ -572,11 +572,13 @@ def son_ppk_karari() -> dict:
 #       ('Fed Decision in <ay>?') etkinligi bulunur, No change/cut/hike olasiliklari
 #       cekilir. CME FedWatch resmi API ucretli, web endpoint'i login-gate; kullanilmadi.
 # TCMB: KAYNAK 1 = EVDS Piyasa Katilimcilari Anketi (borsapy, politika faizi beklentisi);
-#       KAYNAK 2 = borsagundem.com ekonomist anketi (scraping). Her ikisi de bos donerse
-#       tcmb_beklenti_bp=0 (notr) varsayilir.
+#       KAYNAK 2 = borsagundem.com ekonomist anketi (scraping); KAYNAK 3 = Google News.
 # Her ikisi de env override (FED_BEKLENTI_BP / TCMB_BEKLENTI_BP) ile elle girilebilir.
-# Canli kaynaklar erisilemezse: Fed alanlari None kalir + gunde 1 uyari; TCMB 0 olur
-# + gunde 1 uyari (sonraki basarisizliklar sadece loglanir, health_state.json).
+#
+# ILKE - VERI UYDURMA YOK: hicbir kaynak veri vermezse tcmb_beklenti_bp None KALIR.
+# (Eskiden 0'a dusuyordu; 0 "piyasa degisiklik beklemiyor" DEMEKTIR ve AI prompt'una
+# gercek veri gibi giriyordu. Eksik veri, sahte veriden iyidir.) Basarisizlikta:
+# alan None + gunde 1 Telegram uyarisi (sonrakiler sadece loglanir, health_state.json).
 # ---------------------------------------------------------------------------
 def _env_bp(ad):
     """FED_BEKLENTI_BP / TCMB_BEKLENTI_BP env override'ini int bp olarak okur."""
@@ -789,31 +791,67 @@ def _fetch_html(url: str, timeout: int = 15):
     return None
 
 
+# Haber metninden beklenti cikarimi GURULTULUDUR. Kural: sadece NET ifade eslesir,
+# belirsizde None doner (uydurma yok). Ozellikle:
+#   - soru formu ("faiz degisecek mi?", "ne bekliyor?") -> None
+#   - gerceklesmis karar ("TCMB faizi 100 bp indirdi") -> None (beklenti degil, sonuc)
+#   - yon var ama miktar yok ("indirim bekleniyor") -> None (eskiden -250 UYDURUYORDU)
+#   - Fed/ABD veya kredi/mevduat faizi hakkindaki basliklar -> None (konu disi)
+_GECMIS_KALIP = ("indirdi", "artirdi", "arttirdi", "yukseltti", "dusurdu",
+                 "sabit tuttu", "sabit birakti", "karar verdi", "indirime gitti",
+                 "indirim yapti", "artirima gitti", "aciklandi", "acikladi")
+# "bekl" koku bilerek kisa: bekleniyor / bekliyor / beklenti / bekleyen hepsini yakalar
+# ("bekle" yazilsaydi "bekliyor" ESLESMEZDI - i/e harf degisimi).
+_BEKLENTI_KALIP = ("bekl", "tahmin", "ongor", "anket", "olasilik", "fiyatliyor")
+_TCMB_KALIP = ("tcmb", "merkez bankasi", "ppk", "para politikasi kurulu",
+               "politika faizi")
+_KONU_DISI = ("fed ", "fed'", "abd merkez", "fomc", "ecb", "avrupa merkez",
+              "kredi faiz", "mevduat faiz", "konut kredi", "tasit kredi")
+
+
 def _bp_from_tr_text(t: str):
-    """Turkce haber metninden TCMB beklenen faiz degisimini (bp) cikarir.
-    'sabit/pas gec/degismedi' -> 0; 'XXX baz puan indirim' -> -XXX; 'artirim' -> +XXX.
-    Yon belli ama miktar yoksa tipik adim varsayilir (indirim -250, artis +250)."""
+    """Turkce haber metninden TCMB'nin SONRAKI karari icin beklenen faiz degisimini
+    (bp) cikarir. Sadece net ifadeler eslesir; belirsiz/konu disi/gecmis ise None.
+
+    'XXX baz puan indirim bekleniyor' -> -XXX; 'sabit tutmasi bekleniyor' -> 0.
+    Yon belli ama miktar yoksa None (tahmini adim UYDURULMAZ)."""
     tl = _norm_tr(t or "")
-    hold = any(k in tl for k in (
-        "sabit tut", "sabit birak", "faizi sabit", "degisiklik yok", "degistirmedi",
-        "degismedi", "beklenti sabit", "pas ge", "ara ver", "indirime ara",
-        "bekleme", "beklemede"))
-    m = re.search(r"(\d{2,4})\s*baz\s*puan", tl)
+    if not tl:
+        return None
+    # 1) Konu kontrolu: TCMB hakkinda olmali, Fed/kredi faizi hakkinda olmamali
+    if not any(k in tl for k in _TCMB_KALIP):
+        return None
+    if any(k in tl for k in _KONU_DISI):
+        return None
+    # 2) Gerceklesmis karar haberi mi? (beklenti degil, sonuc -> kullanma)
+    if any(k in tl for k in _GECMIS_KALIP):
+        return None
+    # 3) Beklenti ifadesi var mi? (yoksa cikarim yapma)
+    if not any(k in tl for k in _BEKLENTI_KALIP):
+        return None
+    # 4) Yon: celiskili sinyal varsa (hem indirim hem artis) -> belirsiz
     indir = any(k in tl for k in ("indir", "dusur", "azalt", "gevseme"))
     artir = any(k in tl for k in ("artir", "arttir", "yukselt", "sikilas"))
-    if m:
-        bp = int(m.group(1))
-        if indir:
-            return -bp
-        if artir:
-            return bp
-    if hold:
-        return 0
-    if indir:                                    # yon var, miktar yok -> tipik adim
-        return -250
+    if indir and artir:
+        return None
+    # 5) Sabit tutma beklentisi -> 0 (net ifade; miktar gerekmez)
+    if any(k in tl for k in ("sabit tut", "sabit birak", "faizi sabit",
+                             "degisiklik yok", "degisiklige gitmeme",
+                             "pas ge", "beklemede kal")):
+        if not (indir or artir):
+            return 0
+    # 6) Miktar: 'XXX baz puan' / 'XXX bp' - yon ile birlikte olmali
+    m = re.search(r"(\d{2,4})\s*(?:baz\s*puan|bp\b)", tl)
+    if not m:
+        return None                              # miktar yok -> UYDURMA, None don
+    bp = int(m.group(1))
+    if not (5 <= bp <= 2000):                    # makul adim bandi disi -> guvenme
+        return None
+    if indir:
+        return -bp
     if artir:
-        return 250
-    return None
+        return bp
+    return None                                  # miktar var ama yon yok -> belirsiz
 
 
 def _norm_tr(s: str) -> str:
@@ -829,10 +867,24 @@ def _norm_tr(s: str) -> str:
     return s
 
 
+# TCMB Piyasa Katilimcilari Anketi (EVDS kategori 1004 / veri grubu bie_pkauo).
+# "Uygun ortalama" (.U) serileri; aylik yayinlanir. DOGRULANMIS kodlar (2026-07):
+#   TP.PKAUO.S04.C.U = Ilk Toplanti Icin TCMB Politika Faiz Orani Beklentisi (%)
+#   TP.PKAUO.S04.F.U = Ikinci Toplanti Icin TCMB Politika Faiz Orani Beklentisi (%)
+# Birincil olan "ilk toplanti"dir: sonraki PPK karari icin piyasa beklentisi = tam
+# ihtiyacimiz olan sey. (Eski kodlar TP.PKA.POLFA / TP.BEK.S08* EVDS'te YOKTU -
+# hepsi DataNotAvailableError donuyordu, yani bu kaynak hic calismamisti.)
+_EVDS_ANKET_KODLARI = ("TP.PKAUO.S04.C.U", "TP.PKAUO.S04.F.U")
+
+# Anket aylik; 70 gunden eski gozlem "bayat" sayilir (bir anket donemi kacmis
+# demektir) -> beklenti olarak kullanilmaz, uydurma yerine None doner.
+_ANKET_MAX_GUN = 70
+
+
 def _borsapy_tcmb_beklenti_bp(mevcut_faiz):
-    """borsapy EVDS ile TCMB Piyasa Katilimcilari Anketi'nden beklenen politika
-    faizini (cari/gelecek ay) cekip mevcut faize gore bp farki dondurur.
-    EVDS_API_KEY yoksa veya seri bulunamazsa None."""
+    """borsapy EVDS ile TCMB Piyasa Katilimcilari Anketi'nden SONRAKI PPK toplantisi
+    icin beklenen politika faizini cekip mevcut faize gore bp farki dondurur.
+    EVDS_API_KEY yoksa, seri bulunamazsa veya veri bayatsa None."""
     key = os.environ.get("EVDS_API_KEY")
     if not key or mevcut_faiz is None:
         return None
@@ -841,19 +893,28 @@ def _borsapy_tcmb_beklenti_bp(mevcut_faiz):
         bp.set_evds_key(key)
     except Exception:
         return None
-    # Piyasa Katilimcilari Anketi - beklenen politika faizi (aday seri kodlari).
-    # Once acik istenenler (TP.PKA.POLFA / TP.BEKLENTI.POLFA), sonra eski adaylar.
-    for kod in ("TP.PKA.POLFA", "TP.BEKLENTI.POLFA",
-                "TP.BEK.S081.A", "TP.BEK.S082.A", "TP.BEK.S01.A", "TP.BEK.S02.A"):
+    for kod in _EVDS_ANKET_KODLARI:
         try:
-            seri = bp.evds_series(kod)["Value"].dropna()
+            seri = bp.evds_series(kod, period="1y")["Value"].dropna()
         except Exception:
             continue
         if seri.empty:
             continue
         beklenen = round(float(seri.iloc[-1]), 2)
-        if 20 <= beklenen <= 80:                 # makul politika faizi bandi
-            return round((beklenen - mevcut_faiz) * 100)
+        if not (20 <= beklenen <= 80):           # makul politika faizi bandi disi
+            continue
+        # tazelik: son gozlem tarihi bugune yakin mi?
+        try:
+            son_gun = seri.index[-1].date()
+            yas = (datetime.now(_TZ).date() - son_gun).days
+        except Exception:
+            yas = None
+        if yas is not None and yas > _ANKET_MAX_GUN:
+            _log_macro_hata(f"evds:{kod}",
+                            f"ANKET_BAYAT (son gozlem {son_gun}, {yas} gun once; "
+                            f"beklenti kullanilmadi)")
+            continue
+        return round((beklenen - mevcut_faiz) * 100)
     return None
 
 
@@ -883,26 +944,78 @@ _BORSAGUNDEM_TCMB_URL = ("https://www.borsagundem.com.tr/"
                          "ekonomistlerin-tcmb-faiz-ve-enflasyon-beklentilerinde-son-rakamlar")
 
 
+# Devre kesici (circuit breaker): cokmus kaynak her get_macro cagrisini yavaslatmasin.
+# borsagundem 522 verdiginde 4 deneme x 20s = ~78sn boslugu her cagride oduyordu
+# (get_macro 30 dk'da bir cagriliyor). Ust uste _DEVRE_ESIK basarisizliktan sonra
+# kaynak _DEVRE_SURE boyunca hic denenmez. Durum health_state.json'da tutulur.
+_DEVRE_ESIK = 3                                  # ust uste kac basarisizliktan sonra
+_DEVRE_SURE = 3600                               # kac saniye atlanacak (1 saat)
+_BORSAGUNDEM_TIMEOUT = 5                         # eskiden 20s; cokuk sunucuda bekleme
+
+
+def _devre_acik_mi(ad: str) -> bool:
+    """Kaynak devre kesici ile gecici olarak devre disi mi? (suresi dolduysa sifirlar)"""
+    st = _health_state_yukle()
+    d = st.get(f"devre_{ad}") or {}
+    if not isinstance(d, dict) or d.get("sayac", 0) < _DEVRE_ESIK:
+        return False
+    try:
+        kalan = _DEVRE_SURE - (time.time() - float(d.get("ts", 0)))
+    except (TypeError, ValueError):
+        return False
+    if kalan <= 0:                               # sure doldu -> devreyi kapat, tekrar dene
+        st.pop(f"devre_{ad}", None)
+        _health_state_kaydet(st)
+        return False
+    return True
+
+
+def _devre_bildir(ad: str, basarili: bool) -> None:
+    """Kaynak sonucunu devre kesiciye isler: basarili -> sifirla, degilse sayaci artir."""
+    st = _health_state_yukle()
+    anahtar = f"devre_{ad}"
+    if basarili:
+        if anahtar in st:
+            st.pop(anahtar, None)
+            _health_state_kaydet(st)
+        return
+    d = st.get(anahtar) if isinstance(st.get(anahtar), dict) else {}
+    sayac = int(d.get("sayac", 0)) + 1
+    st[anahtar] = {"sayac": sayac, "ts": time.time()}
+    _health_state_kaydet(st)
+    if sayac == _DEVRE_ESIK:
+        _log_macro_hata(ad, f"DEVRE_KESICI_ACILDI ({sayac} ust uste basarisizlik "
+                            f"-> {_DEVRE_SURE // 60} dk atlanacak)")
+
+
 def _borsagundem_fetch():
     """borsagundem (TR sitesi) sayfasini getirir. TR cikis gerektiginden ONCE
-    proxysiz (dogrudan), sonra proxyli dener. curl_cffi yoksa requests'e duser."""
+    proxysiz (dogrudan), sonra proxyli dener. curl_cffi yoksa requests'e duser.
+
+    Devre kesici: ust uste 3 basarisizliktan sonra 1 saat hic denenmez (cokmus
+    sunucu her makro cagrisini ~78sn yavaslatmasin diye)."""
+    if _devre_acik_mi("borsagundem"):
+        return None
     for proxies in (None, _proxies()):           # TR site -> once dogrudan
         try:
             from curl_cffi import requests as creq
             r = creq.get(_BORSAGUNDEM_TCMB_URL, impersonate="chrome",
-                         proxies=proxies, timeout=20)
+                         proxies=proxies, timeout=_BORSAGUNDEM_TIMEOUT)
             if r.status_code == 200 and r.text:
+                _devre_bildir("borsagundem", True)
                 return r.text
         except Exception:
             pass
         try:
             import requests as rq
             r = rq.get(_BORSAGUNDEM_TCMB_URL, headers={"User-Agent": "Mozilla/5.0"},
-                       proxies=proxies, timeout=20)
+                       proxies=proxies, timeout=_BORSAGUNDEM_TIMEOUT)
             if r.status_code == 200 and r.text:
+                _devre_bildir("borsagundem", True)
                 return r.text
         except Exception:
             pass
+    _devre_bildir("borsagundem", False)
     return None
 
 
@@ -929,7 +1042,11 @@ def _borsagundem_tcmb_beklenti_bp(mevcut_faiz=None):
 
 def _gnews_tcmb_beklenti_bp():
     """Google News RSS 'TCMB faiz beklenti anketi' -> son haberlerden beklenen
-    degisim (bp). Basliklarda 'sabit' / 'XXX baz puan indirim/artirim' arar."""
+    degisim (bp). Yalniz NET ifadeler eslesir (bkz. _bp_from_tr_text).
+
+    Tek bir baslige guvenmez: ilk 20 haberdeki eslesmeler TOPLANIR ve hepsi ayni
+    degeri gostermiyorsa None doner (celiskili haber akisindan sayi uydurmamak icin).
+    Bu kaynak en zayif halkadir; EVDS/borsagundem bos donerse devreye girer."""
     url = ("https://news.google.com/rss/search?q="
            "TCMB+faiz+beklenti+anketi&hl=tr&gl=TR&ceid=TR:tr")
     text = _fetch_html(url)
@@ -940,12 +1057,20 @@ def _gnews_tcmb_beklenti_bp():
         feed = feedparser.parse(text)
     except Exception:
         return None
-    for e in feed.entries[:8]:
+    bulunan = []
+    for e in feed.entries[:20]:
         ozet = re.sub(r"<[^>]+>", "", e.get("summary") or "")
         bp = _bp_from_tr_text(f"{e.get('title') or ''} {ozet}")
         if bp is not None:
-            return bp
-    return None
+            bulunan.append(bp)
+    if not bulunan:
+        return None
+    if len(set(bulunan)) > 1:                    # haberler celisiyor -> guvenme
+        _log_macro_hata("gnews_tcmb_beklenti",
+                        f"CELISKILI_BEKLENTI (haber basliklarindan {sorted(set(bulunan))} "
+                        f"cikti; belirsiz -> kullanilmadi)")
+        return None
+    return bulunan[0]
 
 
 def fed_beklenti_bp():
@@ -956,41 +1081,86 @@ def fed_beklenti_bp():
     return _polymarket_fed_beklenti_bp()
 
 
-def _tcmb_beklenti_bp_raw(mevcut_faiz=None):
-    """TCMB sonraki karar beklentisi (bp) - HAM. Sira:
-    env override ->
-    KAYNAK 1: borsapy EVDS Piyasa Katilimcilari Anketi (politika faizi beklentisi) ->
-    KAYNAK 2: borsagundem.com ekonomist anketi (scraping) ->
-    (ek fallback) EVDS3 /fe -> Reuters -> Google News.
-    Hicbir kaynak veri vermezse None (cagiran varsayilan deger uygular)."""
+def _tcmb_beklenti_kaynaklari(mevcut_faiz=None):
+    """TCMB beklenti kaynak zinciri: [(ad, cagrilabilir), ...] oncelik sirasiyla.
+    Tek yerde tanimli ki hem veri cekimi hem saglik kontrolu AYNI listeyi kullansin
+    (kaynak sayisi hakkinda yanilmayalim - bkz. beklenti_kaynak_sagligi)."""
+    return [
+        ("EVDS(anket)", lambda: _borsapy_tcmb_beklenti_bp(mevcut_faiz)),
+        ("borsagundem", lambda: _borsagundem_tcmb_beklenti_bp(mevcut_faiz)),
+        ("EVDS3(fe)", lambda: _evds_tcmb_beklenti_bp(mevcut_faiz)),
+        ("Reuters", lambda: _reuters_tcmb_beklenti_bp(mevcut_faiz)),
+        ("GoogleNews", _gnews_tcmb_beklenti_bp),
+    ]
+
+
+def _tcmb_beklenti_bp_ve_kaynak(mevcut_faiz=None):
+    """TCMB sonraki karar beklentisi -> (bp, kaynak_adi). Sira: env override ->
+    EVDS Piyasa Katilimcilari Anketi -> borsagundem -> EVDS3 /fe -> Reuters ->
+    Google News. Hicbiri veri vermezse (None, None) - UYDURMA YOK."""
     ov = _env_bp("TCMB_BEKLENTI_BP")
     if ov is not None:
-        return ov
-    for fn in (lambda: _borsapy_tcmb_beklenti_bp(mevcut_faiz),       # KAYNAK 1 (EVDS)
-               lambda: _borsagundem_tcmb_beklenti_bp(mevcut_faiz),   # KAYNAK 2 (scraping)
-               lambda: _evds_tcmb_beklenti_bp(mevcut_faiz),
-               lambda: _reuters_tcmb_beklenti_bp(mevcut_faiz),
-               _gnews_tcmb_beklenti_bp):
+        return ov, "env"
+    for ad, fn in _tcmb_beklenti_kaynaklari(mevcut_faiz):
         try:
             v = fn()
         except Exception:
             v = None
         if v is not None:
-            return v
-    return None
+            return v, ad
+    return None, None
+
+
+def _tcmb_beklenti_bp_raw(mevcut_faiz=None):
+    """Geriye donuk uyumluluk: sadece bp degerini doner (kaynak adi olmadan)."""
+    return _tcmb_beklenti_bp_ve_kaynak(mevcut_faiz)[0]
+
+
+def beklenti_kaynak_sagligi(mevcut_faiz=None) -> dict:
+    """TCMB faiz beklentisi icin KAC KAYNAK gercekten calisiyor? Her kaynagi tek tek
+    dener ve sonucu raporlar.
+
+    Amac: "5 kaynakli yedek zincir var" yanilgisini onlemek. 21 Tem 2026'da zincirin
+    5 kaynagindan 4'u sessizce oluydu (EVDS seri kodlari yanlis, EVDS3 kodu tanimsiz,
+    Reuters 401, GNews parser hic eslesmiyor) - tek calisan kaynak borsagundem'di ve o
+    cokunce veri tamamen kesildi. Bu fonksiyon o durumu ONCEDEN gorunur kilar.
+
+    Donus: {"calisan": [ad...], "olu": [(ad, sebep)...], "sayi": int, "tek_nokta": bool}
+    """
+    if mevcut_faiz is None:
+        try:
+            mevcut_faiz = get_macro().get("politika_faizi")
+        except Exception:
+            mevcut_faiz = None
+    calisan, olu = [], []
+    for ad, fn in _tcmb_beklenti_kaynaklari(mevcut_faiz):
+        try:
+            v = fn()
+        except Exception as e:
+            olu.append((ad, f"{type(e).__name__}: {str(e)[:60]}"))
+            continue
+        if v is None:
+            olu.append((ad, "veri yok"))
+        else:
+            calisan.append(ad)
+    return {"calisan": calisan, "olu": olu, "sayi": len(calisan),
+            "tek_nokta": len(calisan) == 1}
 
 
 def tcmb_beklenti_bp(mevcut_faiz=None):
     """TCMB sonraki karar beklentisi (bp). Kaynaklar (bkz. _tcmb_beklenti_bp_raw)
-    calismazsa HATA ATMAZ; varsayilan 0 (beklenti sabit/notr) dondurur ve durumu
-    logs/macro_hata.log'a yazar. (Veri yoklugu analiz akisini kesmesin diye.)"""
+    calismazsa HATA ATMAZ; None dondurur ve durumu logs/macro_hata.log'a yazar.
+
+    ONEMLI: veri yoksa 0 DONDURMEZ. 0 = "piyasa degisiklik beklemiyor" seklinde
+    gecerli bir beklentidir; uydurulmus 0 AI'ya gercek veri gibi gider. Bilinmiyorsa
+    None doner ve cagiran taraf alani hic gostermez (bkz. get_macro 6c)."""
     v = _tcmb_beklenti_bp_raw(mevcut_faiz)
     if v is not None:
         return v
     _log_macro_hata("tcmb_beklenti",
-                    "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos) "
-                    "-> varsayilan tcmb_beklenti_bp=0")
-    return 0
+                    "TCMB_BEKLENTI_ALINAMADI (EVDS/borsagundem/GNews bos) "
+                    "-> beklenti BILINMIYOR (None; uydurma yok)")
+    return None
 
 
 def get_macro() -> dict:
@@ -1156,9 +1326,13 @@ def get_macro() -> dict:
 
     # 6) Beklenti (sonraki karara dair piyasa beklentisi, bp) - best-effort, ucretsiz
     out["fed_beklenti_bp"] = fed_beklenti_bp()
-    # TCMB beklenti: ham deger None ise varsayilan 0 (analiz akisi kesilmesin).
-    tcmb_ham = _tcmb_beklenti_bp_raw(out.get("politika_faizi"))
-    out["tcmb_beklenti_bp"] = tcmb_ham if tcmb_ham is not None else 0
+    # TCMB beklenti: veri yoksa UYDURMA -> None kalir (bkz. 6c). 0 gecerli bir
+    # beklentidir ("degisiklik beklenmiyor"), varsayilan olarak kullanilamaz.
+    tcmb_ham, tcmb_kaynak = _tcmb_beklenti_bp_ve_kaynak(out.get("politika_faizi"))
+    out["tcmb_beklenti_bp"] = tcmb_ham
+    out["tcmb_beklenti_kaynak"] = tcmb_kaynak    # veri hangi kaynaktan geldi (izlenebilirlik)
+    if tcmb_kaynak and tcmb_kaynak not in out["kaynaklar"]:
+        out["kaynaklar"].append(tcmb_kaynak)
 
     # 6b) Fed sonraki toplanti OLASILIKLARI (Polymarket): indirim/artis/sabit (%)
     fed_ol = _polymarket_fed_olasiliklar()
@@ -1178,15 +1352,15 @@ def get_macro() -> dict:
         _uyar_admin_gunluk("polymarket_hata",
                            "Polymarket Fed beklenti olasılıkları alınamadı (macro.py).")
 
-    # 6c) TCMB beklenti ham veri yoksa: varsayilan 0 kullanildi -> her zaman logla;
-    # Telegram uyarisi gunde EN FAZLA 1 kez (health_state.json "tcmb_beklenti_hata").
+    # 6c) TCMB beklenti ham veri yoksa: alan None KALIR (uydurma yok) -> her zaman
+    # logla; Telegram uyarisi gunde EN FAZLA 1 kez (health_state "tcmb_beklenti_hata").
     if tcmb_ham is None:
         _log_macro_hata("tcmb_beklenti",
-                        "TCMB_BEKLENTI_ALINAMADI (borsapy/EVDS/Reuters/GNews bos) "
-                        "-> varsayilan tcmb_beklenti_bp=0")
+                        "TCMB_BEKLENTI_ALINAMADI (EVDS/borsagundem/GNews bos) "
+                        "-> beklenti BILINMIYOR (None; uydurma yok)")
         _uyar_admin_gunluk("tcmb_beklenti_hata",
                            "TCMB faiz beklenti verisi alınamadı (macro.py) "
-                           "-> varsayılan 0 kullanıldı.")
+                           "-> beklenti BİLİNMİYOR olarak işaretlendi (0 uydurulmadı).")
 
     # 7) DUNYA PIYASALARI (sabah): S&P futures / VIX / DXY / Nikkei / Shanghai.
     # Tek yfinance batch; cekilemeyen alan son_bilinen'e duser (bos kalmasin).
@@ -1311,6 +1485,15 @@ def evds_macro() -> dict:
 
 if __name__ == "__main__":
     import sys as _sys
+    # .env yukle: modul olarak import edildiginde cagiran (briefing/alerts/app/
+    # health_monitor) zaten yukluyor, ama CLI/cron ("python -m src.news.macro")
+    # yuklemiyordu -> EVDS_API_KEY gorunmuyor ve EVDS anket kaynagi sessizce
+    # devre disi kaliyordu. Ayni davranisi CLI'da da saglar.
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(Path(__file__).resolve().parents[2] / ".env")
+    except Exception:
+        pass
     # Haftalik CDS guncelleme: `python -m src.news.macro cds` (Pazartesi 09:00 cron).
     if len(_sys.argv) > 1 and _sys.argv[1] == "cds":
         guncelle_cds()

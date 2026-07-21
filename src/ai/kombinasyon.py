@@ -126,6 +126,10 @@ def fed_tcmb_analiz(fed_degisim_bp=None, fed_beklenti_bp=None,
             kr += f", beklentiye göre {isaret}bp {yon} sürpriz"
         elif beklenti is not None:
             kr += ", beklentiyle uyumlu"
+        # beklenti is None -> beklentiye dair HICBIR sey yazma. "beklentiyle uyumlu"
+        # ifadesi piyasa beklentisini BILDIGIMIZI iddia eder; veri yokken bu asilsiz
+        # bir cumledir (21 Tem 2026: beklenti alinamayinca 0 varsayiliyor ve bu cumle
+        # yaziliyordu). Bilinen kisim (karar) yazilir, beklenti kismi atlanir.
         return {"degisim_bp": degisim, "beklenti_bp": beklenti,
                 "surpriz_bp": surpriz, "yon": yon, "metin": kr}
 

@@ -451,6 +451,12 @@ SYSTEM = (
     "sektorler: GYO, bankacilik dengesi, yuksek borclu sirketler); faiz dusus beklentisi "
     "destekleyicidir. Kuru ihracatci (lehte) / doviz borclusu (aleyhte) ayrimiyla yorumla. "
     "Bu gostergeleri tek basina belirleyici yapma; hisse verisiyle birlikte degerlendir.\n\n"
+    "EKSIK VERI (UYDURMA YASAK): Veride 'piyasa_baglami.makro.bilinmeyen_veriler' varsa, "
+    "orada listelenen gostergeler O AN CEKILEMEMISTIR. Bu gostergeler hakkinda tahmin "
+    "YURUTME, varsayilan deger ATFETME ('degisiklik beklenmiyor' gibi) ve yorumunu bu "
+    "alana DAYANDIRMA. Ornegin 'TCMB faiz beklentisi: VERI YOK' ise faiz beklentisine "
+    "dayali bir cikarim yapma; yalnizca bilinen gostergelerle (politika faizi, TUFE, kur) "
+    "degerlendir. Bilmedigini bilmemek, yanlis bilmekten iyidir.\n\n"
     "COKLU FAKTOR SKORU: Veride 'coklu_faktor' varsa (skor + gerekceler), bu makro "
     "yon faktorlerinin (dolar/petrol/faiz/piyasa) bu sektore BIRLESIK deterministik "
     "etkisidir (+ olumlu, - olumsuz). Skoru ve gerekcesini degerlendirmene kat ve "
@@ -992,6 +998,35 @@ def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") 
     return {"bildirimler": bildirimler, "haberler": haberler}
 
 
+# Bilinmeyen degerin AI'ya "gercek veri" gibi gitmesini onleyen alanlar. Bir merkez
+# bankasi beklentisi None ise sayisal alan prompt'tan TAMAMEN CIKARILIR ve yerine
+# acik "VERI YOK" notu konur. (Onceden TCMB beklentisi alinamayinca 0 yaziliyordu;
+# 0 = "piyasa degisiklik beklemiyor" demek oldugundan AI uydurulmus bir beklentiyi
+# gercek sanip yorumluyordu - 21 Tem 2026 borsagundem cokusu.)
+_BEKLENTI_ALANLARI = {
+    "tcmb_beklenti_bp": "TCMB faiz beklentisi",
+    "fed_beklenti_bp": "Fed faiz beklentisi",
+}
+
+
+def _makro_temizle(makro: dict | None) -> dict | None:
+    """Makro dict'i prompt'a koymadan once temizler: degeri None olan beklenti
+    alanlarini SILER ve 'bilinmeyen_veriler' altinda acikca VERI YOK diye isaretler.
+    Boylece AI ne uydurulmus sayi gorur ne de sessiz bir bosluk."""
+    if not isinstance(makro, dict):
+        return makro
+    temiz = dict(makro)
+    bilinmeyen = {}
+    for alan, etiket in _BEKLENTI_ALANLARI.items():
+        if alan in temiz and temiz.get(alan) is None:
+            temiz.pop(alan, None)
+            bilinmeyen[etiket] = "VERİ YOK — bu konuda yorum yapma"
+    temiz.pop("tcmb_beklenti_kaynak", None)      # ic izlenebilirlik alani, AI'a gerekmez
+    if bilinmeyen:
+        temiz["bilinmeyen_veriler"] = bilinmeyen
+    return temiz
+
+
 def market_context(rss_src=None, overview=None) -> dict:
     """Hisseden bagimsiz genel piyasa baglami: son ekonomi basliklari + EVDS makro
     + genel piyasa yonu (BIST-100/USD-TRY/breadth).
@@ -1045,8 +1080,8 @@ def market_context(rss_src=None, overview=None) -> dict:
                 rotasyon["zayif"] = f"{rot['zayif'][0]} {rot['zayif'][1]:+.1f}%"
     except Exception:
         rotasyon = None
-    ctx = {"piyasa_gundemi": gundem, "makro": makro, "genel_piyasa": overview,
-           "yabanci_yatirimci": yabanci}
+    ctx = {"piyasa_gundemi": gundem, "makro": _makro_temizle(makro),
+           "genel_piyasa": overview, "yabanci_yatirimci": yabanci}
     if breadth:
         ctx["market_breadth"] = breadth
     if rotasyon:
