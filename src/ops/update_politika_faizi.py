@@ -49,12 +49,39 @@ def run() -> int:
     # 2) TCMB'den guncel politika faizini cekmeye calis
     pf, kaynak = macro.canli_politika_faizi()
 
-    if pf is not None:
+    # GECIKMELI KAYNAK TUZAGI (23 Tem 2026): EVDS SERISI, PPK karari aciklandiktan
+    # sonra ayni gun icinde guncellenmeyebilir. O durumda cekilen deger ESKI faizdir.
+    # Bunu "yeni karar" diye duyurmak, faiz degistigi gun kullaniciya YANLIS rakam
+    # vermek olur. Ayrim: TCMB/EVDS2 SAYFALARI guncel orani gosterir (esitlik =
+    # gercekten degismedi); EVDS SERISI gecikebilir (esitlik = DOGRULANAMADI).
+    GECIKEBILIR = {"evds_seri"}
+    onceki = macro._load_son_bilinen().get("politika_faizi")
+    degisti = (pf is not None and onceki is not None and pf != onceki)
+    dogrulanamadi = (pf is not None and not degisti and kaynak in GECIKEBILIR)
+
+    if dogrulanamadi:
+        # Deger kaydedilir (zaten ayni), ama DUYURU iddiali olmaz.
+        mesaj = ("🏦 <b>PPK günü:</b> yeni faiz kararı otomatik <b>doğrulanamadı</b>. "
+                 f"Elimizdeki değer hâlâ %{pf:g} ve tek kaynak (EVDS serisi) PPK günü "
+                 "gecikmeli güncellenir — bu rakam karar öncesine ait olabilir. "
+                 "Lütfen TCMB duyurusundan teyit edin.")
+        print(f"[{stamp}] PPK: deger %{pf:g} ({kaynak}) ama onceki deger ile ayni "
+              f"ve kaynak gecikebilir -> DOGRULANAMADI olarak bildirildi.")
+    elif pf is not None:
         # Basarili: kalici sakla + onbellegi temizle (yeni deger okunsun)
         macro._kaydet_son_bilinen({"politika_faizi": pf})
         macro._CACHE.clear()
-        mesaj = f"🏦 <b>TCMB yeni faiz kararı:</b> %{pf:g} — sistem güncellendi"
-        print(f"[{stamp}] PPK: yeni politika faizi %{pf:g} ({kaynak}); kaydedildi.")
+        if degisti:
+            yon = "artırım" if pf > onceki else "indirim"
+            fark = abs(round((pf - onceki) * 100))
+            mesaj = (f"🏦 <b>TCMB yeni faiz kararı:</b> %{onceki:g} → %{pf:g} "
+                     f"({fark}bp {yon}) — sistem güncellendi")
+            print(f"[{stamp}] PPK: faiz DEGISTI %{onceki:g} -> %{pf:g} "
+                  f"({fark}bp {yon}, kaynak={kaynak}); kaydedildi.")
+        else:
+            mesaj = (f"🏦 <b>TCMB faiz kararı:</b> %{pf:g} — <b>değişiklik yok</b> "
+                     "(TCMB sayfasından teyit edildi)")
+            print(f"[{stamp}] PPK: faiz degismedi (%{pf:g}, kaynak={kaynak}); kaydedildi.")
     else:
         # Basarisiz: manuel guncelleme uyarisi
         mesaj = ("⚠️ <b>ÖNEMLİ:</b> Bugün PPK toplantısı var ama yeni politika faizi "
