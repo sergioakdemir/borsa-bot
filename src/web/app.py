@@ -2437,14 +2437,20 @@ _GH_REFRESHING = {"v": False}
 
 
 def _bist100_kodlar() -> list[str]:
-    """config/bist100.json'dan benzersiz BIST hisse kodlari (taban, .IS'siz)."""
-    raw = _read_json(CONFIG / "bist100.json", [])
-    if isinstance(raw, dict):
-        raw = raw.get("hisseler") or raw.get("tickers") or []
+    """config/bist100.json'dan benzersiz BIST hisse kodlari (taban, .IS'siz).
+
+    'pasif' altindaki kodlar ATLANIR (23 Tem 2026): yfinance'te veri donmeyen
+    semboller her taramada hata uretiyordu. Bkz. bist100.json aciklamasi.
+    """
+    ham = _read_json(CONFIG / "bist100.json", [])
+    pasif = set()
+    if isinstance(ham, dict):
+        pasif = {k.upper() for k in (ham.get("pasif") or {})}
+        ham = ham.get("hisseler") or ham.get("tickers") or []
     out = []
-    for t in raw:
+    for t in ham:
         base = (t or "").upper().split(".")[0].strip()
-        if base and base not in out:
+        if base and base not in pasif and base not in out:
             out.append(base)
     return out
 

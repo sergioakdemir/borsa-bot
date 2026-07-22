@@ -129,8 +129,32 @@ def _gece_isleri():
     return out
 
 
+def _pasif_sembol_sayisi():
+    """bist100.json'da PASIF isaretli sembol sayisi (veri cekiminden cikarilmis).
+
+    23 Tem 2026: 8 sembol (KOZAL, SOYLM, ZORLU, TIRE, KERVT, YKGYO, ADNAC, FINBN)
+    yfinance'te 1 yildir veri dondurmuyordu ve her fiyat cache kosusunda sessizce
+    hata uretiyordu (146/154). Pasiflendiler. Karne bunu GORUNUR tutar: yoksa
+    "154 hedefliyorduk, 146 cekiyoruz" farki kimsenin gozune carpmaz.
+    Bu sayac, _olu_sembol_sayisi()'ndan FARKLI bir seyi olcer (bkz. orasi).
+    """
+    try:
+        import json
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[2] / "config" / "bist100.json"
+        return len(json.loads(p.read_text(encoding="utf-8")).get("pasif") or {})
+    except Exception:
+        return 0
+
+
 def _olu_sembol_sayisi():
-    """Art arda >=3 gun veri getirmeyen (KILL_SWITCH) sembol sayisi (son 3 gun)."""
+    """KARAR seviyesinde olu sembol: art arda >=3 gun KILL_SWITCH alan sembol sayisi.
+
+    DIKKAT: bu, _pasif_sembol_sayisi() ile AYNI SEY DEGILDIR. Burasi karar motoruna
+    girip veri gelmedigi icin KILL_SWITCH yiyen sembolleri sayar (orn. GMSTR.F);
+    orasi ise fiyat cache evreninden bastan cikarilmis sembolleri. 22 Tem 2026
+    denetiminde bu ikisi karistirilmisti ("karne 1 diyor ama 8 hata var").
+    """
     from src.db import database as db
     with db.get_conn() as c:
         son3 = [r[0] for r in c.execute(
@@ -266,6 +290,7 @@ def topla(tarih=None) -> dict:
     except Exception:
         pass
     olu = _olu_sembol_sayisi()
+    pasif_sembol = _pasif_sembol_sayisi()
     kredi = kredi_durumu(tarih)
     motor = motor_durumu()
     motorlar_ok = _motorlar_ok(motor)
@@ -368,7 +393,7 @@ def topla(tarih=None) -> dict:
         "kap_canli": kap_canli, "kap_n": kap_n, "kap_basari": kap_basari,
         "cache_yas": cache_yas,
         "havuz": havuz, "haber_eslesme": haber_eslesme, "gece": gece,
-        "ai_hata": ai_hata, "olu": olu, "kirmizi": kirmizi, "sari": sari, "durum": durum,
+        "ai_hata": ai_hata, "olu": olu, "pasif_sembol": pasif_sembol, "kirmizi": kirmizi, "sari": sari, "durum": durum,
         "kredi": kredi, "motor": motor, "motorlar_ok": motorlar_ok,
         "alpha": alpha, "brifing_bekleniyor": brifing_bekleniyor,
         "golge_denetim": golge_denetim, "golge_isabet": golge_isabet,
@@ -462,7 +487,7 @@ def _mesaj(m: dict) -> str:
         f"AI hatalari: {m['ai_hata']}",
         # GERCEK AI maliyeti (loglardan, tahmin degil). Otomatik yenileme devrede.
         f"Bugünkü AI maliyeti: {_maliyet_satiri(m)}",
-        f"Olu sembol: {m['olu']}",
+        f"Olu sembol (karar/KILL_SWITCH): {m['olu']} | pasif sembol (veri yok, cekimden cikarildi): {m.get('pasif_sembol', 0)}",
         f"Alpha olcumu ({(m.get('alpha') or {}).get('gun', 14)}g): {_alpha_txt(m.get('alpha'))}",
         "─────",
         f"DURUM: {m['durum']}",

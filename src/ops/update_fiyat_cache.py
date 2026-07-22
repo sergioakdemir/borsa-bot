@@ -81,12 +81,17 @@ def _semboller() -> dict:
     """Cekilecek {ticker: market} haritasi (ticker = .IS'siz taban kod)."""
     out: dict[str, str] = {}
 
-    # 1) BIST-100 listesi
+    # 1) BIST-100 listesi ('pasif' altindakiler ATLANIR)
+    # 23 Tem 2026: 8 sembol (KOZAL, SOYLM, ZORLU, TIRE, KERVT, YKGYO, ADNAC, FINBN)
+    # yfinance'te 1 yildir veri dondurmuyor -> her kosuda "possibly delisted" hatasi
+    # uretiyor ve 154/154 hedefini hep 146'da birakiyordu. Listeden SILINMEDILER
+    # (BIST-100 uyeligi bilgisi kaybolmasin); bist100.json'daki 'pasif' altina alindi.
     try:
         data = json.loads(BIST100_PATH.read_text(encoding="utf-8"))
+        pasif = {k.upper() for k in (data.get("pasif") or {})}
         for t in data.get("hisseler", []):
             base = (t or "").upper().split(".")[0]
-            if base:
+            if base and base not in pasif:
                 out.setdefault(base, "bist")
     except Exception as e:
         print(f"[uyari] bist100.json okunamadi: {type(e).__name__}: {e}")

@@ -19,6 +19,7 @@ Kullanim (kredi yukledikten sonra):
     python -m src.ops.kredi_takip yukle 50 2026-07-15
     python -m src.ops.kredi_takip durum
 """
+import gzip
 import re
 import sys
 from datetime import datetime
@@ -46,6 +47,20 @@ _SATIR = re.compile(
 )
 
 
+def _log_dosyalari():
+    """Maliyet okunacak TUM log dosyalari — DONDURULMUS (rotate edilmis) olanlar dahil.
+
+    23 Tem 2026: logs/ icin logrotate kuruldu (haftalik, 4 hafta, compress). Eski
+    kod yalniz `*.log` glob'unu okuyordu; rotasyondan sonra gunun verisi
+    `briefing.log.1` / `briefing.log.2.gz` icinde kalir ve glob'un DISINDA duser.
+    Sonuc: aylik maliyet sifirlanir ve "bu ay $0.00" gibi YANLIS bir rakam raporlanir
+    (rotasyonu test ederken canli olarak bu yasandi: $15.96 -> $0.00). Artik
+    .log, .log.N ve .log.N.gz hepsi okunur.
+    """
+    return [p for p in LOG_DIZIN.iterdir()
+            if p.is_file() and (".log" in p.name)]
+
+
 def _bugun() -> str:
     return datetime.now(_TZ).date().isoformat()
 
@@ -59,12 +74,13 @@ def maliyet_gecmisi() -> dict:
     """
     gecmis: dict = {}
     try:
-        dosyalar = sorted(LOG_DIZIN.glob("*.log"))
+        dosyalar = sorted(_log_dosyalari())
     except OSError:
         return {}
     for yol in dosyalar:
         try:
-            with yol.open("r", encoding="utf-8", errors="replace") as f:
+            ac = (gzip.open if yol.suffix == ".gz" else open)
+            with ac(yol, "rt", encoding="utf-8", errors="replace") as f:
                 for satir in f:
                     m = _SATIR.match(satir)
                     if not m:
