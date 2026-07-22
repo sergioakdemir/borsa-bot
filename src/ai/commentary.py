@@ -1006,6 +1006,13 @@ def gather_news(ticker: str, news_src=None, rss_src=None, market: str = "bist") 
 _BEKLENTI_ALANLARI = {
     "tcmb_beklenti_bp": "TCMB faiz beklentisi",
     "fed_beklenti_bp": "Fed faiz beklentisi",
+    # 23 Tem 2026: fed_faiz de bu listeye girdi. Eskiden FRED yokken kodda gomulu
+    # sabit 5.25 doner ve AI onu GERCEK Fed faizi sanip yorumlardi (26 Haz'dan beri
+    # hic degismedi). Artik macro.get_macro veri yoksa None dondurur ve alan
+    # buradan "VERI YOK" olarak isaretlenir. fed_degisim_bp de ayni sebeple listede:
+    # 0 gecerli bir degerdir ("Fed faizi degistirmedi"), bilinmezligin yerine gecemez.
+    "fed_faiz": "Fed politika faizi",
+    "fed_degisim_bp": "Fed son faiz değişimi",
 }
 
 

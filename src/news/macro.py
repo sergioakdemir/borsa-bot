@@ -287,11 +287,27 @@ def _parse_politika_faizi(html):
 
 
 def _politika_faizi():
-    """TCMB resmi sayfasi -> EVDS2; bulunamazsa (None, None). Deger + kaynak doner."""
+    """Guncel TCMB politika faizi: (deger, kaynak) veya (None, None).
+
+    ZINCIR: TCMB resmi sayfasi -> EVDS2 sayfasi -> EVDS serisi (borsapy).
+    Ilk ikisi HTML scraping; ikisi de anti-bot/JS yuzunden 22 Tem 2026'da olu
+    bulundu -> fonksiyon (None, None) donuyordu ve PPK gunu otomasyonu bu yuzden
+    HER ZAMAN "faiz cekilemedi" diyecekti (sessiz bozukluk; PPK gunu gelmedigi
+    icin fark edilmemisti). EVDS serisi calisiyor (%37 donduruyor) -> ucuncu
+    halka olarak eklendi.
+
+    DIKKAT: burada _evds_politika_faizi_kesin() kullanilir, _evds_borsapy_policy_rate()
+    DEGIL. Ikincisi hicbir seri calismazsa sabit %37 dondurur; PPK gunu bu sabit
+    "yeni karar" sanilirsa faiz degistigi halde eski deger duyurulur - uydurmanin
+    en pahali hali. Kesin surum veri yoksa None doner.
+    """
     for url, ad in ((_TCMB_FAIZ_URL, "tcmb"), (_EVDS2_URL, "evds2")):
         v = _parse_politika_faizi(_fetch(url))
         if v is not None:
             return v, ad
+    v = _evds_politika_faizi_kesin()
+    if v is not None:
+        return v, "evds_seri"
     return None, None
 
 
@@ -336,28 +352,44 @@ _EVDS_POLITIKA_SERILERI = (
     "TP.MB.B.B00", "TP.TF.TG.A1", "TP.MB.B.G14", "TP.BISPOLFAIZ.TUR")
 
 
-def _evds_borsapy_policy_rate():
-    """borsapy EVDS ile GUNCEL politika faizi (haftalik repo). Serileri sirayla dener;
-    ilk MAKUL (30-45 araliginda, ~%37) degeri dondurur. Hicbiri calismazsa veya
-    EVDS_API_KEY yoksa sabit _POLITIKA_FAIZI_FALLBACK (%37) dondurur."""
+def _evds_politika_faizi_kesin():
+    """EVDS serilerinden politika faizi — VERI YOKSA None (sabit fallback YOK).
+
+    _evds_borsapy_policy_rate()'in "uydurmayan" surumu. PPK gunu otomasyonu ve
+    canli_politika_faizi() bunu kullanir: orada sabit %37 dondurmek, faiz degistigi
+    gun eski degeri "yeni karar" diye duyurmak demektir.
+    """
     key = os.environ.get("EVDS_API_KEY")
-    if key:
+    if not key:
+        return None
+    try:
+        import borsapy as bp
+        bp.set_evds_key(key)
+    except Exception:
+        return None
+    for kod in _EVDS_POLITIKA_SERILERI:
         try:
-            import borsapy as bp
-            bp.set_evds_key(key)
-            for kod in _EVDS_POLITIKA_SERILERI:
-                try:
-                    seri = bp.evds_series(kod)["Value"].dropna()
-                except Exception:
-                    continue                 # seri yok/erisilemez -> sonrakini dene
-                if seri.empty:
-                    continue
-                v = round(float(seri.iloc[-1]), 2)
-                if 30 <= v <= 45:            # guncel politika faizi makul bandi (7.0 bug'ini eler)
-                    return v
+            seri = bp.evds_series(kod)["Value"].dropna()
         except Exception:
-            pass
-    return _POLITIKA_FAIZI_FALLBACK          # hicbiri calismadi -> sabit %37
+            continue                         # seri yok/erisilemez -> sonrakini dene
+        if seri.empty:
+            continue
+        v = round(float(seri.iloc[-1]), 2)
+        if 30 <= v <= 45:                    # makul band (borsapy'nin 7.0 bug'ini eler)
+            return v
+    return None
+
+
+def _evds_borsapy_policy_rate():
+    """GENEL kullanim: EVDS politika faizi; hicbiri calismazsa sabit
+    _POLITIKA_FAIZI_FALLBACK (%37).
+
+    Bu sabit, gunluk makro baglaminin faiz alani BOS kalmasin diye vardir ve
+    gercek deger uzun suredir %37 oldugu icin pratikte dogrudur. PPK GUNU
+    KARAR DUYURUSUNDA KULLANILMAZ -> orada _evds_politika_faizi_kesin().
+    """
+    v = _evds_politika_faizi_kesin()
+    return v if v is not None else _POLITIKA_FAIZI_FALLBACK
 
 
 def _investing_cpi_yoy(url=None):
@@ -384,12 +416,15 @@ def _investing_cpi_yoy(url=None):
 # ---------------------------------------------------------------------------
 # Fed (ABD Merkez Bankasi) politika faizi - FRED API (ucretsiz)
 # https://fred.stlouisfed.org/docs/api/api_key.html adresinden ucretsiz anahtar.
-# FRED_API_KEY yoksa veya cekilemezse sabit _FED_FAIZ_FALLBACK kullanilir.
+# FRED_API_KEY yoksa veya cekilemezse fed_faiz BILINMIYOR (None) olur.
 # FEDFUNDS = efektif federal fon faizi (aylik); son 2 gozlemden degisim (bp) cikar.
+#
+# NOT (23 Tem 2026): burada eskiden _FED_FAIZ_FALLBACK = 5.25 sabiti vardi ve FRED
+# yokken bu sayi gercek veri gibi prompt'a giriyordu. KALDIRILDI - geri eklenmesin.
+# Sabit bir "son bilinen faiz" tanimlamak, veriyi uydurmanin sessiz halidir.
 # ---------------------------------------------------------------------------
 _FRED_FEDFUNDS_URL = ("https://api.stlouisfed.org/fred/series/observations"
                       "?series_id=FEDFUNDS&file_type=json&sort_order=desc&limit=2")
-_FED_FAIZ_FALLBACK = 5.25     # FRED erisilemezse son bilinen Fed faizi (%)
 
 
 def _fred_fed_funds():
@@ -1304,7 +1339,14 @@ def get_macro() -> dict:
             out["tufe_yillik"] = tv
             out["kaynaklar"].append("investing.com(TUFE)")
 
-    # 4) Fed (ABD) politika faizi - FRED (ucretsiz). Anahtar yoksa sabit fallback.
+    # 4) Fed (ABD) politika faizi - FRED (ucretsiz).
+    # UYDURMA YASAGI (23 Tem 2026): eskiden FRED yoksa kodda gomulu sabit 5.25
+    # doner ve GERCEK VERI GIBI prompt'a girerdi. FRED_API_KEY hic tanimlanmadigi
+    # icin bu sayi 26 Haziran'dan beri hic degismeden besleniyordu - sessiz sahte
+    # veri. Artik TCMB beklentisiyle AYNI kural: gercek veri yoksa alan None kalir,
+    # prompt'ta "VERI YOK - yorum yapma" olarak isaretlenir (bkz.
+    # commentary._makro_temizle). Daha once GERCEKTEN cekilmis bir deger varsa
+    # (macro_last.json) o kullanilir - bu uydurma degil, bayat gercek veridir.
     fed_faiz, fed_degisim = _fred_fed_funds()
     if fed_faiz is not None:
         out["fed_faiz"] = fed_faiz
@@ -1312,9 +1354,22 @@ def get_macro() -> dict:
         taze["fed_faiz"] = fed_faiz
         if "FRED" not in out["kaynaklar"]:
             out["kaynaklar"].append("FRED")
+    elif son_bilinen.get("fed_faiz") is not None:
+        out["fed_faiz"] = son_bilinen["fed_faiz"]
+        out["fed_degisim_bp"] = None          # degisim bilinmiyor -> 0 VARSAYMA
+        if "son_bilinen" not in out["kaynaklar"]:
+            out["kaynaklar"].append("son_bilinen")
+        _log_macro_hata("fred", "YEDEK_KULLANILDI (FRED yok, son bilinen "
+                                f"fed_faiz={son_bilinen['fed_faiz']})")
     else:
-        out["fed_faiz"] = son_bilinen.get("fed_faiz", _FED_FAIZ_FALLBACK)
-        out["fed_degisim_bp"] = 0            # FRED yok -> degisim bilinmiyor, sabit varsay
+        out["fed_faiz"] = None                # UYDURMA YOK
+        out["fed_degisim_bp"] = None
+        _log_macro_hata("fred", "FED_FAIZI_ALINAMADI (FRED_API_KEY yok/istek "
+                                "basarisiz, son bilinen deger de yok) "
+                                "-> fed_faiz BILINMIYOR (None; uydurma yok)")
+        _uyar_admin_gunluk("fred_hata",
+                           "Fed politika faizi alınamadı (FRED_API_KEY tanımlı değil) "
+                           "-> fed_faiz VERİ YOK olarak işaretlendi (sabit sayı beslenmiyor).")
 
     # 5) TCMB son PPK karar degisimi (data/ppk_kararlari.json)
     spk = son_ppk_karari()
