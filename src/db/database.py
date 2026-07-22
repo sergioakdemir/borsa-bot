@@ -1855,14 +1855,21 @@ def eq_golge_kaydet(ticker, tarih, eq_skor, fiyat, market="bist",
 
 
 def eq_golge_listele(degerlendirilmis=None, limit: int = 500) -> list[dict]:
-    """degerlendirilmis=False -> sonucu henuz dolmamis golgeler."""
+    """degerlendirilmis=False -> HENUZ OLCULMEMIS golgeler (tekrar denenecekler).
+
+    OLCUT 22 Tem 2026'da `sonuc` yerine `piyasa_farki`ye baglandi. Eskiden benchmark
+    o an gelmediginde "... OLCULEMEDI (benchmark yok)" metni yaziliyor, kayit boylece
+    'degerlendirilmis' sayilip BIR DAHA HIC denenmiyordu -> alpha kalici kayip.
+    (decisions tarafinda ayni hata alpha_backfill ile cozulmustu; golge tarafi
+    acikta kalmisti.) piyasa_farki NULL olan kayit artik her kosuda tekrar denenir.
+    """
     init_db()
     with get_conn() as c:
         q = "SELECT * FROM eq_golge"
         if degerlendirilmis is True:
-            q += " WHERE sonuc IS NOT NULL AND sonuc<>''"
+            q += " WHERE piyasa_farki IS NOT NULL"
         elif degerlendirilmis is False:
-            q += " WHERE sonuc IS NULL OR sonuc=''"
+            q += " WHERE piyasa_farki IS NULL"
         q += " ORDER BY tarih DESC, id DESC LIMIT ?"
         return [dict(r) for r in c.execute(q, (limit,))]
 

@@ -41,6 +41,8 @@ import sqlite3
 import pandas as pd
 import yfinance as yf
 
+from src.piyasa_takvim import TZ        # tek kaynak: Europe/Istanbul
+
 DB = KOK / "data" / "borsa.db"
 CSV_YOL = KOK / "logs" / "rank_ic_gunluk.csv"
 
@@ -57,6 +59,11 @@ MAX_EKSIK_ORAN = 0.20             # ileri getiri eksikligi < %20
 ACILIS = {"BIST": time(10, 0), "US": time(16, 30)}
 KARAR_SAATI = {"BIST": time(9, 0), "US": time(15, 30)}   # olusturma yoksa varsayilan
 KAPANIS_SAATI = {"BIST": time(18, 0), "US": time(23, 0)}
+
+# Fiyat indirme penceresi. BASLANGIC sabit (IC gecmisinin capasi); BITIS asla
+# sabit kodlanmaz -> 22 Tem 2026'da end="2026-07-23" sabitti ve ertesi gun arac
+# SESSIZCE yeni veri cekmeyi birakacakti (hata vermeden, bos IC uretecekti).
+FIYAT_BASLANGIC = "2026-05-15"
 
 
 # --------------------------------------------------------------------------
@@ -123,7 +130,9 @@ def fiyat_yukle(tickerlar, pazar_harita):
     sm = {t: s for t, s in sm.items() if s}
     hepsi = sorted(set(sm.values()) | {"XU100.IS", "SPY"})
     print(f"  fiyat indiriliyor: {len(hepsi)} sembol...", flush=True)
-    data = yf.download(hepsi, start="2026-05-15", end="2026-07-23",
+    # end yfinance'te DISLAYICI -> bugunu de kapsamak icin +1 gun.
+    bitis = (datetime.now(TZ).date() + timedelta(days=1)).isoformat()
+    data = yf.download(hepsi, start=FIYAT_BASLANGIC, end=bitis,
                        progress=False, group_by="ticker",
                        auto_adjust=False, threads=True)
     ac, kap = {}, {}

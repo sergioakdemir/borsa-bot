@@ -45,9 +45,11 @@ def _islem_gunu_gecti(tarih_iso: str) -> int:
 def degerlendir(verbose: bool = True) -> dict:
     """Penceresi dolan golgeleri fiyatla olcer, sonucu yazar."""
     from src.db import database as db
-    from src.ops.update_decisions import (_benchmark_change, _history,
+    from src.ops.update_decisions import (_benchmark_change, _symbol_change,
                                           AL_PIYASA_ESIGI)
 
+    # piyasa_farki NULL olan HER golge (hic olculmemis + "OLCULEMEDI" yazilmis)
+    # tekrar denenir -> benchmark sonradan gelince geriye donuk dolar.
     bekleyen = db.eq_golge_listele(degerlendirilmis=False)
     olculen = atlanan = 0
     for g in bekleyen:
@@ -55,20 +57,25 @@ def degerlendir(verbose: bool = True) -> dict:
             continue                      # pencere dolmadi, sonraki kosuda bak
         ticker, market = g["ticker"], (g["market"] or "bist")
         sembol = ticker if market in ("us", "abd") else f"{ticker}.IS"
+        # Hedef bar artik _symbol_change'ten gelir: yarim-bar elemesi ve ISLEM GUNU
+        # penceresi decisions ile AYNI kurala tabi. (Eski hal `Close.dropna()` uzerinde
+        # iloc[min(KAPANIS_GUN, len-1)] yapiyordu -> pencere dolmadiysa SESSIZCE daha
+        # KISA pencere olcuyor, ayrica gunun yarim barini kapanis sanabiliyordu.)
         try:
-            df = _history(sembol, g["tarih"])
-            kap = df["Close"].dropna()
-            if len(kap) < KAPANIS_GUN + 1 or not g["fiyat"]:
+            d = _symbol_change(sembol, g["tarih"], KAPANIS_GUN, detay=True)
+            if d is None or not g["fiyat"]:
                 atlanan += 1
                 continue
-            yeni = float(kap.iloc[min(KAPANIS_GUN, len(kap) - 1)])
-            degisim = round((yeni - g["fiyat"]) / g["fiyat"] * 100, 2)
+            # Giris fiyati golgenin KAYITLI fiyati (karar anindaki), cikis hedef kapanis.
+            degisim = round((d["hedef_kapanis"] - g["fiyat"]) / g["fiyat"] * 100, 2)
         except Exception:
             atlanan += 1
             continue
 
         # _benchmark_change ticker'dan pazari kendi cozer (_is_bist) -> duz ticker.
-        pf = _benchmark_change(ticker, g["tarih"], KAPANIS_GUN)
+        # hedef_tarih -> hisseyle AYNI kapanis barina bakildigi garanti (simetri).
+        pf = _benchmark_change(ticker, g["tarih"], KAPANIS_GUN,
+                               hedef_tarih=d["hedef_tarih"])
         piyasa_farki = round(degisim - pf, 2) if pf is not None else None
         # decisions ile AYNI alpha kurali: degisim>0 VE piyasa_farki>=AL_PIYASA_ESIGI
         if piyasa_farki is None:
@@ -90,15 +97,25 @@ def degerlendir(verbose: bool = True) -> dict:
 
 
 def rapor() -> dict:
-    """'Esik 55 olsaydi ne olurdu' ozeti."""
+    """'Esik 55 olsaydi ne olurdu' ozeti.
+
+    SECIM YANLILIGI NOTU (22 Tem 2026): oran yalniz OLCULEBILEN golgeler uzerinden
+    hesaplanir. Olculemeyenler sessizce yok sayilirsa oran yanli olur (benchmark'i
+    gelmeyen gunler rastgele degildir — orn. tatil/yarim seans komsulugu). Bu yuzden
+    'olculemeyen' sayisi ayrica raporlanir ve payda seffaf birakilir.
+    """
     from src.db import database as db
-    hepsi = db.eq_golge_listele(degerlendirilmis=True, limit=1000)
+    hepsi = db.eq_golge_listele(limit=1000)
     olculu = [g for g in hepsi if g.get("piyasa_farki") is not None]
+    # penceresi dolmus ama benchmark gelmedigi icin olculemeyenler
+    olculemeyen = [g for g in hepsi if g.get("piyasa_farki") is None
+                   and (g.get("sonuc") or "")]
     dogru = [g for g in olculu if "DOGRU" in (g.get("sonuc") or "")]
     n = len(olculu)
     return {
-        "toplam_golge": len(db.eq_golge_listele(limit=1000)),
+        "toplam_golge": len(hepsi),
         "degerlendirilen": n,
+        "olculemeyen": len(olculemeyen),
         "basarili": len(dogru),
         "oran": (100.0 * len(dogru) / n) if n else None,
         "yeterli_ornek": n >= MIN_ORNEK,
@@ -114,6 +131,8 @@ def ozet_satir() -> str:
                 f"(pencere 5 is gunu)")
     txt = (f"{r['basarili']}/{r['degerlendirilen']} golge alpha-basarili "
            f"(%{r['oran']:.0f})")
+    if r["olculemeyen"]:                  # secim yanliligi seffaf kalsin
+        txt += f" — {r['olculemeyen']} golge olculemedi (orana dahil degil)"
     if not r["yeterli_ornek"]:
         txt += f" — ornek yetersiz (<{MIN_ORNEK}), yorum yapma"
     return txt
@@ -129,6 +148,9 @@ def main(argv) -> int:
     print("=== EQ GOLGE: 'esik 55 olsaydi ne olurdu' ===")
     print(f"  toplam golge (EQ 55-60)  : {r['toplam_golge']}")
     print(f"  degerlendirilen          : {r['degerlendirilen']}")
+    if r["olculemeyen"]:
+        print(f"  OLCULEMEYEN (benchmark)  : {r['olculemeyen']}  "
+              f"(orana DAHIL DEGIL; tekrar denenecek)")
     if r["degerlendirilen"]:
         print(f"  alpha-basarili olurdu    : {r['basarili']} (%{r['oran']:.1f})")
         if not r["yeterli_ornek"]:

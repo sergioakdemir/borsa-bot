@@ -136,7 +136,8 @@ def _market_for(ticker: str):
     return BIST()
 
 
-def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
+def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int,
+                  detay: bool = False):
     """Karar gunundeki kapanis -> kapanis_gun ISLEM GUNU sonraki kapanis yuzde degisimi.
 
     TAKVIM gunu degil ISLEM gunu bazlidir: yfinance yalniz islem gunlerini dondurdugu
@@ -149,7 +150,7 @@ def _price_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
     Veri yoksa None.
     """
     symbol = _market_for(ticker).to_symbol(ticker)
-    return _symbol_change(symbol, karar_tarihi, kapanis_gun)
+    return _symbol_change(symbol, karar_tarihi, kapanis_gun, detay=detay)
 
 
 # --- Gecmis verisi: kosu-ici onbellek + retry (15 Tem 2026) -----------------
@@ -200,10 +201,21 @@ def _hist_cache_temizle():
     _HIST_CACHE.clear()
 
 
-def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
+def _pazar_kodu(symbol: str) -> str:
+    """Sembolun piyasasi ('bist'|'us') — YALNIZ seans acik/kapali kontrolu icin.
+    (Karar tarafindaki pazar cozumu _market_for; bu, ham sembol icin yeterli.)"""
+    return "bist" if symbol.upper().endswith(".IS") else "us"
+
+
+def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int,
+                   detay: bool = False):
     """Verilen yfinance sembolu icin karar gunu -> kapanis_gun islem gunu sonraki
-    yuzde degisim (bkz. _price_change). Pencere dolmadiysa/veri yoksa None."""
+    yuzde degisim (bkz. _price_change). Pencere dolmadiysa/veri yoksa None.
+
+    detay=True ise {'degisim', 'baz_tarih', 'hedef_tarih'} sozlugu doner; hedef_tarih
+    simetri guvencesinde kullanilir (bkz. _benchmark_change)."""
     import pandas as pd
+    from src import piyasa_takvim
 
     # Karar tarihinden ONCEKI islem gununu de yakalamak icin genis pencere (uzun tatiller)
     start = (datetime.fromisoformat(karar_tarihi).date()
@@ -211,9 +223,25 @@ def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
     df = _history(symbol, start)
     if df is None or df.empty:
         return None
-    # Hacimsiz VE kapanisi NaN olan barlari ele (yfinance bazen guncel/yarim bari
-    # Volume>0 ama Close=NaN dondurur -> aksi halde sonuc 'nan%' cikar)
-    df = df[(df["Volume"] > 0) & df["Close"].notna()]
+    # Kapanisi NaN olan barlari ele (yfinance yarim bari bazen Close=NaN dondurur
+    # -> aksi halde sonuc 'nan%' cikar).
+    df = df[df["Close"].notna()]
+    if df.empty:
+        return None
+
+    # YARIM (canli) BAR ELEME — 22 Tem 2026'da HACIMDEN TAKVIME cevrildi.
+    # ESKI HALI: df[df["Volume"] > 0]. Yahoo seans icinde ENDEKS barina Volume=0,
+    # HISSE barina Volume>0 yazar (XU100'un gunluk hacmi ERTESI GUNE kadar
+    # kesinlesmiyor - gece 23:30'da bile 0). Sonuc ASIMETRI: ayni anda hisse
+    # bugunu SAYIYOR, endeks SAYMIYOR -> benchmark 'pencere dolmadi' deyip None
+    # donuyor -> piyasa_farki NULL kaliyor. 22 Tem'de 137 kararin tamami bu
+    # yuzden olculemiyordu (hepsi ayni gunun XU100 barina takilmisti).
+    # YENI HALI: eleme sembole degil TAKVIME bakar - son bar BUGUNE aitse ve o
+    # piyasa HALA ACIKSA at. Hisse de endeks de ayni kurala tabi -> simetrik.
+    now = datetime.now(_TZ)
+    if (pd.Timestamp(df.index[-1]).date() == now.date()
+            and piyasa_takvim.borsa_acik(now, _pazar_kodu(symbol))):
+        df = df.iloc[:-1]
     if df.empty:
         return None
 
@@ -231,7 +259,12 @@ def _symbol_change(symbol: str, karar_tarihi: str, kapanis_gun: int):
     hedef = float(df["Close"].iloc[i_eval])
     if not baz:
         return None
-    return round((hedef - baz) / baz * 100, 2)
+    deg = round((hedef - baz) / baz * 100, 2)
+    if not detay:
+        return deg
+    return {"degisim": deg, "baz_tarih": dates[i0].isoformat(),
+            "hedef_tarih": dates[i_eval].isoformat(),
+            "baz_kapanis": baz, "hedef_kapanis": hedef}
 
 
 def _is_bist(ticker: str) -> bool:
@@ -258,15 +291,24 @@ def _benchmark_symbol(ticker: str) -> str:
     return _BENCHMARK_ZINCIR["bist" if _is_bist(ticker) else "us"][0]
 
 
-def _benchmark_change(ticker: str, karar_tarihi: str, kapanis_gun: int):
+def _benchmark_change(ticker: str, karar_tarihi: str, kapanis_gun: int,
+                      hedef_tarih: str = None):
     """Hissenin benchmark'inin ayni pencere icindeki yuzde degisimi; sembol
     zincirini sirayla dener (ilki bos donerse digerine duser). Hicbiri veri
     vermezse None -> cagiran karari 'olculemedi' birakir ve SONRAKI kosuda
-    tekrar dener (kalici NULL yok)."""
+    tekrar dener (kalici NULL yok).
+
+    SIMETRI GUVENCESI (22 Tem 2026): hedef_tarih verilirse benchmark'in hedef
+    bari hissenin hedef bariyla AYNI GUN olmak zorundadir. Farkliysa iki taraf
+    farkli pencere olcuyor demektir (bkz. _symbol_change'teki yarim-bar notu) ->
+    yanlis bir alpha uretmektense None donulur; asimetri sessizce gecmez."""
     for sembol in _BENCHMARK_ZINCIR["bist" if _is_bist(ticker) else "us"]:
-        deg = _symbol_change(sembol, karar_tarihi, kapanis_gun)
-        if deg is not None:
-            return deg
+        d = _symbol_change(sembol, karar_tarihi, kapanis_gun, detay=True)
+        if d is None:
+            continue
+        if hedef_tarih is not None and d["hedef_tarih"] != hedef_tarih:
+            continue                      # asimetrik pencere -> bu sembolu kullanma
+        return d["degisim"]
     return None
 
 
@@ -352,8 +394,10 @@ def alpha_backfill(verbose: bool = True, limit: int = None) -> dict:
     dolduruldu = hala_yok = hukum_degisti = 0
     for r in rows:
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))
-        deg = _price_change(r["ticker"], r["tarih"], kg)
-        bench = _benchmark_change(r["ticker"], r["tarih"], kg)
+        d = _price_change(r["ticker"], r["tarih"], kg, detay=True)
+        deg = d["degisim"] if d else None
+        bench = (_benchmark_change(r["ticker"], r["tarih"], kg,
+                                   hedef_tarih=d["hedef_tarih"]) if d else None)
         if deg is None or bench is None:
             hala_yok += 1
             continue
@@ -404,7 +448,54 @@ def alpha_olcum_sagligi(gun: int = ALPHA_SAGLIK_GUN) -> dict:
     toplam, bos = r[0] or 0, r[1] or 0
     oran = (bos / toplam) if toplam else 0.0
     return {"gun": gun, "toplam": toplam, "dolu": toplam - bos, "bos": bos,
-            "bos_oran": oran, "saglikli": (oran <= ALPHA_BOS_ESIK) if toplam else True}
+            "bos_oran": oran, "saglikli": (oran <= ALPHA_BOS_ESIK) if toplam else True,
+            "takilan": bos_hedef_gunler(gun)}
+
+
+def bos_hedef_gunler(gun: int = ALPHA_SAGLIK_GUN, en_fazla: int = 3) -> list:
+    """piyasa_farki bos kalan kararlarin HANGI benchmark barina takildigi.
+
+    Neden: eski alarm "benchmark cekimi basarisiz" diyordu ve YANLIS yonlendiriyordu
+    (22 Tem 2026 teshisi: cekim calisiyordu, eksik olan tek bir GUNUN bariydi).
+    Artik alarm "hangi hedef gune takildi" bilgisini tasir; boylece 'kaynak coktu'
+    ile 'gunun bari henuz olusmadi' ayirt edilir.
+
+    Doner: [(hedef_gun_iso | 'henuz olusmadi', adet), ...] en cok takilan ilk N.
+    Hata olursa bos liste (alarm asla bu yuzden dusmemeli).
+    """
+    try:
+        import pandas as pd
+        from collections import Counter
+        from src.db import database as db
+        esik = (datetime.now(_TZ).date() - timedelta(days=gun)).isoformat()
+        with db.get_conn() as c:
+            rows = [dict(r) for r in c.execute(
+                """SELECT ticker, tarih, karar, tahmini_sure FROM decisions
+                    WHERE tarih >= ? AND piyasa_farki IS NULL
+                      AND sonuc IS NOT NULL AND sonuc <> ''
+                      AND sonuc NOT LIKE '%DEĞERLENDİRME DIŞI%'
+                      AND UPPER(COALESCE(karar,'')) NOT LIKE '%KILL%'""", (esik,))]
+        sayac = Counter()
+        takvim = {}                       # benchmark sembolu -> islem gunu listesi
+        for r in rows:
+            sembol = _benchmark_symbol(r["ticker"])
+            if sembol not in takvim:
+                df = _history(sembol, (datetime.now(_TZ).date()
+                                       - timedelta(days=90)).isoformat())
+                takvim[sembol] = ([pd.Timestamp(i).date() for i in df.index]
+                                  if df is not None and not df.empty else [])
+            gunler = takvim[sembol]
+            kd = datetime.fromisoformat(r["tarih"]).date()
+            i0 = next((i for i in range(len(gunler) - 1, -1, -1)
+                       if gunler[i] <= kd), None)
+            kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))
+            if i0 is None or i0 + kg >= len(gunler):
+                sayac["henüz oluşmadı"] += 1
+            else:
+                sayac[gunler[i0 + kg].isoformat()] += 1
+        return sayac.most_common(en_fazla)
+    except Exception:
+        return []
 
 
 def run(verbose: bool = True) -> int:
@@ -440,15 +531,18 @@ def run(verbose: bool = True) -> int:
                       f"-> DEĞERLENDİRME DIŞI (veri eksikligi)")
             continue
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))   # TUT'ta AI tahmini sure
-        deg = _price_change(r["ticker"], r["tarih"], kg)
-        if deg is None:
+        d = _price_change(r["ticker"], r["tarih"], kg, detay=True)
+        if d is None:
             if verbose:
                 print(f"  {r['ticker']} ({r['tarih']}, {r['karar']}): "
                       f"{kg} islem gunu dolmadi / veri yok -> bekliyor")
             continue
+        deg = d["degisim"]
         # PIYASAYA KARSI: benchmark (BIST -> XU100.IS, ABD -> SPY) ayni pencerede
+        # (hedef_tarih -> hisseyle AYNI kapanis barina bakildigi garanti edilir)
         piyasa_farki = None
-        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg)
+        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg,
+                                      hedef_tarih=d["hedef_tarih"])
         if bench_deg is not None:
             piyasa_farki = round(deg - bench_deg, 2)
         dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
@@ -496,11 +590,18 @@ def run(verbose: bool = True) -> int:
                   f"| bos %{s['bos_oran']*100:.0f} | {'OK' if s['saglikli'] else 'BOZUK'}")
         if not s["saglikli"] and s["toplam"] >= 10:
             from src.notify import telegram
+            # Alarm metni 22 Tem 2026'da duzeltildi: eskiden kosulsuz "benchmark
+            # cekimi basarisiz" diyordu ve teshisi YANLIS yere goturuyordu (cekim
+            # calisiyordu; eksik olan tek bir gunun bariydi). Artik takilinan
+            # hedef gun(ler) yazilir.
+            takilan = ", ".join(f"{g} ({n})" for g, n in (s.get("takilan") or [])) \
+                      or "belirlenemedi"
             telegram.notify_admins(
                 f"Alpha ölçümü bozuk: son {s['gun']} günde {s['bos']}/{s['toplam']} "
                 f"kararda piyasa_farkı boş (%{s['bos_oran']*100:.0f} > "
-                f"%{ALPHA_BOS_ESIK*100:.0f}). Benchmark (XU100.IS/SPY) çekimi "
-                f"başarısız — alpha başarı oranları güvenilmez.", prefix="🔴")
+                f"%{ALPHA_BOS_ESIK*100:.0f}). Takılınan benchmark barı: {takilan}. "
+                f"Bu gün(ler)in endeks barı gelince geriye dönük dolar; hâlâ "
+                f"boşsa benchmark (XU100.IS/SPY) verisine bak.", prefix="🔴")
     except Exception as e:
         if verbose:
             print(f"  [alpha] saglik kontrolu atlandi: {type(e).__name__}")
@@ -583,10 +684,12 @@ def backfill_piyasa_farki(verbose: bool = True) -> int:
         if "KILL" in karar:                      # KILL_SWITCH -> degerlendirme yok
             continue
         kg = _kapanis_gun(r["karar"], r.get("tahmini_sure"))
-        deg = _price_change(r["ticker"], r["tarih"], kg)
-        if deg is None:                          # fiyat penceresi/veri yok -> koru
+        d = _price_change(r["ticker"], r["tarih"], kg, detay=True)
+        if d is None:                            # fiyat penceresi/veri yok -> koru
             continue
-        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg)
+        deg = d["degisim"]
+        bench_deg = _benchmark_change(r["ticker"], r["tarih"], kg,
+                                      hedef_tarih=d["hedef_tarih"])
         piyasa_farki = round(deg - bench_deg, 2) if bench_deg is not None else None
         dogru = _verdict(r["karar"], deg, piyasa_farki=piyasa_farki)
         sonuc = f"{deg:+.1f}% · {'DOGRU' if dogru else 'YANLIS'}"

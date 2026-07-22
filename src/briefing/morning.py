@@ -1059,13 +1059,24 @@ def main(market="bist"):
         return 1
 
     # 1) Karar sonuclarini doldur (ogrenme) - brifingden ONCE
-    try:
-        from src.ops import update_decisions
-        guncellenen = update_decisions.run(verbose=False)
-        mini = update_decisions.mini_update(verbose=False)   # AL/SAT 1.gun degisimi
-        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi: {guncellenen} sonuc + {mini} 1.gun guncellendi.")
-    except Exception as e:
-        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi: {type(e).__name__}: {str(e)[:80]}")
+    # ABD brifingi 15:30'da kosar; o saatte BIST SEANSI ACIK. Karar degerlendirmesi
+    # o an yapilirsa BIST kararlari GUNUN YARIM BARIYLA olculur (kapanis yerine
+    # seans-ici fiyat) ve sonuc kalici olarak yazilir -> gece 23:30 kosusu artik
+    # o karara dokunamaz (run() sonucu yazilmis karari atlar). 22 Tem 2026'da
+    # 137 kararin bu yoldan kirlendigi olculdu. Sabah brifingi (09:00) BIST
+    # acilmadan kostugu icin guvenli; ABD tarafinda degerlendirme gece kosusuna
+    # (23:30 cron) birakilir.
+    if is_us:
+        print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi (BIST seansi acik; "
+              f"degerlendirme 23:30 kosusunda).")
+    else:
+        try:
+            from src.ops import update_decisions
+            guncellenen = update_decisions.run(verbose=False)
+            mini = update_decisions.mini_update(verbose=False)   # AL/SAT 1.gun degisimi
+            print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi: {guncellenen} sonuc + {mini} 1.gun guncellendi.")
+        except Exception as e:
+            print(f"[{now:%Y-%m-%d %H:%M}] Karar ogrenimi atlandi: {type(e).__name__}: {str(e)[:80]}")
 
     print(f"[{now:%Y-%m-%d %H:%M}] {etiket} - hedef secimi ({market})...")
     sel = select_targets(market=market)
