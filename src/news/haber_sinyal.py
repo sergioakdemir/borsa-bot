@@ -63,8 +63,13 @@ KONU_KURALLARI = [
                    "savunma ihrac", "savunma ihale", "savunma sozlesme", "nato"],
      "hisseler": ["ASELS", "OTKAR"]},
     {"konu": "Faiz / TCMB",
+     # NOT (23 Tem 2026): salt "enflasyon" cikarildi — cok genis tetik, her
+     # enflasyon/kur haberini 8 bankaya fan-out edip gurultu (ve SKBNK gibi
+     # idiyosinkratik dusen hisseyi makro faiz kovasina yanlis atama) uretiyordu.
+     # Faiz haberleri asagidaki spesifik kaliplarla zaten yakalaniyor.
      "kelimeler": ["tcmb", "merkez bankas", "politika faiz", "faiz indir",
-                   "faiz artir", "ppk", "faiz karar", "enflasyon"],
+                   "faiz artir", "ppk", "faiz karar", "enflasyon rapor",
+                   "enflasyon hedef"],
      "hisseler": ["GARAN", "AKBNK", "YKBNK", "ISCTR", "HALKB", "VAKBN",
                   "SKBNK", "QNBTR"]},
     {"konu": "Döviz / Dolar",

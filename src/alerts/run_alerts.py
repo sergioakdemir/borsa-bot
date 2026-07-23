@@ -836,39 +836,117 @@ def _kaydet_kap_yorum(ticker, haber, yorum, tarih):
         pass
 
 
+def _brief_kaydi(ticker):
+    """ai_commentary.json'dan bu hisse icin son (skipped olmayan) brifing kaydini
+    doner (dict) veya None. Sabah motorunun teshisini (gerekce/neden_simdi) ve
+    gordugu KAP haberlerini ani-gelisme sebebine tasimak icin kullanilir."""
+    try:
+        import json
+        data = json.loads(_COMMENTARY_PATH.read_text(encoding="utf-8"))
+        t = (ticker or "").upper().replace(".IS", "")
+        for rec in (data if isinstance(data, list) else []):
+            if (rec.get("ticker") or "").upper().replace(".IS", "") == t \
+                    and not rec.get("skipped"):
+                return rec
+    except Exception:
+        pass
+    return None
+
+
+def _son_gunler_kap(haberler, now, gun=5):
+    """haberler icinden son `gun` gunun (tarih, baslik) listesi, en yeni once.
+    _hareket_sebebi baglamini bugunden son birkac gune genisletmek icin (dunku
+    'tipe donusum' gibi bildirimler de gorulsun)."""
+    esik = (now.date() - timedelta(days=gun)).isoformat()
+    out = []
+    for h in (haberler or []):
+        tarih = str(h.get("tarih", ""))[:16]
+        if tarih[:10] >= esik:
+            baslik = (h.get("baslik") or h.get("ozet") or "").strip()
+            if baslik:
+                out.append((tarih, baslik))
+    return out
+
+
 def _hareket_sebebi(ticker, change, haberler, now=None):
-    """Fiyat hareketinin OLASI nedeni (1 cumle). Varsa o gun cikan KAP haberiyle
-    iliskilendirir. Anahtar yoksa/hata olursa None (sessiz)."""
+    """Fiyat hareketinin nedeni (1 cumle) — YALNIZ dogrulanmis baglamdan.
+
+    Baglam uc kaynaktan toplanir: (1) son 5 gunun KAP bildirimleri (yalniz bugun
+    degil), (2) sabah brifinginin bu hisse icin yazdigi teshis/gerekce ve gordugu
+    KAP haberleri (ai_commentary — bot kendi bildigini kullanir). Somut baglam
+    YOKSA spekulasyon (muhtemelen X) URETMEZ; 'sebep teyit edilemedi' der.
+    Anahtar yoksa/hata olursa None (sessiz)."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     now = now or datetime.now(_TZ)
-    bugun = now.date().isoformat()
-    taze = [h for h in (haberler or []) if str(h.get("tarih", "")).startswith(bugun)]
-    if taze:
-        haber_txt = "\n".join(f"- {h.get('baslik')} (fiyatlanma: {h.get('fiyatlanma')})"
-                              for h in taze[:5])
-    else:
-        haber_txt = "(bugun bu hisseye dair KAP haberi yok)"
     yon = "yukseldi" if change > 0 else "dustu"
+
+    # 1) BAGLAM TOPLA: son 5 gun KAP + brifing gerekcesi + brifingin gordugu KAP
+    kap = _son_gunler_kap(haberler, now, gun=5)
+    brief = _brief_kaydi(ticker)
+    brief_gerekce = ""
+    if brief:
+        brief_gerekce = (brief.get("gerekce") or brief.get("neden_simdi")
+                         or brief.get("sade_yorum") or "").strip()
+        for h in (brief.get("haberler") or [])[:5]:
+            baslik = (h.get("baslik") or h.get("ozet") or "").strip()
+            if baslik:
+                kap.append((str(h.get("tarih", ""))[:16], baslik))
+    # tekrar eden basliklari ele, en yeni once
+    gorulen, kap_satir = set(), []
+    for tarih, baslik in sorted(kap, reverse=True):
+        anahtar = baslik.lower()
+        if anahtar not in gorulen:
+            gorulen.add(anahtar)
+            kap_satir.append(f"- {tarih} {baslik}")
+
+    # 2) SOMUT BAGLAM YOK -> uydurma yapma, sabit durust cumle (AI cagirma)
+    if not kap_satir and not brief_gerekce:
+        return ("Sebep teyit edilemedi — son günlerde bu hisseye dair KAP "
+                "bildirimi veya bot teşhisi bulunamadı.")
+
+    # 3) SOMUT BAGLAM VAR -> AI yalniz verilen gercekleri tek cumlede ozetler
+    parcalar = []
+    if brief_gerekce:
+        parcalar.append(f"Botun sabah teşhisi: {brief_gerekce}")
+    if kap_satir:
+        parcalar.append("Son 5 günün KAP bildirimleri:\n" + "\n".join(kap_satir[:6]))
+    baglam = "\n\n".join(parcalar)
     try:
         resp = _ai_create(
-            model="claude-haiku-4-5", max_tokens=110,
-            system=("Sen Max'sin: 25 yillik tecrubeli bir Turk borsa uzmani. Bir hissenin "
-                    "gun ici fiyat hareketinin OLASI nedenini TEK kisa cumlede acikla. "
-                    "Asagida bugunku KAP haberleri varsa hareketi DOGRUDAN onlarla "
-                    "iliskilendir; haber yoksa 'belirgin KAP haberi yok, muhtemelen "
-                    "piyasa/sektor kaynakli' de. Hissenin GERCEK sektorunu/faaliyet "
-                    "alanini kullan (promptta verildi); sektor uydurma. Veri veya haber "
-                    "UYDURMA, kesin neden iddia etme, sade Turkce, markdown yok, tek cumle."),
+            model="claude-haiku-4-5", max_tokens=140,
+            system=("Sen deneyimli bir Türk borsa analistisin. Sana bir hissenin gün "
+                    "içi fiyat hareketi ve o hisseye dair DOĞRULANMIŞ bağlam (bot "
+                    "teşhisi + son günlerin KAP bildirimleri) verilecek. Hareketin "
+                    "nedenini SADECE bu bağlama dayanarak TEK kısa cümlede açıkla. "
+                    "KESİN KURALLAR: (1) Yalnız verilen bağlamı kullan; bağlamda "
+                    "OLMAYAN hiçbir sebep (bilanço beklentisi, sektör dedikodusu vb.) "
+                    "UYDURMA. (2) 'muhtemelen', 'olasılıkla', 'büyük ihtimalle', "
+                    "'sanırım' gibi spekülatif kalıplar YASAK. (3) Bağlam hareketi net "
+                    "açıklamıyorsa 'Sebep tam teyit edilemedi' de ve yalnız bilinen "
+                    "gerçekleri (ör. SPK süreci, KAP bildirimi başlığı) say. (4) Sade "
+                    "Türkçe, markdown yok, tek cümle."),
             messages=[{"role": "user", "content":
-                       f"Hisse: {_sirket_tanimi(ticker)}\nBugunku hareket: %{change:+} ({yon})\n"
-                       f"Bugunku KAP haberleri:\n{haber_txt}\n"
-                       "Bu hareket neden olmus olabilir? Tek cumle."}],
+                       f"Hisse: {_sirket_tanimi(ticker)}\nBugünkü hareket: %{change:+g} "
+                       f"({yon})\n\nDOĞRULANMIŞ BAĞLAM:\n{baglam}\n\n"
+                       "Bu hareketin nedeni ne? Yalnız yukarıdaki bağlamı kullan, tek cümle."}],
         )
         t = "".join(getattr(b, "text", "") for b in resp.content
                     if getattr(b, "type", "") == "text").strip()
-        return t or None
+        if not t:
+            raise ValueError("bos yanit")
+        # GUVENLIK AGI: model kurallara ragmen spekulasyon kalibi kullandiysa,
+        # uydurmayi yaymaktansa elimizdeki gercege don.
+        if "muhtemelen" in t.lower() or "olasılıkla" in t.lower():
+            raise ValueError("spekulatif kalip")
+        return t
     except Exception:
+        # AI patlarsa/spekulasyona kacarsa: elde ne varsa YALNIZ gercegi sun
+        if brief_gerekce:
+            return "Sebep (bot teşhisi): " + brief_gerekce[:220]
+        if kap_satir:
+            return ("Sebep teyit edilemedi — son günlerde şu KAP bildirimleri mevcut: "
+                    + "; ".join(s[2:] for s in kap_satir[:3]))
         return None
 
 
