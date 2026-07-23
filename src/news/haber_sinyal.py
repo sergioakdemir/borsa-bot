@@ -67,11 +67,16 @@ KONU_KURALLARI = [
      # enflasyon/kur haberini 8 bankaya fan-out edip gurultu (ve SKBNK gibi
      # idiyosinkratik dusen hisseyi makro faiz kovasina yanlis atama) uretiyordu.
      # Faiz haberleri asagidaki spesifik kaliplarla zaten yakalaniyor.
+     # EK (23 Tem 2026 aksam): SKBNK KOVADAN CIKARILDI. Denetimde 07-21/22/23'te
+     # SKBNK'ye 6 tamamen ALAKASIZ makro basligi ("Fitch Turkiye", "S&P Merkez
+     # Bankasi tahmini", "Avrupa sicak hava faturasi" ...) faiz kovasindan atanmis;
+     # SKBNK'nin gercek dususu SPK islem yasagi (yonetisim) kaynakli. Orta olcekli
+     # ve idiyosinkratik oldugu icin makro-faiz fan-out'undan cikarildi; gercek faiz
+     # kararinin etkisi buyuk 7 banka uzerinden zaten yakalaniyor.
      "kelimeler": ["tcmb", "merkez bankas", "politika faiz", "faiz indir",
                    "faiz artir", "ppk", "faiz karar", "enflasyon rapor",
                    "enflasyon hedef"],
-     "hisseler": ["GARAN", "AKBNK", "YKBNK", "ISCTR", "HALKB", "VAKBN",
-                  "SKBNK", "QNBTR"]},
+     "hisseler": ["GARAN", "AKBNK", "YKBNK", "ISCTR", "HALKB", "VAKBN", "QNBTR"]},
     {"konu": "Döviz / Dolar",
      "kelimeler": ["dolar kuru", "dolar/tl", "doviz kuru", "kurda", "kur rekor",
                    "dolar rekor", "devaluasyon", "tl deger kayb", "tl deger kayip"],

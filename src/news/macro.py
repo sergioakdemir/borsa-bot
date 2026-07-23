@@ -82,10 +82,13 @@ def sonraki_ppk(gun=None, dahil=True):
     return None
 
 
-def canli_politika_faizi():
-    """TCMB resmi sayfa -> EVDS2 ile guncel politika faizini ceker.
-    (deger, kaynak) veya (None, None). PPK gunu otomasyonu kullanir."""
-    return _politika_faizi()
+def canli_politika_faizi(retries=1):
+    """TCMB resmi sayfa -> EVDS2 -> EVDS serisi ile guncel politika faizini ceker.
+    (deger, kaynak) veya (None, None). PPK gunu otomasyonu kullanir.
+
+    retries>1: EVDS serisi soguk yanitta ~50sn surup timeout'a takilabildigi icin
+    (23 Tem 2026 PPK'da 'cekilemedi' -> 0/3 kayip) tekrar dener."""
+    return _politika_faizi(retries=retries)
 
 # kucuk TTL onbellek (sayfalari her cagride tekrar cekme)
 _CACHE = {}
@@ -286,7 +289,7 @@ def _parse_politika_faizi(html):
     return None
 
 
-def _politika_faizi():
+def _politika_faizi(retries=1):
     """Guncel TCMB politika faizi: (deger, kaynak) veya (None, None).
 
     ZINCIR: TCMB resmi sayfasi -> EVDS2 sayfasi -> EVDS serisi (borsapy).
@@ -305,7 +308,7 @@ def _politika_faizi():
         v = _parse_politika_faizi(_fetch(url))
         if v is not None:
             return v, ad
-    v = _evds_politika_faizi_kesin()
+    v = _evds_politika_faizi_kesin(deneme=retries, bekle=3.0)
     if v is not None:
         return v, "evds_seri"
     return None, None
@@ -352,12 +355,15 @@ _EVDS_POLITIKA_SERILERI = (
     "TP.MB.B.B00", "TP.TF.TG.A1", "TP.MB.B.G14", "TP.BISPOLFAIZ.TUR")
 
 
-def _evds_politika_faizi_kesin():
+def _evds_politika_faizi_kesin(deneme=1, bekle=0.0):
     """EVDS serilerinden politika faizi — VERI YOKSA None (sabit fallback YOK).
 
     _evds_borsapy_policy_rate()'in "uydurmayan" surumu. PPK gunu otomasyonu ve
     canli_politika_faizi() bunu kullanir: orada sabit %37 dondurmek, faiz degistigi
     gun eski degeri "yeni karar" diye duyurmak demektir.
+
+    deneme>1: EVDS ilk (soguk) sorgu ~50sn surup gecici olarak bos/timeout
+    donebiliyor; `bekle` saniye arayla `deneme` kez denenir (PPK yolu icin).
     """
     key = os.environ.get("EVDS_API_KEY")
     if not key:
@@ -367,17 +373,35 @@ def _evds_politika_faizi_kesin():
         bp.set_evds_key(key)
     except Exception:
         return None
-    for kod in _EVDS_POLITIKA_SERILERI:
-        try:
-            seri = bp.evds_series(kod)["Value"].dropna()
-        except Exception:
-            continue                         # seri yok/erisilemez -> sonrakini dene
-        if seri.empty:
-            continue
-        v = round(float(seri.iloc[-1]), 2)
-        if 30 <= v <= 45:                    # makul band (borsapy'nin 7.0 bug'ini eler)
-            return v
+    for i in range(max(1, deneme)):
+        for kod in _EVDS_POLITIKA_SERILERI:
+            try:
+                seri = bp.evds_series(kod)["Value"].dropna()
+            except Exception:
+                continue                     # seri yok/erisilemez -> sonrakini dene
+            if seri.empty:
+                continue
+            v = round(float(seri.iloc[-1]), 2)
+            if 30 <= v <= 45:                # makul band (borsapy'nin 7.0 bug'ini eler)
+                return v
+        if i + 1 < deneme and bekle:
+            time.sleep(bekle)
     return None
+
+
+def evds_isit():
+    """PPK gunu 14:30 kosusundan ONCE (14:25 cron) EVDS'yi 'isitir'.
+
+    Ilk EVDS serisi sorgusu ~50sn surebiliyor (soguk baglanti + EVDS server-side
+    seri insasi). Onceden bir kez cagirinca EVDS server cache'i isinir ve 14:30'daki
+    gercek sorgu daha hizli doner; kalan gecikmeyi de PPK yolundaki retry karsilar.
+    Best-effort: (basari_bool, sure_sn) doner, hata yutulur — isitma zorunlu degil."""
+    t = time.time()
+    try:
+        v = _evds_politika_faizi_kesin(deneme=2, bekle=5.0)
+    except Exception:
+        v = None
+    return (v is not None), round(time.time() - t, 1)
 
 
 def _evds_borsapy_policy_rate():
@@ -390,6 +414,61 @@ def _evds_borsapy_policy_rate():
     """
     v = _evds_politika_faizi_kesin()
     return v if v is not None else _POLITIKA_FAIZI_FALLBACK
+
+
+# TCMB "Faiz Oranlarina Iliskin Basin Duyurusu" — PPK karar metnini buradan teyit
+# ederiz. Faiz sayfasi/EVDS2 JS-render (curl ile olu); ama YIL bazli duyuru LISTESI
+# ve tekil basin duyuru METNI curl_cffi ile duz HTML olarak geliyor (23 Tem 2026
+# dogrulandi: DUY2026-28 -> "...repo ihale faiz oraninin yuzde 37'de sabit
+# tutulmasina karar vermistir").
+_TCMB_KOK = "https://www.tcmb.gov.tr"
+_TCMB_DUYURU_LISTE = ("https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/"
+                      "main+menu/duyurular/basin/{yil}")
+
+
+def tcmb_duyuru_teyit(beklenen=None, yil=None):
+    """PPK kararini TCMB basin duyuru METNINDEN teyit eder — sabit-kalma korlugunu
+    kapatir (faiz degismedigi gun EVDS 'dogrulanamadi' der; duyuru metni kesin der).
+
+    Doner: ('sabit', faiz) | ('degisti', faiz) | None.
+      Ayrim METINDEKI ifadeye dayanir ('sabit tutul'/'degistirilme' -> sabit;
+      'indiril'/'artir' -> degisti). UYDURMA YOK: liste/metin cekilemez ya da karar
+      cumlesi netlestirilemezse None -> cagiran durust 'dogrulanamadi' mesajini korur.
+
+    NOT: PPK gunu ~14:00 aciklama, cron 14:30 -> listedeki EN YENI faiz duyurusu
+    o gunun kararidir. beklenen sadece log/karsilastirma icin; karar metni esastir.
+    """
+    yil = yil or datetime.now(_TZ).year
+    liste = _fetch(_TCMB_DUYURU_LISTE.format(yil=yil), timeout=25)
+    if not liste:
+        return None
+    # Liste yeni->eski sirali; ilk "Faiz Oranlarina Iliskin ... Duyuru" linki en yeni.
+    link = None
+    for h, metin in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', liste, re.S | re.I):
+        ad = re.sub(r"<[^>]+>", "", metin)
+        if re.search(r"faiz\s*oran", ad, re.I) and re.search(r"duyuru", ad, re.I):
+            link = h
+            break
+    if not link:
+        return None
+    if link.startswith("/"):
+        link = _TCMB_KOK + link
+    html = _fetch(link, timeout=25)
+    if not html:
+        return None
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    # "... repo ihale faiz oraninin yuzde 37'de sabit tutulmasina ..."
+    m = re.search(r"repo\s*ihale\s*faiz\s*oran[^%\d]{0,40}(?:y[uü]zde|%)\s*"
+                  r"([0-9]{1,2}(?:[.,][0-9]{1,2})?)", t, re.I)
+    faiz = _num(m.group(1)) if m else None
+    if faiz is None or not (5 <= faiz <= 100):
+        return None
+    dusuk = t.lower()
+    if "sabit tutul" in dusuk or "degistirilme" in dusuk or "değiştirilme" in dusuk:
+        return "sabit", faiz
+    if re.search(r"indir|artir|artır|yukselt|yükselt", dusuk):
+        return "degisti", faiz
+    return None                              # ifade net degil -> uydurma yapma
 
 
 def _investing_cpi_yoy(url=None):

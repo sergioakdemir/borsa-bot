@@ -192,9 +192,10 @@ def _alarm(mesaj: str) -> None:
     try:
         _load_dotenv()
         from src.notify import telegram
-        # notify_admins alici basina hatayi YUTAR ({id: 'hata:...'} doner) -> sonucu
-        # aciktan logla, yoksa "alarm gitti" sanip yine sessiz kalabiliriz.
-        sonuc = telegram.notify_admins(mesaj, prefix="🔴")
+        # KRITIK sinif: 30sn/2dk/5dk retry + kayip carry-forward (gecici blip'te
+        # yedek alarmi da PPK gibi sessizce dusmesin). Alici basina hatayi YUTAR
+        # ({id:'hata:...'} doner) -> sonucu aciktan logla.
+        sonuc = telegram.notify_admins_critical(mesaj, tur="yedek alarmı", prefix="🔴")
         basarili = [k for k, v in sonuc.items() if v == "ok"]
         if basarili:
             print(f"  [alarm] Telegram: {sonuc}")

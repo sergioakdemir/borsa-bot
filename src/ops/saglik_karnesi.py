@@ -502,6 +502,15 @@ def _mesaj(m: dict) -> str:
 def run(gonder: bool = True, verbose: bool = True) -> dict:
     m = topla()
     mesaj = _mesaj(m)
+    # CARRY-FORWARD: bugun iletilemeyen KRITIK mesaj (or. PPK 14:30 kayip) varsa
+    # aksam karnesinin basina ekle -> kayip sessiz kalmasin. Teslim onaylaninca temizle.
+    on_not = ""
+    try:
+        from src.notify import telegram as _tg
+        on_not = _tg.kayip_not_metni()
+    except Exception:
+        on_not = ""
+    mesaj = on_not + mesaj
     if verbose:
         print(mesaj)
     if gonder:
@@ -516,7 +525,9 @@ def run(gonder: bool = True, verbose: bool = True) -> dict:
                 print(f"[karne] golge v2 esik kontrol hatasi: {type(e).__name__}")
         try:
             from src.notify import telegram
-            telegram.notify_admins(mesaj, prefix="")
+            sonuc = telegram.notify_admins(mesaj, prefix="")
+            if on_not and any(s == "ok" for s in sonuc.values()):
+                telegram.kayip_temizle()     # carry-forward notu teslim edildi -> temizle
         except Exception as e:
             if verbose:
                 print(f"[karne] telegram gonderilemedi: {type(e).__name__}: {str(e)[:80]}")

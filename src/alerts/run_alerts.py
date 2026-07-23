@@ -868,20 +868,52 @@ def _son_gunler_kap(haberler, now, gun=5):
     return out
 
 
+def _haber_sinyal_baglami(ticker, now, gun=5):
+    """Golge haber_sinyal tablosundan bu hisseye dair kayitlar — AMA yalniz basligi
+    ticker'i GERCEKTEN anan satirlar.
+
+    Golge katmani cogunlukla SEKTOR/MAKRO temali eslesme uretir; idiyosinkratik dusen
+    hisse (or. SKBNK) icin bunlar ALAKASIZ makro basliklardir (23 Tem 2026 denetimi:
+    SKBNK'ye faiz kovasindan 'Fitch Turkiye' / 'Avrupa sicak hava faturasi' gibi 6
+    alakasiz baslik atanmisti). Bunlari hareket-sebebi baglamina koymak UYDURMAYA
+    davet olur -> KORU: basligi ticker adini icermeyen satir alinmaz.
+    Doner: [(tarih, baslik), ...] en yeni once."""
+    t = (ticker or "").upper().replace(".IS", "")
+    if not t:
+        return []
+    esik = (now.date() - timedelta(days=gun)).isoformat()
+    try:
+        conn = db.get_conn()
+        rows = conn.execute(
+            "SELECT tarih, baslik FROM haber_sinyal WHERE ticker=? AND tarih>=? "
+            "ORDER BY tarih DESC LIMIT 20", (t, esik)).fetchall()
+        conn.close()
+    except Exception:
+        return []
+    out = []
+    for tarih, baslik in rows:
+        b = (baslik or "").strip()
+        if b and t in b.upper():              # baslik ticker'i gercekten aniyor mu?
+            out.append((str(tarih)[:16], b))
+    return out
+
+
 def _hareket_sebebi(ticker, change, haberler, now=None):
     """Fiyat hareketinin nedeni (1 cumle) — YALNIZ dogrulanmis baglamdan.
 
-    Baglam uc kaynaktan toplanir: (1) son 5 gunun KAP bildirimleri (yalniz bugun
+    Baglam UC kaynaktan toplanir: (1) son 5 gunun KAP bildirimleri (yalniz bugun
     degil), (2) sabah brifinginin bu hisse icin yazdigi teshis/gerekce ve gordugu
-    KAP haberleri (ai_commentary — bot kendi bildigini kullanir). Somut baglam
-    YOKSA spekulasyon (muhtemelen X) URETMEZ; 'sebep teyit edilemedi' der.
-    Anahtar yoksa/hata olursa None (sessiz)."""
+    KAP haberleri (ai_commentary — bot kendi bildigini kullanir), (3) golge
+    haber_sinyal tablosundan YALNIZ basligi ticker'i anan kayitlar (makro fan-out
+    gurultusu haric — bkz. _haber_sinyal_baglami). Somut baglam YOKSA spekulasyon
+    (muhtemelen X) URETMEZ; 'sebep teyit edilemedi' der. Anahtar yoksa/hata: None."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     now = now or datetime.now(_TZ)
     yon = "yukseldi" if change > 0 else "dustu"
 
     # 1) BAGLAM TOPLA: son 5 gun KAP + brifing gerekcesi + brifingin gordugu KAP
+    #    + golge haber_sinyal (ticker-adli, filtreli)
     kap = _son_gunler_kap(haberler, now, gun=5)
     brief = _brief_kaydi(ticker)
     brief_gerekce = ""
@@ -892,6 +924,7 @@ def _hareket_sebebi(ticker, change, haberler, now=None):
             baslik = (h.get("baslik") or h.get("ozet") or "").strip()
             if baslik:
                 kap.append((str(h.get("tarih", ""))[:16], baslik))
+    kap.extend(_haber_sinyal_baglami(ticker, now, gun=5))
     # tekrar eden basliklari ele, en yeni once
     gorulen, kap_satir = set(), []
     for tarih, baslik in sorted(kap, reverse=True):
