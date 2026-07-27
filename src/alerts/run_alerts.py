@@ -383,6 +383,22 @@ def _sembol_usd(rec: dict):
 _takip_sembol = _sembol_usd
 
 
+def _fiyat_bayat_mi(tkr: str, key: str, fiyat: float) -> bool:
+    """Bu (ticker, kademe) icin en son bildirilen fiyat guncel fiyatla AYNI mi?
+
+    Ayni fiyat = son kontrolden beri hicbir sey olmadi -> yeni bilgi yok, bildirme.
+    Karsilastirma kurusa/sente yuvarlanir; borsa kapaliyken cekilen kapanis fiyati
+    genelde birebir ayni doner, mikro-fark olsa da gurultudur.
+    """
+    try:
+        onceki = db.son_alarm_degeri(tkr, key)
+    except Exception:
+        return False                          # DB okunamadi -> susturma, bildir
+    if onceki is None:
+        return False
+    return round(float(onceki), 2) == round(float(fiyat), 2)
+
+
 def check_pozisyon_takip(now=None) -> int:
     """AL POZİSYONU TAKİP bildirimi (30 dk'lik taramada çalışır).
 
@@ -391,7 +407,22 @@ def check_pozisyon_takip(now=None) -> int:
       - hedef ilerlemesi %50 / %80 / %100 (giriş→hedef arası)
       - stop yastığı %50'nin altına inince (giriş→stop arası kalan mesafe)
     Pozisyonun sahibine (kullanici_id) özel; sahibi yoksa broadcast'e düşer.
+
+    GECE/HAFTA SONU SIZINTISI KORUMASI (27 Tem 2026): bu koşu cron'da 7/24
+    (*/30 * * * *) çalışıyor — ABD seansı kapsansın diye. Ama kapı yoktu:
+    24-27 Tem'de her gece 00:00'da 12 bildirim gitti; TSM/ASML üç gece üst üste
+    BİREBİR aynı Cuma kapanışıyla (1757.09 / 403.41), CCOLA (BIST) ise Cumartesi
+    ve Pazar gecesi. Üç kapı eklendi:
+      1) BIST hissesi -> yalnız BIST seansında (hafta içi 10:00-18:00, resmî
+         tatil hariç; src.piyasa_takvim tek kaynak).
+      2) ABD hissesi  -> yalnız ABD seansında (hafta içi 16:30-23:00 IST).
+      3) Fiyat son bildirimden beri değişmemişse (bayat) kademe yeniden
+         üretilmez — günlük dedup'ın ertesi gün sıfırlanmasıyla oluşan
+         gün-aşırı tekrarı kapatır.
+    Kapılar bildirimi engeller; kademe kaydı da atılmaz, böylece piyasa açılıp
+    fiyat gerçekten oynadığında uyarı normal şekilde gider.
     """
+    from src.piyasa_takvim import borsa_acik
     now = now or datetime.now(_TZ)
     if not telegram.is_configured():
         return 0
@@ -401,13 +432,24 @@ def check_pozisyon_takip(now=None) -> int:
         print(f"[pozisyon-takip] DB hatasi: {type(e).__name__}")
         return 0
     today = now.date().isoformat()
+    bist_acik = borsa_acik(now, "bist")
+    abd_acik = borsa_acik(now, "abd")
+    if not (bist_acik or abd_acik):
+        print(f"[{now:%Y-%m-%d %H:%M}] [pozisyon-takip] iki piyasa da kapali "
+              f"-> atlandi (gece/hafta sonu susturma).")
+        return 0
     tetik = 0
+    atlanan_seans = atlanan_bayat = 0
     for t in acik:
         tkr = (t.get("ticker") or "").upper().replace(".IS", "")
         entry = t.get("entry_fiyat")
         if not entry:
             continue
         sym, usd = _takip_sembol(t)
+        # KAPI 1-2: hissenin KENDI piyasasi kapaliysa bu hisseyi hic isleme.
+        if not (abd_acik if usd else bist_acik):
+            atlanan_seans += 1
+            continue
         fiyat = _alarm_price(sym)
         if fiyat is None:
             continue
@@ -416,8 +458,12 @@ def check_pozisyon_takip(now=None) -> int:
         gonderilen = db.alert_levels_today(tkr, today)
 
         def _gonder(key: str, msg: str) -> bool:
-            nonlocal tetik
+            nonlocal tetik, atlanan_bayat
             if key in gonderilen:
+                return False
+            # KAPI 3: son bildirimden beri fiyat degismediyse yeni bilgi yok.
+            if _fiyat_bayat_mi(tkr, key, fiyat):
+                atlanan_bayat += 1
                 return False
             db.record_alert(tkr, today, key, fiyat)
             if _notify_alarm(uid, msg):
@@ -452,6 +498,11 @@ def check_pozisyon_takip(now=None) -> int:
                 _gonder(f"TAKIPSTOP:{uid}",
                         f"⚠️ <b>{tkr}</b> stop'a yaklaşıyor! Giriş: {entry:g} | "
                         f"Şu an: {fiyat:g} | Stop: {stop:g}")
+    if atlanan_seans or atlanan_bayat:
+        print(f"[{now:%Y-%m-%d %H:%M}] [pozisyon-takip] susturuldu: "
+              f"{atlanan_seans} seans disi + {atlanan_bayat} bayat fiyat "
+              f"(BIST {'acik' if bist_acik else 'kapali'}, "
+              f"ABD {'acik' if abd_acik else 'kapali'}).")
     return tetik
 
 
@@ -1836,8 +1887,9 @@ if __name__ == "__main__":
         # [20 Tem 2026] Eski sektor-haber gonderimi EMEKLI — bu kolda artik
         # _sektor_haber_tarama() CAGRILMIYOR. Haber bildirimi
         # `python -m src.news.haber_sinyal bildir` ile gidiyor.
-        # Bu */30 kosusu YALNIZ AL pozisyonu kademeli takibi icin duruyor
-        # (gece/ABD seansi dahil; gunde-bir-kez spam korumasi yineleme yapmaz).
+        # Bu */30 kosusu YALNIZ AL pozisyonu kademeli takibi icin duruyor.
+        # Cron 7/24 (ABD seansi 16:30-23:00 IST kapsansin diye); seans/bayat-fiyat
+        # kapilari check_pozisyon_takip'in ICINDE (27 Tem 2026 gece sizintisi).
         rc = 0
         try:
             check_pozisyon_takip()

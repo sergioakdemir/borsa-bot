@@ -791,6 +791,24 @@ def alert_levels_today(ticker, tarih) -> list[str]:
             "SELECT seviye FROM uyari_kayit WHERE ticker=? AND tarih=?", (ticker, tarih))]
 
 
+def son_alarm_degeri(ticker, seviye):
+    """Bu (ticker, seviye) icin EN SON kaydedilen deger (uyari_kayit.degisim);
+    hic kayit yoksa None.
+
+    Gunluk dedup (alert_levels_today) yalniz AYNI GUN tekrarini keser; ertesi gun
+    anahtar sifirlanir. Fiyat degismediyse (or. hafta sonu, bayat kapanis) ayni
+    uyari her gun yeniden gider — 24-27 Tem 2026'da TSM/ASML icin uc gece ust uste
+    ayni 1757.09/403.41 ile oldu. Cagiran bu degeri guncel fiyatla karsilastirip
+    DEGISMEDIYSE bildirimi uretmez.
+    """
+    init_db()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT degisim FROM uyari_kayit WHERE ticker=? AND seviye=? "
+            "ORDER BY ts DESC LIMIT 1", (ticker, seviye)).fetchone()
+    return r["degisim"] if r else None
+
+
 def alerts_between(start_tarih, end_tarih) -> list[dict]:
     init_db()
     with get_conn() as c:
