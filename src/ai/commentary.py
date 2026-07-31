@@ -715,9 +715,33 @@ def _kill_kaydi(ticker: str, market: str, neden: str) -> dict:
     }
 
 
+_CEKIM_DENEME = 3               # toplam deneme (1 asil + 2 retry)
+_CEKIM_BEKLEME = (5, 10)        # denemeler arasi bekleme (saniye)
+
+
+def _gecmis_cek(symbol: str, start: str):
+    """yfinance gecmisini yeniden denemeli ceker. Bos/hata -> bekle, tekrar dene.
+
+    31 Tem 2026: tek deneme vardi; gecici bir ag/429 hatasi ya da eksik yanit
+    dogrudan "fiyat verisi hic gelmiyor" KILL_SWITCH'ine dusuyordu. Kalici olarak
+    olu sembollerde (GMSTR.F) 15 sn ekler, saglam sembolde ilk denemede doner."""
+    from src.data.factory import get_data_source
+
+    src = get_data_source()
+    for i in range(_CEKIM_DENEME):
+        try:
+            df = src.get_history(symbol, start=start)
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            pass
+        if i < _CEKIM_DENEME - 1:
+            time.sleep(_CEKIM_BEKLEME[i])
+    return None
+
+
 def market_data(ticker: str, market: str = "bist") -> dict | None:
     """yfinance'den ~1 yillik veriyle kompakt teknik ozet uretir. Veri yoksa None."""
-    from src.data.factory import get_data_source
 
     if market in ("us", "abd"):
         from src.markets.us import US
@@ -751,16 +775,38 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
             return None
         bayat = _veri_bayat(son_bar, market=market) if son_bar else False
     else:
-        try:
-            df = get_data_source().get_history(symbol, start=start)
-        except Exception:
-            return None
+        import pandas as pd
+
+        df = _gecmis_cek(symbol, start)          # 3 denemeli (2 retry) cekim
         if df is None or df.empty:
             return None
-        df_v = df[df["Volume"] > 0]
-        # Hacim verisi guvenilmez ETF/fonlarda (yfinance Volume=0) tum barlar elenebilir;
-        # bu durumda fiyat barlariyla devam et (hacim filtresiz).
-        df = df_v if len(df_v) >= 2 else df
+
+        # Kapanisi bos olan barlari ele (asagidaki tarih/hacim islerinden ONCE).
+        df = df[df["Close"].notna()]
+        if df.empty:
+            return None
+
+        # YARIM (canli) BAR ELEME — 31 Tem 2026'da HACIMDEN TAKVIME cevrildi.
+        # ESKI HALI: df[df["Volume"] > 0]. Yahoo gunluk bari once Volume=0 ile
+        # yayinlayip hacmi SONRA konsolide ediyor; hacim filtresi o bari "hic
+        # yokmus" gibi eleyince son bar bir onceki gune duser ve saglam hisse
+        # sahte KILL_SWITCH yer. 31 Tem 09:00 brifinginde watchlist'in son 39
+        # hissesi (ISGYO..ASTOR) tam olarak bu yuzden atlandi: 30 Tem bari
+        # vardi ama o an hacmi 0 idi, aksam geriye donuk doldu.
+        # AYNI HATA 22 Tem'de update_decisions'ta yakalanmisti (endeks/hisse
+        # asimetrisi) -> oradaki cozumun ayni yol burada da uygulaniyor:
+        # eleme HACME degil TAKVIME bakar. Son bar BUGUNE aitse VE piyasa hala
+        # ACIKSA at (henuz kapanmamis canli bar); hacmi ne olursa olsun diger
+        # barlarin hepsi korunur.
+        from src import piyasa_takvim
+        now = datetime.now(_TZ)
+        try:
+            if (pd.Timestamp(df.index[-1]).date() == now.date()
+                    and piyasa_takvim.borsa_acik(
+                        now, "us" if market in ("us", "abd") else "bist")):
+                df = df.iloc[:-1]
+        except Exception:
+            pass
         if len(df) < 2:
             return None
 
@@ -776,6 +822,35 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         highs = [float(x) for x in df["High"].tolist()]
         lows = [float(x) for x in df["Low"].tolist()]
         vols = [float(x) for x in df["Volume"].tolist()]
+
+    # --- FIYAT CACHE FALLBACK (31 Tem 2026) ---
+    # yfinance serisi bayat kaldiysa ama data/fiyat_cache.json'da DAHA TAZE bir
+    # kapanis varsa, o fiyati son bar olarak seriye ekle. Cache bagimsiz bir
+    # yoldan (tek toplu yf.download, period=5d) beslenir ve 31 Tem'de gun boyu
+    # 146/146 saglamdi — yani brifing 39 hisseyi atlarken taze fiyat ELDEYDI,
+    # sadece kullanilmiyordu. Yalniz KILL_SWITCH'e dusecekken devreye girer;
+    # veri uydurulmaz, kaynagi kayda ('veri_fallback') yazilir.
+    fallback = None
+    if bayat:
+        try:
+            from src.ai.presignal import cache_son_fiyat
+            c = cache_son_fiyat(ticker)
+        except Exception:
+            c = None
+        if c and (son_bar is None or c["tarih"] > son_bar) \
+                and not _veri_bayat(c["tarih"], market=market):
+            closes = list(closes) + [c["fiyat"]]
+            highs = list(highs) + [c["fiyat"]]
+            lows = list(lows) + [c["fiyat"]]
+            # HACIM: cache yalniz FIYAT tasir, hacmi bilmiyoruz. Buraya 0 yazmak
+            # zararsiz degil — hacim_vs -%100'e duser ve AI'a sahte "hacim coktu"
+            # sinyali gider (tam da veri arizasi gununde yanlis karar uretir).
+            # Onceki barin hacmini tekrarlamak sinyali NOTR birakir; gercek deger
+            # bilinmedigi 'veri_fallback' iziyle zaten kayit altinda.
+            vols = list(vols) + [vols[-1] if vols else 0.0]
+            fallback = {"kaynak": c["kaynak"], "tarih": c["tarih"].isoformat(),
+                        "onceki_son_bar": son_bar.isoformat() if son_bar else None}
+            son_bar, bayat = c["tarih"], False
 
     # --- Veri hijyeni (KRITIK): yfinance/borsa kaynaklari araya NaN/inf'li bar
     # koyabilir. 7-10 Tem 2026'da tek bir NaN bar asagidaki statistics.pstdev'i
@@ -878,6 +953,8 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
                    "volume": vols[i]}
                   for i in range(max(0, len(closes) - 60), len(closes))],
         "bayat": bayat,
+        # Son bar yfinance'den degil fiyat cache'inden geldiyse dolu (denetim izi).
+        "veri_fallback": fallback,
     }
 
 
@@ -1392,6 +1469,13 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
         if _isl > 3:
             return (_kill_kaydi(ticker, market,
                     f"veri bayat: son bar {str(_son_bar_str)[:10]}"), None, None)
+
+    # Fallback kullanildiysa loga yaz: sessizce olmasin, brifing log'undan gorulsun.
+    if sig.get("veri_fallback"):
+        _fb = sig["veri_fallback"]
+        print(f"  [{ticker}] veri fallback: yfinance son bar "
+              f"{_fb.get('onceki_son_bar')} bayatti -> fiyat cache "
+              f"({_fb.get('kaynak')}, {_fb.get('tarih')}) kullanildi.")
 
     # Deterministik risk (risk.py): market_data'nin ham barlariyla hesapla. _bars'i
     # AI payload'ina/kayda gitmeden sig'ten cikar (prompt + kayit sismesin).
@@ -2411,11 +2495,16 @@ def _verbose_satir(t, r):
 
 def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
               overview=None, learning=None, poll_interval: int = 30,
-              max_wait: int = 1800, extra_context=None) -> list[dict]:
+              max_wait: int = 3600, extra_context=None) -> list[dict]:
     """Sabah brifingi icin TOPLU (Batch API) calistirma. Tum hisse verilerini
     hazirlar, AI yorumlarini TEK batch isteginde gonderir (%50 daha ucuz),
-    batch bitene kadar polling yapar (varsayilan 30 dk, 30 sn'de bir) ve
-    sonuclari run() ile AYNI formatta dondurur."""
+    batch bitene kadar polling yapar (varsayilan 60 dk, 30 sn'de bir) ve
+    sonuclari run() ile AYNI formatta dondurur.
+
+    max_wait 30 dk -> 60 dk (31 Tem 2026). Normal batch 120-210 sn'de biter;
+    30 Tem'de Anthropic tarafi 4s50dk surdu ve 30 dk'lik tampon brifingi iptal
+    ettirdi. 60 dk guvenli tampon; asilirsa is ARTIK KAYBOLMUYOR — batch kimligi
+    saklanip src.ops.batch_kurtar ile geri alinir (bkz. asagidaki timeout dali)."""
     from src.news.service import get_news_source
     from src.news.rss_source import RSSNewsSource
     import anthropic
@@ -2537,6 +2626,19 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
             if waited >= max_wait:
                 if verbose:
                     print(f"  [batch] {max_wait}s doldu, durum={status}; bekleyenler atlanacak.")
+                # KURTARMA (31 Tem 2026): batch iptal EDILMEZ — Anthropic tarafinda
+                # islenmeye devam eder ve FATURALANIR. 30 Tem'de tam bu oldu: batch
+                # 4s50dk sonra succeeded=17 ile bitti ama sonuc hic alinmadi.
+                # Kimligi + ctx'leri sakla; src.ops.batch_kurtar (saat basi cron)
+                # bitmis batch'in sonucunu cekip kararlari kaydeder.
+                try:
+                    from src.ops import batch_kurtar
+                    _mk = {(ctx or {}).get("is_us") for ctx in ctxs.values()}
+                    batch_kurtar.kaydet(batch.id, ctxs, order,
+                                        etiket=("ABD" if _mk == {True} else "BIST"),
+                                        model=MODEL)
+                except Exception as e:
+                    print(f"  [batch] kurtarma kaydi yazilamadi: {type(e).__name__}: {e}")
                 break
             time.sleep(poll_interval)
             waited += poll_interval
@@ -2590,11 +2692,33 @@ def run_batch(tickers: list[str], save: bool = True, verbose: bool = True,
                       tarih=datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"))
 
     # Hala sonuc gelmeyenler (timeout vb.) -> skipped
+    bekleyen = 0
     for cid, ctx in ctxs.items():
         if cid not in final:
+            bekleyen += 1
             final[cid] = {"ticker": ctx["ticker"], "skipped": True,
                           "ai_hata": True,
                           "reason": "Batch sonuc gelmedi (timeout)"}
+
+    # MALIYET DURUSTLUGU (31 Tem 2026): sonucu alinmayan istekler de FATURALANIR.
+    # 30 Tem'de TOKEN OZET "$0.0000" yazdi ve o gunun gercek maliyeti (17 istek)
+    # kayitlara hic girmedi -> "kac gun kredi kaldi" hesabi oldugundan iyimser.
+    # Simdi tahmini maliyet ETIKETSIZ "TOKEN OZET:" satiri olarak yazilir; boylece
+    # kredi_takip toplamina GIRER. Tahmin, gozlenen batch ortalamalarina dayanir:
+    #   30 Tem ABD  17 istek -> output 10.385 (~611/istek)
+    #   31 Tem BIST 54 istek -> output 30.635 (~567/istek)
+    # Girdi tarafinda cache_write/cache_read dagilimi bilinemedigi icin tum girdi
+    # tam ucretli 'input' sayilir (TEMKINLI: gercegi az degil FAZLA gosterir).
+    if bekleyen:
+        _TAHMIN_INPUT = 3000       # istek basi ~girdi token (system + baglam + payload)
+        _TAHMIN_OUTPUT = 600       # istek basi ~cikti token (olculen ortalama)
+        _tahmin = {"input": bekleyen * _TAHMIN_INPUT, "output": bekleyen * _TAHMIN_OUTPUT,
+                   "cache_write": 0, "cache_read": 0}
+        print(f"  [batch] SONUC ALINAMADI: {bekleyen} istek gonderildi ve "
+              f"faturalandi; asagidaki TOKEN OZET satiri TAHMINDIR "
+              f"(gercegi kurtarma kosusu yazar).")
+        maliyet.logla(_tahmin, MODEL, batch=True,
+                      tarih=datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"))
 
     # 4) Orijinal sirada birlestir + kaydet
     results = [final[cid] for cid, _ in order if cid in final]

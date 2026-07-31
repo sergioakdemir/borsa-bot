@@ -372,9 +372,27 @@ def _kontrol_risk_det():
 # gun boyu suren arizanin tekrari bastirildi -> sorun gozden kacti).
 # Not: tamamen filtresiz birakmak 30 dk'lik cron ile gunde 48 mesaj demekti;
 # periyodik tekrar hem "yutulmasin" hem "spam olmasin" dengesini kurar.
-KRITIK_ANAHTARLAR = {"ai_kredi_bitti", "ai_hata_cok",
-                     "kill_switch_patlamasi", "atlama_yuksek"}
+#
+# 31 Tem 2026 — KILL_SWITCH buradan CIKARILDI. Neden: periyodik tekrar yalnizca
+# GUN ICINDE DEGISEBILEN durumlar icin anlamlidir. ai_kredi_bitti (bakiye
+# yuklenince duser) ve ai_hata_cok (sayac gun boyu artar) oyledir. Ama
+# kill_switch_patlamasi sayaci SABAH BRIFINGININ 09:00'da yazdigi decisions
+# satirlarini sayar; brifing gunde bir kez kostugu icin o sayi gun icinde ASLA
+# degisemez -> "cozulene kadar tekrarla" mantigi hicbir zaman "cozuldu"
+# goremez ve tekrar garantili spam'e donusur. 31 Tem'de tam bu yasandi:
+# 10/12/14/16/18'de BIREBIR ayni metin 5 kez gitti (39 hisse veri freni).
+# Artik gunde 1 uyari; "hala suruyor mu, cozuldu mu" bilgisini aksam 18:45
+# saglik karnesi verir (bkz. saglik_karnesi.veri_freni_durumu).
+#
+# NOT: "atlama_yuksek" da cikarildi — hicbir kontrol bu anahtari uretmiyor
+# (olu kayit); listede durmasi yaniltiyordu.
+KRITIK_ANAHTARLAR = {"ai_kredi_bitti", "ai_hata_cok"}
 KRITIK_TEKRAR_SAAT = 2
+
+# Gun icinde DEGISEMEYEN sayaclardan gelen uyarilar: gunde 1 kez bildirilir
+# (normal spam filtresi). Belgeleme amacli; _bastirilsin_mi varsayilan dali
+# zaten bunlari gunluk filtreye sokar.
+GUN_ICI_SABIT = {"kill_switch_patlamasi"}
 
 
 def _state_yukle() -> dict:
@@ -403,7 +421,12 @@ def _bastirilsin_mi(kayit, anahtar: str, now: datetime) -> bool:
     if not kayit:
         return False                          # ilk uyari -> mutlaka git
     if anahtar not in KRITIK_ANAHTARLAR:
-        return str(kayit) == now.date().isoformat()
+        # Tarih ONEKI ile karsilastir: state'te hem "2026-07-31" (gunluk) hem
+        # "2026-07-31T18:00+03:00" (eski kritik format) bulunabilir. 31 Tem 2026'da
+        # kill_switch_patlamasi kritiklikten gunluge tasindi; onek karsilastirmasi
+        # olmasa o gunun zaman damgali kaydi eslesmez ve gecis gunu FAZLADAN bir
+        # uyari daha giderdi.
+        return str(kayit)[:10] == now.date().isoformat()
     try:
         son = datetime.fromisoformat(str(kayit))
     except ValueError:

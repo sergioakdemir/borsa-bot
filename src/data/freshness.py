@@ -36,6 +36,51 @@ class FreshnessReport:
         return self.status in (Freshness.FRESH, Freshness.RECENT)
 
 
+def pazar_kodu(symbol: str) -> str:
+    """Ham yfinance sembolunden piyasa kodu ('bist' | 'us')."""
+    return "bist" if str(symbol or "").upper().endswith(".IS") else "us"
+
+
+def canli_bar_at(df, market: str = "bist", symbol: str | None = None):
+    """Henuz KAPANMAMIS (canli) son bari atar; kapanmis barlarin HEPSINI korur.
+
+    NEDEN HACIM DEGIL TAKVIM
+    Kod tabaninda uzun sure `df[df["Volume"] > 0]` kullanildi. Yahoo gunluk bari
+    once Volume=0 ile yayinlar ve hacmi saatler sonra konsolide eder (endekslerde
+    ertesi gune kadar 0 kalabilir). Hacim filtresi o bari "hic yokmus" gibi
+    eledigi icin son bar bir onceki gune duser. Bu ayni hata uretime IKI kez cikti:
+
+      22 Tem 2026 — update_decisions: hisse bugunku bari sayarken endeks saymiyor
+                    (asimetri), 137 kararin piyasa_farki NULL kaldi.
+      31 Tem 2026 — commentary.market_data: sabah brifinginde watchlist'in son 39
+                    hissesi "fiyat verisi 24 saatten eski" diye KILL_SWITCH yedi,
+                    yalniz 54 karar uretildi.
+
+    Dogru olcut hacim DEGIL takvimdir: son bar BUGUNE aitse ve o piyasa HALA
+    ACIKSA bar henuz kapanmamistir -> atilir. Diger her durumda korunur.
+
+    NOT: Canli (seans ici) bari BILEREK isteyen cagiranlar (or. sicak uyari
+    motoru) bu fonksiyonu KULLANMAMALI; onlarin ihtiyaci son kapanmis bar degil,
+    o anki bardir. Orada dogru davranis hacim filtresini bastan kaldirmaktir.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if symbol is not None:
+        market = pazar_kodu(symbol)
+    try:
+        from src import piyasa_takvim
+        # piyasa_takvim.borsa_acik HER IKI piyasa icin de ISTANBUL saati bekler
+        # (ABD seansi 16:30-23:00 IST olarak tanimli) -> New York'a cevirme.
+        now = datetime.now(ZoneInfo("Europe/Istanbul"))
+        if (pd.Timestamp(df.index[-1]).date() == now.date()
+                and piyasa_takvim.borsa_acik(now, "us" if market in ("us", "abd")
+                                             else "bist")):
+            return df.iloc[:-1]
+    except Exception:
+        pass
+    return df
+
+
 def _last_expected_trading_day(today: date) -> date:
     """Bugun hafta ici ise bugun; degilse en yakin onceki hafta ici gun.
     NOT: resmi tatiller hesaba katilmaz; bu yaklasik bir kontroldur."""

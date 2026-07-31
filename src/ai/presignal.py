@@ -72,6 +72,39 @@ def _cache_sma_trend(symbol) -> str | None:
     return _TREND_CONTEXT.get(label) if label else None
 
 
+def cache_son_fiyat(symbol) -> dict | None:
+    """fiyat_cache'ten bir hissenin SON fiyatini + guncelleme zamanini dondurur.
+
+    31 Tem 2026'da eklendi: yfinance gunluk seri son bar(lar)i kacirdiginda
+    (bkz. commentary.market_data yarim-bar notu) karar motoru hisseyi bayat
+    sayip KILL_SWITCH'e dusuruyordu — oysa update_fiyat_cache ayni gun 146/146
+    saglam fiyat cekiyordu. Bu hazir yedek artik fallback olarak kullanilir.
+
+    Doner: {"fiyat": float, "tarih": date, "an": datetime, "kaynak": str} veya None.
+    'kapali'/'sma_*' alanlari cagirani ilgilendirmez, sadelestirilerek doner."""
+    base = (symbol or "").upper().replace(".IS", "").strip()
+    if not base:
+        return None
+    cache = _load_fiyat_cache()
+    entry = cache.get(base)
+    if not isinstance(entry, dict) and base.endswith(".F"):
+        entry = cache.get(base[:-2])       # GMSTR.F -> cache anahtari GMSTR
+    if not isinstance(entry, dict):
+        return None
+    try:
+        fiyat = float(entry.get("fiyat"))
+    except (TypeError, ValueError):
+        return None
+    if not fiyat or fiyat <= 0:
+        return None
+    try:
+        an = datetime.strptime(str(entry.get("guncelleme")), "%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return None
+    return {"fiyat": fiyat, "tarih": an.date(), "an": an,
+            "kaynak": entry.get("kaynak") or "fiyat_cache"}
+
+
 def market_breadth() -> dict | None:
     """Watchlist (BIST endeks + kisisel) hisselerinden kaci SMA20 UZERINDE?
     fiyat_cache'ten onceden hesaplanmis 'sma20_uzeri' okur (ek ag istegi yok).

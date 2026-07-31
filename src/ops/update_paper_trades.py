@@ -26,10 +26,12 @@ def _son_fiyat(ticker: str, para_birimi: str = "TL"):
         return None
     if df is None or df.empty:
         return None
-    if "Volume" in df.columns:
-        f = df[df["Volume"] > 0]
-        if not f.empty:
-            df = f
+    # Hacim filtresi YOK (31 Tem 2026): Yahoo gunluk bari once Volume=0 ile
+    # yayinlar; eski `df[df["Volume"] > 0]` o bari eleyip DUNKU kapanisi
+    # "guncel fiyat" diye donduruyordu. Bkz. freshness.canli_bar_at.
+    from src.data.freshness import canli_bar_at
+    df = df[df["Close"].notna()]
+    df = canli_bar_at(df, symbol=symbol)
     if df.empty:
         return None
     return float(df["Close"].iloc[-1])

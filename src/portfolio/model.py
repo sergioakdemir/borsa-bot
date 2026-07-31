@@ -117,10 +117,14 @@ def _bist100_getiri(baslangic_tarih):
         return None
     if df is None or df.empty:
         return None
-    if "Volume" in df.columns:
-        f = df[df["Volume"] > 0]
-        if len(f) >= 2:
-            df = f
+    # Hacim filtresi YOK (31 Tem 2026). BURASI EN KRITIK ORNEK: XU100 gibi
+    # ENDEKSLERDE Yahoo hacmi gece 23:30'da bile 0 birakir, yani eski
+    # `df[df["Volume"] > 0]` endeksin SON barini her gun eliyordu -> benchmark
+    # getirisi bir gun geriden hesaplaniyordu. 22 Tem 2026'da update_decisions'ta
+    # yakalanan asimetrinin ta kendisi. Bkz. freshness.canli_bar_at.
+    from src.data.freshness import canli_bar_at
+    df = df[df["Close"].notna()]
+    df = canli_bar_at(df, symbol="XU100.IS")
     closes = [float(x) for x in df["Close"].tolist()]
     if len(closes) < 2:
         return None

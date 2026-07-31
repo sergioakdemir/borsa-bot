@@ -68,10 +68,12 @@ def _son_bar(ticker: str, para_birimi: str = "TL"):
         df = None
     if df is None or df.empty:
         return (mp, mp, mp) if mp is not None else None
-    if "Volume" in df.columns:
-        f = df[df["Volume"] > 0]
-        if not f.empty:
-            df = f
+    # Hacim filtresi YOK (31 Tem 2026): Yahoo gunluk bari once Volume=0 ile
+    # yayinlar; eski `df[df["Volume"] > 0]` o bari eleyince max_drawdown/stop
+    # kontrolu DUNKU kapanis/yuksek/dusuk ile yapiliyordu. Bkz. canli_bar_at.
+    from src.data.freshness import canli_bar_at
+    df = df[df["Close"].notna()]
+    df = canli_bar_at(df, symbol=symbol)
     if df.empty:
         return (mp, mp, mp) if mp is not None else None
     close = float(df["Close"].iloc[-1])

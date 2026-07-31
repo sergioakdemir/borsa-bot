@@ -47,6 +47,55 @@ def _karar_sayilari(tarih):
     return bist, us, kill
 
 
+def veri_freni_durumu(tarih=None) -> str | None:
+    """Bugun veri freni (KILL_SWITCH) patlamasi yasandiysa AKSAM durumunu ozetler.
+
+    31 Tem 2026'da eklendi. Onceden health_monitor bu sorunu "cozulene kadar 2
+    saatte bir" tekrarliyordu; ama sayac sabah brifinginin yazdigi satirlari
+    sayar ve gun icinde ASLA degismez -> ayni metin 5 kez gitti (10/12/14/16/18).
+    Artik uyari gunde 1 kez gider, kapanis durumu da BURADAN tek satir bildirilir:
+    fiyat kaynagi AKSAM ITIBARIYLA duzeldi mi, yoksa hala bayat mi?
+
+    Doner: karne satiri (str) veya freni yoksa None."""
+    from src.ops.health_monitor import KILL_PATLAMA_ESIGI
+
+    tarih = tarih or _bugun()
+    _b, _u, kill = _karar_sayilari(tarih)
+    if kill <= KILL_PATLAMA_ESIGI:
+        return None                          # tek tuk kill normaldir (olu sembol)
+
+    from src.db import database as db
+    with db.get_conn() as c:
+        tickerlar = [r[0] for r in c.execute(
+            "SELECT ticker FROM decisions WHERE tarih=? AND karar='KILL_SWITCH'",
+            (tarih,)).fetchall()]
+
+    # Frenlenen hisselerin ORNEKLEMINE simdi tekrar bak: kaynak duzeldi mi?
+    from src.ai.commentary import market_data
+    ornek = [t for t in tickerlar if not str(t).upper().endswith(".F")][:5]
+    duzelen = bakilan = 0
+    for t in ornek:
+        try:
+            d = market_data(t, "bist")
+        except Exception:
+            d = None
+        if d is None:
+            bakilan += 1
+            continue
+        bakilan += 1
+        if not d.get("bayat"):
+            duzelen += 1
+    if not bakilan:
+        return f"Veri freni: bugün {kill} hisse atlandı (durum doğrulanamadı)."
+    if duzelen == bakilan:
+        return (f"Veri freni ÇÖZÜLDÜ: bugün {kill} hisse atlanmıştı, akşam "
+                f"itibarıyla örneklemin {duzelen}/{bakilan}'ünde veri geldi "
+                f"(yarınki brifing etkilenmemeli).")
+    return (f"Veri freni HÂLÂ SÜRÜYOR: bugün {kill} hisse atlandı; akşam "
+            f"örneklemin yalnızca {duzelen}/{bakilan}'ünde veri var — "
+            f"yarınki brifing de etkilenebilir.")
+
+
 def _karar_dagilimi(tarih):
     """Gunun kararlarini tipe gore sayar: AL / BEKLE / UZAK_DUR / TUT / AZALT.
     Sade panel ozeti icin — sahibi 'kac AL cikti' sorusunu tek bakista gorsun."""
@@ -398,6 +447,9 @@ def topla(tarih=None) -> dict:
         "alpha": alpha, "brifing_bekleniyor": brifing_bekleniyor,
         "golge_denetim": golge_denetim, "golge_isabet": golge_isabet,
         "nvidia": nvidia,
+        # Veri freni patlamasinin AKSAM durumu (cozuldu mu / suruyor mu).
+        # health_monitor artik gunde 1 uyari gonderiyor; kapanis raporu burasi.
+        "veri_freni": veri_freni_durumu(tarih),
     }
 
 
@@ -488,6 +540,7 @@ def _mesaj(m: dict) -> str:
         # GERCEK AI maliyeti (loglardan, tahmin degil). Otomatik yenileme devrede.
         f"Bugünkü AI maliyeti: {_maliyet_satiri(m)}",
         f"Olu sembol (karar/KILL_SWITCH): {m['olu']} | pasif sembol (veri yok, cekimden cikarildi): {m.get('pasif_sembol', 0)}",
+        *( [f"⚠️ {m['veri_freni']}"] if m.get("veri_freni") else [] ),
         f"Alpha olcumu ({(m.get('alpha') or {}).get('gun', 14)}g): {_alpha_txt(m.get('alpha'))}",
         "─────",
         f"DURUM: {m['durum']}",
