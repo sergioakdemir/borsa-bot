@@ -43,12 +43,15 @@ def _series_changes(symbol):
         return None, None
     if df is None or df.empty:
         return None, None
-    # Hisse/endekste hacimsiz (tatil/eksik) barlar elenir; doviz parite (USDTRY=X)
-    # barlarinda hacim daima 0 oldugundan filtre bos birakirsa ham veriye don.
-    if "Volume" in df.columns:
-        filt = df[df["Volume"] > 0]
-        if len(filt) >= 2:
-            df = filt
+    # HACIM FILTRESI KALDIRILDI (31 Tem 2026). Burasi XU100.IS ile cagriliyor ve
+    # ciktisi (bist100_gunluk_%) TUM brifinglerin AI baglamina "piyasa yonu"
+    # olarak giriyor. Yahoo endeks hacmini ERTESI GUNE kadar 0 birakir, yani eski
+    # `df[df["Volume"] > 0]` gun ici her cagride bugunun barini eliyordu ->
+    # 15:30 ABD brifingi ve 30 dk'lik uyari kosulari piyasa yonunu DUNKU kapanistan
+    # okuyordu. Dogru olcut fiyatin varligi; bu ayrica USDTRY=X ozel durumunu da
+    # ortadan kaldirir (parite barlarinda hacim daima 0 oldugu icin eski kod zaten
+    # ham veriye donmek zorunda kaliyordu).
+    df = df[df["Close"].notna()]
     closes = [float(x) for x in df["Close"].tolist()]
     if len(closes) < 2:
         return None, None

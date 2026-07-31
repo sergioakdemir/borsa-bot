@@ -21,8 +21,12 @@ def _recent_stock(ticker, src, market):
     symbol = market.to_symbol(ticker)
     today = datetime.now(_TZ).date()
     df = src.get_history(symbol, start=(today - timedelta(days=40)).isoformat())
+    # Hacim filtresi kaldirildi (31 Tem 2026): hemen asagida check_freshness
+    # cagriliyor — hacmi henuz yazilmamis GUNCEL bari elemek, tazelik olcumunu
+    # dogrudan yaniltir (FRESH olan veri RECENT/STALE gorunur) ve kullaniciya
+    # gosterilen son fiyat bir gun geriden kalir. Kapanisi bos bar yine elenir.
     if not df.empty:
-        df = df[df["Volume"] > 0]
+        df = df[df["Close"].notna()]
     if df.empty or len(df) < 3:
         return None, symbol
     status = check_freshness(df, tz=market.timezone).status.value

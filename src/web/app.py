@@ -2643,10 +2643,10 @@ def _price_series(ticker: str, market: str = "bist", gun: int = 30) -> dict:
     df = None
     try:
         df = get_data_source().get_history(symbol, start=start)
-        # Hacim=0 barlar (tatil/bayat) genelde eksik fiyat tasir; yeterli hacimli
-        # bar varsa onlari kullan, yoksa grafik bos kalmasin diye filtresiz devam et.
-        df_v = df[df["Volume"] > 0]
-        df = (df_v if len(df_v) >= 2 else df).tail(gun)
+        # Hacim filtresi kaldirildi (31 Tem 2026): "hacim=0" ile "fiyat yok" ayni
+        # sey degil — Yahoo gunluk hacmi geç yaziyor (endekste ertesi gune kadar
+        # 0). Eski kod bu yuzden grafikten BUGUNU siliyordu. Olcut fiyatin varligi.
+        df = df[df["Close"].notna()].tail(gun)
     except Exception:
         df = None
     if df is not None and not df.empty:
