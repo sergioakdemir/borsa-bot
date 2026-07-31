@@ -96,7 +96,8 @@ kur(seri(onceki, son_hacim=1000.0))      # yfinance 1 islem gunu geride
 # mtime'ini gorup diskten yeniden okur ve sahte veriyi ezer. Fonksiyonu degistir.
 presignal._load_fiyat_cache = lambda: {
     "TEST2": {"fiyat": 42.5, "gunluk": 1.0,
-              "guncelleme": f"{dun_is.isoformat()} 18:55", "kaynak": "yfinance"}}
+              "guncelleme": f"{dun_is.isoformat()} 18:55",
+              "bar_tarihi": dun_is.isoformat(), "kaynak": "yfinance"}}
 d = C.market_data("TEST2", "bist")
 kontrol("T2 bayat seri + taze cache -> fallback",
         d is not None and not d["bayat"] and d["veri_fallback"] is not None
@@ -109,6 +110,7 @@ kur(seri(onceki, son_hacim=1000.0))
 presignal._load_fiyat_cache = lambda: {
     "TEST3": {"fiyat": 42.5, "gunluk": 1.0,
               "guncelleme": f"{onceki_isgunu(bugun, 5).isoformat()} 18:55",
+              "bar_tarihi": onceki_isgunu(bugun, 5).isoformat(),
               "kaynak": "yfinance"}}
 d = C.market_data("TEST3", "bist")
 kontrol("T3 cache de bayat -> fren KALKMIYOR (kill korunuyor)",
@@ -128,6 +130,35 @@ k = kur(seri(dun_is), hata_sayisi=99)
 d = C.market_data("TEST5", "bist")
 kontrol("T5 3 deneme de patlarsa None", d is None and k.cagri == 3,
         f"-> cagri={k.cagri} sonuc={d}")
+
+# --- TEST 6: cache'te bar_tarihi YOKSA fallback YAPILMAZ -------------------
+# (eski format cache / investing-bigpara gibi bar tasimayan kaynak)
+kur(seri(onceki, son_hacim=1000.0))
+presignal._load_fiyat_cache = lambda: {
+    "TEST6": {"fiyat": 42.5, "gunluk": 1.0,
+              "guncelleme": f"{dun_is.isoformat()} 18:55", "kaynak": "investing"}}
+d = C.market_data("TEST6", "bist")
+kontrol("T6 bar_tarihi yoksa fallback YOK (kill korunuyor)",
+        d is not None and d["bayat"] is True and d["veri_fallback"] is None,
+        f"-> bayat={d and d['bayat']} fallback={d and d['veri_fallback']}")
+
+# --- TEST 7: PAZARTESI SENARYOSU ------------------------------------------
+# Cache Pazartesi 09:00'da yenilenir ama BIST henuz kapalidir: 'guncelleme'
+# Pazartesi, tasidigi fiyat ise CUMA kapanisidir. Fallback'in yazdigi tarih
+# CUMA olmali (cekim gunu degil) — aksi halde "Pazartesi etiketli Cuma fiyati"
+# uydurma bir tazelik iddiasi olurdu.
+kur(seri(onceki, son_hacim=1000.0))
+presignal._load_fiyat_cache = lambda: {
+    "TEST7": {"fiyat": 42.5, "gunluk": 1.0,
+              "guncelleme": f"{bugun.isoformat()} 09:00",   # CEKIM: bugun
+              "bar_tarihi": dun_is.isoformat(),             # BAR: onceki islem gunu
+              "kaynak": "yfinance"}}
+d = C.market_data("TEST7", "bist")
+kontrol("T7 fallback tarihi BAR tarihi (cekim zamani degil)",
+        d is not None and d["son_bar_tarihi"] == dun_is.isoformat()
+        and d["veri_fallback"] and d["veri_fallback"]["tarih"] == dun_is.isoformat(),
+        f"-> son_bar={d and d['son_bar_tarihi']} (cekim {bugun.isoformat()}, "
+        f"bar {dun_is.isoformat()})")
 
 print(f"\n{sum(SONUC)}/{len(SONUC)} test gecti")
 sys.exit(0 if all(SONUC) else 1)

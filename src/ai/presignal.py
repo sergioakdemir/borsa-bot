@@ -80,8 +80,17 @@ def cache_son_fiyat(symbol) -> dict | None:
     sayip KILL_SWITCH'e dusuruyordu — oysa update_fiyat_cache ayni gun 146/146
     saglam fiyat cekiyordu. Bu hazir yedek artik fallback olarak kullanilir.
 
-    Doner: {"fiyat": float, "tarih": date, "an": datetime, "kaynak": str} veya None.
-    'kapali'/'sma_*' alanlari cagirani ilgilendirmez, sadelestirilerek doner."""
+    TARIH ALANI 'bar_tarihi'DIR, 'guncelleme' DEGIL (31 Tem 2026). 'guncelleme'
+    cekim zamanidir; Pazartesi 09:00'da (BIST henuz kapali) "bugun" damgasi tasir
+    ama tasidigi fiyat CUMA kapanisidir. Bar tarihi yerine cekim zamanini kullanmak
+    "3 Agustos etiketli Cuma fiyati" gibi yanlis bir tazelik iddiasi uretirdi ve
+    gercek bir bayatligi maskeleyebilirdi. bar_tarihi YOKSA (cache eski formatta
+    ya da investing/bigpara gibi bar tasimayan kaynaktan) None doner -> cagiran
+    fallback YAPMAZ, KILL_SWITCH korunur. Cache hafta ici 5 dk'da bir yenilendigi
+    icin bu durum kendiliginden duzelir.
+
+    Doner: {"fiyat": float, "tarih": date, "an": datetime|None, "kaynak": str}
+    veya None."""
     base = (symbol or "").upper().replace(".IS", "").strip()
     if not base:
         return None
@@ -98,10 +107,14 @@ def cache_son_fiyat(symbol) -> dict | None:
     if not fiyat or fiyat <= 0:
         return None
     try:
+        tarih = datetime.strptime(str(entry.get("bar_tarihi")), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None                        # bar tarihi bilinmiyor -> fallback yok
+    try:
         an = datetime.strptime(str(entry.get("guncelleme")), "%Y-%m-%d %H:%M")
     except (TypeError, ValueError):
-        return None
-    return {"fiyat": fiyat, "tarih": an.date(), "an": an,
+        an = None
+    return {"fiyat": fiyat, "tarih": tarih, "an": an,
             "kaynak": entry.get("kaynak") or "fiyat_cache"}
 
 

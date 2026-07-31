@@ -791,6 +791,36 @@ def alert_levels_today(ticker, tarih) -> list[str]:
             "SELECT seviye FROM uyari_kayit WHERE ticker=? AND tarih=?", (ticker, tarih))]
 
 
+KAP_DEDUP_GUN = 5          # KAP bildirimi kac gun boyunca tekrar gonderilmez
+
+
+def alert_seen_since(ticker, seviye, gun: int = KAP_DEDUP_GUN, bugun=None) -> bool:
+    """Bu (ticker, seviye) uyarisi SON `gun` gun icinde gonderildi mi?
+
+    NEDEN (31 Tem 2026): dedup yalniz alert_levels_today ile yapiliyordu, yani
+    pencere GUN ICI idi ve gece yarisi sifirlaniyordu. KAP anahtari (_kap_key)
+    bildirim basina KARARLI bir hash oldugundan, ayni bildirim ertesi gun yeniden
+    "gorulmemis" sayilip tekrar gonderiliyordu. Olculdu (20-31 Tem): 40 bildirim
+    3 veya daha fazla AYRI gunde gonderilmis, 9'u 4 gun ust uste — PGSUS, ISCTR
+    ve RTALB 28->31 Tem boyunca ayni bildirimi aldi.
+
+    Gun-ici kontrol (alert_levels_today) yerini BU pencereye birakir; ayni gun
+    tekrari da bu pencerenin icinde kaldigi icin ayrica kontrole gerek yoktur.
+    """
+    init_db()
+    from datetime import date as _date, timedelta as _td
+    try:
+        bugun = _date.fromisoformat(bugun) if isinstance(bugun, str) else (bugun or _date.today())
+    except ValueError:
+        bugun = _date.today()
+    esik = (bugun - _td(days=max(gun, 1) - 1)).isoformat()
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT 1 FROM uyari_kayit WHERE ticker=? AND seviye=? AND tarih>=? LIMIT 1",
+            (ticker, seviye, esik)).fetchone()
+    return r is not None
+
+
 def son_alarm_degeri(ticker, seviye):
     """Bu (ticker, seviye) icin EN SON kaydedilen deger (uyari_kayit.degisim);
     hic kayit yoksa None.

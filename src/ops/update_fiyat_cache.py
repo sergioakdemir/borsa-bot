@@ -150,6 +150,22 @@ def _batch_cek(yf_syms: list[str]) -> dict:
     except Exception:
         return {}
     tek = len(yf_syms) == 1
+
+    def _bar_tarihi(col):
+        """Fiyatin ait oldugu BARIN tarihi (cekim zamani DEGIL).
+
+        31 Tem 2026'da eklendi. Cache'te yalnizca 'guncelleme' (cekim zamani)
+        vardi; commentary.market_data'nin fallback'i onu bar tarihi sanip
+        kullaniyordu. Pazartesi 09:00'da (BIST henuz kapali) cache "bugun"
+        damgasi tasir ama tasidigi fiyat CUMA kapanisidir -> "3 Agustos etiketli
+        Cuma fiyati". Fiyat dogru, etiket hafta sonu kadar kayik olurdu.
+        Artik barin kendi tarihi yaziliyor ve fallback onu kullaniyor."""
+        try:
+            import pandas as pd
+            return pd.Timestamp(col.index[-1]).date().isoformat()
+        except Exception:
+            return None
+
     for s in yf_syms:
         try:
             col = (closes.dropna() if tek else closes[s].dropna())
@@ -163,9 +179,11 @@ def _batch_cek(yf_syms: list[str]) -> dict:
                           f"(prev={prev:g}, last={last:g})")
                     continue
                 out[s] = {"fiyat": round(last, 2),
-                          "gunluk": round(chg, 2) if chg is not None else None}
+                          "gunluk": round(chg, 2) if chg is not None else None,
+                          "bar_tarihi": _bar_tarihi(col)}
             elif len(col) >= 1:
-                out[s] = {"fiyat": round(float(col.iloc[-1]), 2), "gunluk": None}
+                out[s] = {"fiyat": round(float(col.iloc[-1]), 2), "gunluk": None,
+                          "bar_tarihi": _bar_tarihi(col)}
         except Exception:
             continue
     return out
@@ -361,7 +379,8 @@ def guncelle() -> dict:
         cache[t] = {
             "fiyat": d["fiyat"],
             "gunluk": d.get("gunluk"),
-            "guncelleme": zaman,
+            "guncelleme": zaman,              # CEKIM zamani
+            "bar_tarihi": d.get("bar_tarihi"),  # fiyatin ait oldugu BARIN tarihi
             "kapali": not _piyasa_acik(market, now),
             "kaynak": "yfinance",
         }

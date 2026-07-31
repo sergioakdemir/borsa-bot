@@ -1128,8 +1128,11 @@ def scan_kap_unpriced(now=None, window_min=30, move_limit=1.0):
         gonderilmis = set(db.alert_levels_today(ticker, today))
         for it in taze:
             tok = _kap_key(it.disclosure_id, it.title)
-            if tok in gonderilmis:
-                continue   # ayni bildirim bugun zaten gonderildi (main veya onceki tarama)
+            # DEDUP PENCERESI 5 GUN (31 Tem 2026): eskiden yalniz gun-ici kontrol
+            # vardi (gonderilmis kumesi) ve anahtar gece yarisi sifirlaniyordu ->
+            # ayni bildirim gunlerce tekrar gitti. Artik son 5 gune bakilir.
+            if tok in gonderilmis or db.alert_seen_since(ticker, tok, bugun=today):
+                continue   # ayni bildirim son 5 gunde zaten gonderildi
             db.record_alert(ticker, today, tok, info["change"])
             gonderilmis.add(tok)
             # ONEM FILTRESI: rutin/notr bildirimleri (borclanma, kupon, varant itfa
@@ -1692,7 +1695,8 @@ def main():
             haber = unpriced_fresh_news(ticker, news_src)
             # Dedup: hizli KAP taramasiyla AYNI anahtar -> ayni bildirim tekrar gitmez
             tok = _kap_key(haber.get("disclosure_id"), haber.get("baslik")) if haber else None
-            if haber and tok not in db.alert_levels_today(ticker, today):
+            # 5 GUNLUK pencere (31 Tem 2026) — bkz. scan_kap_unpriced'daki not.
+            if haber and not db.alert_seen_since(ticker, tok, bugun=today):
                 db.record_alert(ticker, today, tok, info["change"])
                 # ONEM FILTRESI: rutin/notr KAP bildirimini gondermeden once ele.
                 if not _kap_onemli_mi(ticker, haber.get("baslik")):
