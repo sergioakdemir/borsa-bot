@@ -175,6 +175,27 @@ SEKTOR_HISSE = {
     "GMSTR": "Değerli Metal",
     # Medya / Turizm
     "HURGZ": "Medya", "NTTUR": "Turizm", "MERIT": "Turizm",
+
+    # -----------------------------------------------------------------------
+    # ABD (31 Tem 2026'da eklendi). NEDEN: bu tabloda tek bir ABD hissesi yoktu,
+    # dolayisiyla _sektor_of ABD icin hep None donuyor ve sektor tavani ABD
+    # defterinde FIILEN KAPALI kaliyordu. 4-stop otopsisi bunun bedelini
+    # gosterdi: 22-24 Tem'de ASML + TSM + NVDA — ucu de ayni AI/yari iletken
+    # temasi, gunluk getiri korelasyonlari 0.47-0.72 — uc ayri pozisyon gibi
+    # acildi, hepsi AYNI GUN (27 Tem) stop oldu. Tek bahisti, tavan gormedi.
+    # -----------------------------------------------------------------------
+    "NVDA": "Yarı İletken (ABD)", "AMD": "Yarı İletken (ABD)",
+    "TSM": "Yarı İletken (ABD)", "ASML": "Yarı İletken (ABD)",
+    "MU": "Yarı İletken (ABD)", "OSS": "Yarı İletken (ABD)",
+    "IONQ": "Kuantum (ABD)", "RGTI": "Kuantum (ABD)",
+    "RKLB": "Uzay/Havacılık (ABD)", "SPCX": "Uzay/Havacılık (ABD)",
+    "RKTO": "Uzay/Havacılık (ABD)", "ACHR": "Uzay/Havacılık (ABD)",
+    "BFLY": "Sağlık Teknolojisi (ABD)",
+    "CNCK": "Kripto/Fintech (ABD)",
+    "RXT": "BT Hizmetleri (ABD)",
+    # NOT: QQQ / VOO gibi genis endeks ETF'leri BILEREK eslenmedi — bir sektor
+    # degiller. Bunlarin yiginmasini korelasyon freni yakalar (ETF'ler her seyle
+    # yuksek korelasyonludur).
 }
 
 

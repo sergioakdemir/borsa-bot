@@ -1697,8 +1697,11 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
 _DENETIM_MOTORLARI = [
     "AI kararı", "Risk vetosu", "Haber akışı", "AL puan eşiği",
     "Market breadth", "Giriş kalitesi (EQ)", "Bilanço freni",
+    "Beklenen değer (EV)",          # 31 Tem 2026: bilgi -> KAPI (EV<0 => BEKLE)
     "Tekrarlı sinyal", "Sektör tavanı",
-    "Beklenen değer (EV)", "Stop/hedef motoru",
+    "Korelasyon freni",             # 31 Tem 2026: aynı bahsin ikinci kopyası
+    "Stop/hedef motoru",
+    "Stop/gürültü oranı",           # 31 Tem 2026: kapı değil, şeffaflık
 ]
 
 
@@ -1726,13 +1729,37 @@ def _denetim_tamamla(r) -> list:
     iz = list(r.get("_denetim") or [])
     var = {k.get("motor") for k in iz}
     ham = r.get("karar_ham")
+    final = r.get("final_decision")
     for motor in _DENETIM_MOTORLARI:
         if motor in var:
             continue
-        # Neden calismadi? AL disi kararlarda AL filtreleri hic devreye girmez.
-        neden = ("Karar AL değil; bu filtre yalnız AL kararlarına uygulanır."
-                 if ham != "AL" else
-                 "Önceki bir filtre kararı zaten düşürdüğü için çalışmadı.")
+        # NEDEN DOGRU METIN ONEMLI (31 Tem 2026): burada tek bir genel cumle
+        # ("Onceki bir filtre kararı zaten düşürdüğü için çalışmadı") vardi ve
+        # 4-stop otopsisinde YANILTICI oldugu goruldu — ASML/TSM/NVDA'da "Sektör
+        # tavanı" bu metinle "uygulanmadi" yaziyordu, oysa hicbir filtre onlari
+        # dusurmemisti (kararlari AL kaldi); gercek sebep sembolun sektor
+        # eslemesinin OLMAMASIYDI. Denetim izi yanlis sebep yazarsa otopsi de
+        # yanlis yere bakar. Artik sebep vakaya gore ayrilir.
+        neden = None
+        if motor == "Sektör tavanı":
+            try:
+                from src.ai.learning import _sektor_of
+                sek = _sektor_of(r.get("ticker"))
+            except Exception:
+                sek = None
+            if sek is None:
+                neden = ("Bu sembol için sektör eşlemesi tanımlı değil — "
+                         "tavan uygulanamadı.")
+            elif sek not in _TAVAN_SEKTORLER:
+                neden = (f"'{sek}' sektörü tavan listesinde değil — "
+                         "tavan uygulanamadı.")
+        if neden is None:
+            if ham != "AL":
+                neden = "Karar AL değil; bu filtre yalnız AL kararlarına uygulanır."
+            elif final != "AL":
+                neden = "Önceki bir filtre kararı zaten düşürdüğü için çalışmadı."
+            else:
+                neden = "Bu karar için koşulu oluşmadı (aday/veri yok)."
         iz.append({"motor": motor, "deger": None, "esik": None,
                    "sonuc": "uygulanmadi", "aciklama": neden})
     sira = {m: i for i, m in enumerate(_DENETIM_MOTORLARI)}
@@ -2153,8 +2180,97 @@ _TAVAN_SEKTORLER = {
     "Savunma": "Savunma",
     "Telekom": "Telekom",
     "Gayrimenkul": "GYO",
+    # 31 Tem 2026 (4-stop otopsisi): Sigorta eklendi — TURSG tavan disindaydi.
+    "Sigorta": "Sigorta",
+    # ABD sektorleri (bkz. learning.SEKTOR_HISSE ABD blogu). Onceden ABD
+    # defterinde HIC tavan yoktu; ASML+TSM+NVDA ayni temada acilabildi.
+    "Yarı İletken (ABD)": "ABD yarı iletken",
+    "Kuantum (ABD)": "ABD kuantum",
+    "Uzay/Havacılık (ABD)": "ABD uzay/havacılık",
+    "Sağlık Teknolojisi (ABD)": "ABD sağlık teknolojisi",
+    "Kripto/Fintech (ABD)": "ABD kripto/fintech",
+    "BT Hizmetleri (ABD)": "ABD BT hizmetleri",
 }
 _SEKTOR_AL_TAVANI = 2          # ayni sektorde gunde en fazla bu kadar AL
+
+# --- Korelasyon freni (31 Tem 2026) ---------------------------------------
+_KORELASYON_ESIGI = 0.60       # bu degerin USTU "ayni bahis" sayilir
+_KORELASYON_GUN = 60           # kac gunluk gunluk-getiri penceresinde olculur
+
+# --- Beta-bilincli stop raporu (kapi DEGIL, seffaflik) ---------------------
+_STOP_GURULTU_ESIGI = 1.5      # stop / (beta x endeks gunluk oynakligi) alt siniri
+_ENDEKS_OF = {"bist": "XU100.IS", "abd": "QQQ"}
+
+
+def _ev_deger(r):
+    """Kayittaki beklenen degeri (EV) sayi olarak dondurur.
+
+    _finalize_record EV'yi {'ev': x, ...} sozlugu olarak yazar; testler/eski
+    kayitlar duz sayi verebilir. Ikisini de kabul et, cozemezsen None don."""
+    ev = r.get("expected_value")
+    if isinstance(ev, dict):
+        ev = ev.get("ev")
+    return ev if isinstance(ev, (int, float)) else None
+
+
+def _abd_mi(r) -> bool:
+    return (r.get("market") or "bist").lower() in ("us", "abd")
+
+
+def _kayit_sembol(r) -> str:
+    """Karar kaydi -> yfinance sembolu (BIST '.IS' alir, ABD oldugu gibi)."""
+    t = (r.get("ticker") or "").upper().replace(".IS", "").strip()
+    return t if _abd_mi(r) else f"{t}.IS"
+
+
+def _stop_gurultu_orani(r):
+    """stop mesafesi / (beta x endeksin tipik gunluk oynakligi). None = hesaplanamadi.
+
+    Oran ~1 ise: endeksin TEK gunluk normal hareketi stopu tetikleyebilir.
+    4-stop otopsisi (31 Tem 2026): ASML beta 1.87, stop -%4.56 -> endeksin
+    -%2.44'u yetiyordu; QQQ o hafta -%3.29 dustu ve pozisyon hisseye ozgu hicbir
+    sey olmadan stop oldu. TSM'in kaybi zaten saf betaydi (alfa +0.01).
+    """
+    stop_pct = ((r.get("kullanilan_on_sinyal") or {}).get("stop_pct")
+                or (r.get("_stop_pct")))
+    if stop_pct is None:
+        # Kayitta yuzde yoksa stop ve giris fiyatindan turet.
+        try:
+            giris = float(r.get("giris_seviyesi") or 0) or None
+            stop = float(r.get("stop_loss") or 0) or None
+            stop_pct = abs((stop - giris) / giris * 100) if (giris and stop) else None
+        except (TypeError, ValueError):
+            stop_pct = None
+    if not stop_pct:
+        return None
+    stop_pct = abs(float(stop_pct))
+    endeks = _ENDEKS_OF["abd" if _abd_mi(r) else "bist"]
+    try:
+        import pandas as pd
+        import statistics as _st
+        from src.data.factory import get_data_source
+        src = get_data_source()
+        bas = (datetime.now(_TZ).date() - timedelta(days=140)).isoformat()
+
+        def _ser(sym):
+            df = src.get_history(sym, start=bas)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return df["Close"].dropna().pct_change().dropna()
+
+        h, e = _ser(_kayit_sembol(r)), _ser(endeks)
+        m = pd.DataFrame({"h": h, "e": e}).dropna()
+        if len(m) < 30:
+            return None
+        var = float(m["e"].var())
+        if not var:
+            return None
+        beta = float(m["h"].cov(m["e"])) / var
+        endeks_vol = _st.pstdev([float(x) * 100 for x in m["e"].tolist()])
+        payda = abs(beta) * endeks_vol
+        return (stop_pct / payda) if payda else None
+    except Exception:
+        return None
 
 # AL icin minimum puan esigi (piyasaya gore): BIST daha secici (8), ABD (7).
 _AL_PUAN_ESIGI = {"bist": 8, "abd": 7}
@@ -2351,6 +2467,32 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
                 r, f"Bilanço açıklamasına {kala} var — sonuç belirsizliği, "
                    "açıklama sonrası değerlendir.", verbose=verbose)
 
+    # 0e) NEGATIF EV KAPISI (31 Tem 2026) — EV artik "bilgi" degil KAPI.
+    # NEDEN: 4-stop otopsisinde dordunden ucunun beklenen degeri KARARIN
+    # VERILDIGI AN negatifti (ASML -1.206, TSM -2.662, NVDA -0.308) ve hicbiri
+    # engellenmedi; EV yalnizca sonuc="bilgi" olarak yaziliyordu. Ustelik EV'nin
+    # tek etkisi ASIMETRIKTI: EV > 1.5 ise pozisyonu BUYUTUYOR, negatifse hicbir
+    # sey yapmiyordu (bkz. _pozisyon_kademe). Yani sistem "kazanma ihtimali
+    # yuksek" dediginde daha cok risk aliyor, "kaybetme ihtimali yuksek"
+    # dediginde ayni riski aliyordu. Artik EV < 0 -> AL uretilmez.
+    # EV hesaplanamadiysa (None) filtre UYGULANMAZ: eksik veri yuzunden saglam
+    # AL'lari dusurmek, bu kapinin amaci degil.
+    for r in results or []:
+        if not _aktif_al(r):
+            continue
+        ev = _ev_deger(r)
+        _dn_r(r, "Beklenen değer (EV)", deger=ev, esik="≥0 (AL için)",
+              sonuc=("uygulanmadi" if ev is None
+                     else ("takildi" if ev < 0 else "gecti")),
+              aciklama=("EV hesaplanamadı — filtre uygulanmadı." if ev is None
+                        else ("Beklenen değer negatif: risk/ödül dengesi AL'ı "
+                              "desteklemiyor." if ev < 0
+                              else "Beklenen değer pozitif.")))
+        if ev is not None and ev < 0:
+            _al_to_bekle(
+                r, f"Beklenen değer negatif ({ev:+.2f}) — risk/ödül dengesi "
+                   "AL'ı desteklemiyor.", verbose=verbose)
+
     # 1) Tekrarli sinyal filtresi (hisse bazli, bagimsiz)
     for r in results or []:
         if not _aktif_al(r):
@@ -2414,6 +2556,118 @@ def _apply_karar_filtreleri(results, verbose: bool = False):
                 _al_to_bekle(
                     r, f"{ad} sektöründe bugün zaten {_SEKTOR_AL_TAVANI} AL var.",
                     verbose=verbose)
+
+    # 3) KORELASYON FRENI (31 Tem 2026)
+    # Sektor tavani ancak ETIKETI ayni olanlari yakalar; oysa "ayni bahis" olmak
+    # icin ayni sektor etiketini tasimak gerekmez (ASML yari iletken EKIPMANI,
+    # TSM dokumhane, NVDA cip tasarimi — farkli is modelleri, korelasyon 0.47-0.72).
+    # Bu fren dogrudan FIYAT DAVRANISINA bakar: ayni gun hayatta kalan AL
+    # adaylarinin son 60 gunluk gunluk-getiri korelasyonu esigi asiyorsa yalniz
+    # EN YUKSEK EV'li olan gecer, digerleri BEKLE'ye duser.
+    # FAIL-OPEN: fiyat verisi cekilemezse fren UYGULANMAZ (gecici bir ag hatasi
+    # saglam AL'lari dusurmesin); iz "uygulanmadi" yazar.
+    adaylar = [r for r in (results or []) if _aktif_al(r)]
+    if len(adaylar) >= 2:
+        getiriler, hata = {}, False
+        try:
+            import pandas as _pd
+            from src.data.factory import get_data_source
+            _src = get_data_source()
+            _bas = (bugun - timedelta(days=int(_KORELASYON_GUN * 1.6) + 10)).isoformat()
+            for r in adaylar:
+                sym = _kayit_sembol(r)
+                df = _src.get_history(sym, start=_bas)
+                if isinstance(df.columns, _pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                ser = df["Close"].dropna().pct_change().dropna()
+                if len(ser) < 20:
+                    raise ValueError(f"{sym}: yetersiz bar")
+                getiriler[r["ticker"]] = ser.tail(_KORELASYON_GUN)
+        except Exception as e:
+            hata = True
+            if verbose:
+                print(f"  [korelasyon] veri alinamadi, fren uygulanmadi: "
+                      f"{type(e).__name__}: {str(e)[:70]}")
+
+        if hata or len(getiriler) < 2:
+            for r in adaylar:
+                _dn_r(r, "Korelasyon freni", deger=None,
+                      esik=f">{_KORELASYON_ESIGI} ({_KORELASYON_GUN}g)",
+                      sonuc="uygulanmadi",
+                      aciklama="Fiyat verisi alınamadı — fren uygulanmadı.")
+        else:
+            import pandas as _pd
+            mat = _pd.DataFrame(getiriler).dropna()
+            # EV'si yuksek olan oncelikli; EV yoksa puan, o da esitse dusuk risk.
+            sirali = sorted(
+                adaylar,
+                key=lambda r: (-(_ev_deger(r) if _ev_deger(r) is not None else -9e9),
+                               -(r.get("score") or 0),
+                               (r.get("risk") or {}).get("score") or 0))
+            kabul = []
+            for r in sirali:
+                t = r["ticker"]
+                if t not in mat.columns:
+                    _dn_r(r, "Korelasyon freni", deger=None,
+                          esik=f">{_KORELASYON_ESIGI} ({_KORELASYON_GUN}g)",
+                          sonuc="uygulanmadi",
+                          aciklama="Bu sembol için getiri serisi yok.")
+                    kabul.append(r)
+                    continue
+                catisan, en_yuksek = None, 0.0
+                for k in kabul:
+                    if k["ticker"] not in mat.columns:
+                        continue
+                    try:
+                        kor = float(mat[t].corr(mat[k["ticker"]]))
+                    except Exception:
+                        continue
+                    if kor == kor and kor > en_yuksek:
+                        en_yuksek, catisan = kor, k
+                asti = bool(catisan and en_yuksek > _KORELASYON_ESIGI)
+                _dn_r(r, "Korelasyon freni",
+                      deger=(f"en yüksek {en_yuksek:.2f} ({catisan['ticker']})"
+                             if catisan else "eşleşen aday yok"),
+                      esik=f">{_KORELASYON_ESIGI} ({_KORELASYON_GUN}g)",
+                      sonuc=("takildi" if asti else "gecti"),
+                      aciklama=(f"{catisan['ticker']} ile aynı bahis; EV'si yüksek "
+                                "olan tutuldu." if asti
+                                else "Diğer adaylarla bağımsız hareket ediyor."))
+                if asti:
+                    _al_to_bekle(
+                        r, f"{catisan['ticker']} ile korelasyon "
+                           f"{en_yuksek:.2f} (>{_KORELASYON_ESIGI}) — aynı bahsin "
+                           "ikinci kopyası, tek pozisyonla sınırlandırıldı.",
+                        verbose=verbose)
+                else:
+                    kabul.append(r)
+
+    # 4) BETA-BILINCLI STOP RAPORU — KAPI DEGIL, SEFFAFLIK.
+    # 4-stop otopsisinin en carpici sayisi: ASML'in betasi 1.87, stopu -%4.56 idi;
+    # yani endeksin TEK BASINA -%2.44 hareketi stopu tetiklemeye yetiyordu (QQQ
+    # o hafta -%3.29 dustu). Stop "hisseye gore" makuldu (1.2 ATR) ama PIYASA
+    # GURULTUSUNE gore dardi. Bu satir karari degistirmez; kullaniciya ve karneye
+    # "bu stop piyasanin normal gunluk salinimina ne kadar dayanikli" der.
+    for r in (results or []):
+        if not _aktif_al(r):
+            continue
+        oran = _stop_gurultu_orani(r)
+        _dn_r(r, "Stop/gürültü oranı",
+              deger=(None if oran is None else round(oran, 2)),
+              esik=f"≥{_STOP_GURULTU_ESIGI}",
+              sonuc=("uygulanmadi" if oran is None
+                     else ("takildi" if oran < _STOP_GURULTU_ESIGI else "gecti")),
+              aciklama=("Beta/oynaklık hesaplanamadı." if oran is None else
+                        ("Stop piyasa gürültüsüne DAR — endeksin normal bir günlük "
+                         "hareketi stopu tetikleyebilir." if oran < _STOP_GURULTU_ESIGI
+                         else "Stop, piyasa gürültüsünün dışında.")))
+        if oran is not None and oran < _STOP_GURULTU_ESIGI:
+            uyari = (f"Uyarı: stop piyasa gürültüsüne dar (stop/beta-oynaklık "
+                     f"oranı {oran:.2f} < {_STOP_GURULTU_ESIGI}); endeksin normal "
+                     "bir günlük hareketi bile stopu tetikleyebilir.")
+            r.setdefault("gozlemler", []).append(uyari)
+            if verbose:
+                print(f"  [stop-uyari] {r.get('ticker')}: oran {oran:.2f}")
     return results
 
 
