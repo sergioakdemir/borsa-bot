@@ -662,6 +662,7 @@ def _volume_signal(pct):
 from src.piyasa_takvim import TR_BAYRAM as _TR_BAYRAM      # noqa: E402
 from src.piyasa_takvim import TR_SABIT_TATIL as _TR_SABIT_TATIL  # noqa: E402
 from src.piyasa_takvim import tr_tatilleri as _tr_tatilleri      # noqa: E402
+from src.data import freshness as canli_freshness                # noqa: E402
 
 
 def _piyasa_tatilleri(market: str, start, end) -> set:
@@ -750,6 +751,7 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         from src.markets.bist import BIST
         symbol = BIST().to_symbol(ticker)
     start = (datetime.now(_TZ).date() - timedelta(days=400)).isoformat()
+    onarim = None          # eksik seans saatlik barlardan kurulduysa izi
 
     # FON/BYF (or. GMSTR.F): yfinance bu sembolleri yanlis/bayat fiyatliyor
     # (araya 47.85 gibi placeholder barlar koyuyor -> sahte %1000 degisim).
@@ -817,6 +819,25 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         except Exception:
             son_bar = None
         bayat = _veri_bayat(son_bar, market=market) if son_bar else False
+
+        # --- EKSIK SEANS ONARIMI (3 Agu 2026) ---
+        # Yahoo 31 Tem 2026 gunluk barini BIST hisselerinin TAMAMINDA atladi
+        # (endekste bar saglam -> borsa acikti, eksik olan yalnizca backfill).
+        # Pazartesi 09:00'da (bugune ait bar henuz yok) bu 93/93 KILL_SWITCH
+        # uretti. Ayni seans Yahoo'nun SAATLIK serisinde duruyor; fren inmeden
+        # once oradan kurmayi dene. Sadece bayat halde calisir -> saglam gunlerde
+        # ek ag istegi yok.
+        if bayat:
+            df, _onarilan = canli_freshness.eksik_seans_onar(df, symbol, market)
+            if _onarilan:
+                try:
+                    son_bar = pd.Timestamp(df.index[-1]).date()
+                except Exception:
+                    pass
+                bayat = _veri_bayat(son_bar, market=market) if son_bar else False
+                onarim = {"gunler": _onarilan, "kaynak": "yfinance_1h",
+                          "onceki_son_bar": last_ts.date().isoformat()
+                          if hasattr(last_ts, "date") else None}
 
         closes = [float(x) for x in df["Close"].tolist()]
         highs = [float(x) for x in df["High"].tolist()]
@@ -955,6 +976,8 @@ def market_data(ticker: str, market: str = "bist") -> dict | None:
         "bayat": bayat,
         # Son bar yfinance'den degil fiyat cache'inden geldiyse dolu (denetim izi).
         "veri_fallback": fallback,
+        # Eksik seans(lar) saatlik barlardan kurulduysa dolu (denetim izi).
+        "veri_onarim": onarim,
     }
 
 
@@ -1470,7 +1493,12 @@ def _prepare_payload(ticker: str, news_src=None, rss_src=None, context=None,
             return (_kill_kaydi(ticker, market,
                     f"veri bayat: son bar {str(_son_bar_str)[:10]}"), None, None)
 
-    # Fallback kullanildiysa loga yaz: sessizce olmasin, brifing log'undan gorulsun.
+    # Onarim/fallback kullanildiysa loga yaz: sessizce olmasin, brifing log'undan gorulsun.
+    if sig.get("veri_onarim"):
+        _on = sig["veri_onarim"]
+        print(f"  [{ticker}] veri onarimi: gunluk seri {_on.get('onceki_son_bar')} "
+              f"tarihinde kalmisti -> eksik seans(lar) {', '.join(_on.get('gunler') or [])} "
+              f"saatlik barlardan kuruldu ({_on.get('kaynak')}).")
     if sig.get("veri_fallback"):
         _fb = sig["veri_fallback"]
         print(f"  [{ticker}] veri fallback: yfinance son bar "

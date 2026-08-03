@@ -430,11 +430,46 @@ def guncelle() -> dict:
             cache[t]["sma20_uzeri"] = d.get("sma20_uzeri")
             sma_sayi += 1
 
+    # --- GERI-GITME KILIDI (3 Agu 2026) ---
+    # Cache her calismada SIFIRDAN kurulup dosyayi tamamen eziyordu. Yahoo bir
+    # seansi geriye donuk kaybederse (31 Tem 2026: BIST hisselerinin TAMAMINDA
+    # gunluk bar yok) cache zamanda GERI gidiyor: Cuma 18:00'de icinde 31 Tem
+    # kapanisi varken, Pazartesi 09:00 tazelemesi ayni kaydi 30 Tem barina
+    # dusuruyor. Karar motorunun bayat-veri yedegi tam da bu dosyaya baktigi
+    # icin yedek de bosa cikti (93/93 KILL_SWITCH).
+    # Kural: ESKI kaydin bar tarihi YENIDEN ileriyse eski kayit KORUNUR.
+    # Ileri giden/esit tazelemeler etkilenmez.
+    korunan = 0
+    try:
+        eski = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        eski = {}
+    for t, yeni_kayit in cache.items():
+        eski_kayit = eski.get(t)
+        if not isinstance(eski_kayit, dict):
+            continue
+        e_bar, y_bar = eski_kayit.get("bar_tarihi"), yeni_kayit.get("bar_tarihi")
+        if not e_bar or not y_bar or str(e_bar) <= str(y_bar):
+            continue
+        korunmus = dict(eski_kayit)
+        # SMA gibi bardan bagimsiz alanlar yeni cekimden guncel kalsin.
+        for alan in ("sma_trend", "sma20_uzeri"):
+            if alan in yeni_kayit:
+                korunmus[alan] = yeni_kayit[alan]
+        korunmus["kapali"] = yeni_kayit.get("kapali")
+        korunmus["bar_geri_gitti"] = str(y_bar)   # denetim izi
+        cache[t] = korunmus
+        korunan += 1
+    if korunan:
+        print(f"[uyari] {korunan} hissede kaynak bar tarihi GERI gitti "
+              f"-> eski (daha taze) bar korundu. Yahoo seans kaybi olabilir.")
+
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
                           encoding="utf-8")
     return {"istenen": len(sembol_market), "cekilen": len(cache),
             "borsa_mcp": mcp_sayi, "diger": len(cache) - mcp_sayi, "sma": sma_sayi,
-            "basarisiz": len(sembol_market) - len(cache), "dosya": str(CACHE_PATH)}
+            "basarisiz": len(sembol_market) - len(cache), "korunan": korunan,
+            "dosya": str(CACHE_PATH)}
 
 
 def main() -> None:

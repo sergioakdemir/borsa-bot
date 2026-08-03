@@ -160,5 +160,112 @@ kontrol("T7 fallback tarihi BAR tarihi (cekim zamani degil)",
         f"-> son_bar={d and d['son_bar_tarihi']} (cekim {bugun.isoformat()}, "
         f"bar {dun_is.isoformat()})")
 
+# --- TEST 8-10: EKSIK SEANS ONARIMI (3 Agu 2026 arizasi) ------------------
+# Yahoo 31 Tem 2026 GUNLUK barini BIST hisselerinin TAMAMINDA yayinlamadi
+# (orneklenen 40/40'inda yok; endekste XU100.IS bar SAGLAM -> borsa acikti).
+# Pazartesi 09:00'da bugune ait bar da olmadigi icin en yeni bar 2 islem gunu
+# geride kaldi ve 93/93 KILL_SWITCH cikti. Ayni seans Yahoo'nun SAATLIK
+# serisinde duruyor; fren inmeden once oradan kurulur.
+from src.data import freshness as F                                # noqa: E402
+
+
+class SahteTicker:
+    """yf.Ticker taklidi: istenen gunler icin sentetik 1h seansi doner."""
+
+    def __init__(self, gunler, hacimli=True):
+        self.gunler, self.hacimli = gunler, hacimli
+
+    def history(self, start=None, end=None, interval="1h", **kw):
+        satir, idx = [], []
+        for g in self.gunler:
+            for saat, fiyat in ((10, 50.0), (12, 52.0), (17, 51.0)):
+                idx.append(pd.Timestamp(f"{g.isoformat()} {saat:02d}:30:00"))
+                satir.append({"Open": fiyat, "High": fiyat + 1, "Low": fiyat - 1,
+                              "Close": fiyat,
+                              "Volume": 5000.0 if self.hacimli else 0.0})
+        if not satir:
+            return pd.DataFrame()
+        return pd.DataFrame(satir, index=pd.DatetimeIndex(idx))
+
+
+def kur_saatlik(gunler, hacimli=True):
+    import yfinance as yf
+    yf.Ticker = lambda sym: SahteTicker(gunler, hacimli)
+
+
+# T8: gunluk seride eksik olan kapanmis seans saatlikten kuruluyor
+df8 = seri(onceki)                       # son bar 2 islem gunu geride
+kur_saatlik([dun_is])                    # eksik gun saatlikte VAR
+df8r, onarilan = F.eksik_seans_onar(df8, "TEST8.IS", "bist")
+kontrol("T8 eksik kapanmis seans saatlik barlardan kuruluyor",
+        onarilan == [dun_is.isoformat()]
+        and pd.Timestamp(df8r.index[-1]).date() == dun_is
+        and float(df8r["Close"].iloc[-1]) == 51.0,
+        f"-> onarilan={onarilan} son_bar={pd.Timestamp(df8r.index[-1]).date()} "
+        f"kapanis={float(df8r['Close'].iloc[-1])}")
+
+# T9: saatlik veri de yoksa seri DEGISMEZ -> fren KALKMAZ (uydurma yok)
+kur_saatlik([])
+df9 = seri(onceki)
+df9r, onarilan9 = F.eksik_seans_onar(df9, "TEST9.IS", "bist")
+kontrol("T9 saatlik veri yoksa onarim YOK (fren korunuyor)",
+        onarilan9 == [] and pd.Timestamp(df9r.index[-1]).date() == onceki,
+        f"-> onarilan={onarilan9} son_bar={pd.Timestamp(df9r.index[-1]).date()}")
+
+# T10: yalnizca HACIMSIZ bar varsa (acilis-oncesi gosterge fiyati) bar KURULMAZ
+kur_saatlik([dun_is], hacimli=False)
+df10 = seri(onceki)
+df10r, onarilan10 = F.eksik_seans_onar(df10, "TEST10.IS", "bist")
+kontrol("T10 hacimsiz saatlik barlardan bar UYDURULMUYOR",
+        onarilan10 == [] and pd.Timestamp(df10r.index[-1]).date() == onceki,
+        f"-> onarilan={onarilan10} son_bar={pd.Timestamp(df10r.index[-1]).date()}")
+
+# --- TEST 11-12: FIYAT CACHE GERI-GITME KILIDI ----------------------------
+# Cache her calismada sifirdan kurulup dosyayi eziyordu. Yahoo bir seansi
+# geriye donuk kaybedince cache ZAMANDA GERI gidiyor (Cuma 18:00'de 31 Tem
+# kapanisi vardi, Pazartesi 09:00 tazelemesi 30 Tem'e dusurdu) ve karar
+# motorunun bayat-veri yedegi de bosa cikiyordu.
+import json as _json                                              # noqa: E402
+import tempfile                                                   # noqa: E402
+from src.ops import update_fiyat_cache as UFC                     # noqa: E402
+
+
+def cache_yaz_oku(eski: dict, yeni_bar: str):
+    """Diskteki 'eski' cache uzerine 'yeni_bar' tarihli cekim yazilinca ne kalir?"""
+    tmp = Path(tempfile.mkdtemp()) / "fiyat_cache.json"
+    tmp.write_text(_json.dumps(eski), encoding="utf-8")
+    UFC.CACHE_PATH = tmp
+    UFC._semboller = lambda: {"TESTC": "bist"}
+    UFC._mcp_batch = lambda d: {}
+    UFC._batch_cek = lambda syms: {"TESTC.IS": {"fiyat": 10.0, "gunluk": 0.5,
+                                                "bar_tarihi": yeni_bar}}
+    UFC._sma_batch = lambda m: {}
+    UFC.BIGPARA_ONLY = {}
+    ozet = UFC.guncelle()
+    return _json.loads(tmp.read_text(encoding="utf-8"))["TESTC"], ozet
+
+
+# T11: kaynak GERI giderse (yeni bar daha ESKI) eski kayit korunur
+eski_taze = {"TESTC": {"fiyat": 99.0, "gunluk": 2.0,
+                       "guncelleme": f"{dun_is.isoformat()} 18:00",
+                       "bar_tarihi": dun_is.isoformat(), "kaynak": "yfinance"}}
+kayit, ozet = cache_yaz_oku(eski_taze, onceki.isoformat())
+kontrol("T11 kaynak bar tarihi GERI giderse taze kayit korunuyor",
+        kayit["bar_tarihi"] == dun_is.isoformat() and kayit["fiyat"] == 99.0
+        and ozet.get("korunan") == 1,
+        f"-> bar_tarihi={kayit['bar_tarihi']} fiyat={kayit['fiyat']} "
+        f"korunan={ozet.get('korunan')}")
+
+# T12: normal ILERI tazeleme etkilenmez (kilit yalniz geri gidiste devrede)
+eski_bayat = {"TESTC": {"fiyat": 99.0, "gunluk": 2.0,
+                        "guncelleme": f"{onceki.isoformat()} 18:00",
+                        "bar_tarihi": onceki.isoformat(), "kaynak": "yfinance"}}
+kayit2, ozet2 = cache_yaz_oku(eski_bayat, dun_is.isoformat())
+kontrol("T12 ileri giden normal tazeleme etkilenmiyor",
+        kayit2["bar_tarihi"] == dun_is.isoformat() and kayit2["fiyat"] == 10.0
+        and ozet2.get("korunan") == 0,
+        f"-> bar_tarihi={kayit2['bar_tarihi']} fiyat={kayit2['fiyat']} "
+        f"korunan={ozet2.get('korunan')}")
+
 print(f"\n{sum(SONUC)}/{len(SONUC)} test gecti")
 sys.exit(0 if all(SONUC) else 1)

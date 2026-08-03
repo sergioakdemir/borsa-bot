@@ -28,10 +28,10 @@ def _son_fiyat(ticker: str, para_birimi: str = "TL"):
         return None
     # Hacim filtresi YOK (31 Tem 2026): Yahoo gunluk bari once Volume=0 ile
     # yayinlar; eski `df[df["Volume"] > 0]` o bari eleyip DUNKU kapanisi
-    # "guncel fiyat" diye donduruyordu. Bkz. freshness.canli_bar_at.
-    from src.data.freshness import canli_bar_at
+    # "guncel fiyat" diye donduruyordu. Bkz. freshness.kapanmis_seri (canli bar + eksik seans onarimi).
+    from src.data.freshness import kapanmis_seri
     df = df[df["Close"].notna()]
-    df = canli_bar_at(df, symbol=symbol)
+    df = kapanmis_seri(df, symbol=symbol)
     if df.empty:
         return None
     return float(df["Close"].iloc[-1])
